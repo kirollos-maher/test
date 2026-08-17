@@ -11,6 +11,8 @@
     --text: #eef1f4;
     --text-dim: #8b95a1;
     --text-faint: #565f6a;
+    /* ✅ إضافة متغير مفقود */
+    --text-muted: #8b95a1;
 
     --amber: #ff8a1e;
     --amber-dim: #7a4413;
@@ -533,6 +535,29 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .ring-notification .ring-sub {
     font-size: 14px;
     color: var(--text-dim);
+}
+
+/* ✅ DORAK Brand في الرأس */
+.dorak-brand {
+    font-family: 'JetBrains Mono', monospace;
+    font-weight: 800;
+    font-size: 18px;
+    color: var(--amber);
+    letter-spacing: 0.08em;
+    margin-left: 12px;
+    text-shadow: 0 0 20px rgba(255, 138, 30, 0.3);
+    user-select: none;
+}
+.dorak-brand .star {
+    color: var(--amber);
+    opacity: 0.7;
+}
+.app-header .dorak-brand {
+    color: var(--amber);
+}
+[data-theme="light"] .dorak-brand {
+    color: var(--amber-dark);
+    text-shadow: 0 0 20px rgba(255, 138, 30, 0.15);
 }
 
 /* ============================================================
