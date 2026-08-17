@@ -123,6 +123,9 @@ let currentOrderSessionId = null;
 let selectedPaymentMethod = null;
 let endSessionStationId = null;
 let endingSessionInProgress = false;
+let endSessionGrandTotal = 0;
+let endSessionDiscount = 0;
+let endSessionPaidAmount = null;
 let sessionSegmentsCache = {};
 let activeSegmentCache = {};
 let pendingSwitch = false;
@@ -2259,7 +2262,12 @@ function showEndSessionPayment(stationId) {
         }
         
         const activeMethods = paymentMethods.filter(pm => pm.active !== false);
-        
+
+        // ✅ تخزين الإجمالي الأصلي كمرجع ثابت لحساب الخصم والباقي عليه
+        endSessionGrandTotal = totals.grandTotal;
+        endSessionDiscount = 0;
+        endSessionPaidAmount = null;
+
         let paymentHtml = `
             <div style="text-align:center;margin:12px 0;">
                 <div style="font-size:28px;font-weight:700;color:var(--amber);">${moneyDec(totals.grandTotal)} ${t('ج', 'EGP')}</div>
@@ -2271,6 +2279,22 @@ function showEndSessionPayment(stationId) {
                 <div class="segment-row"><span class="seg-label">${t('الطلبات', 'Orders')}</span><span class="seg-value">${moneyDec(totals.ordersTotal)}</span></div>
             </div>
             ${ordersHtml}
+            <div class="section-title" style="margin-top:8px;">${t('خصم للعميل (اختياري)', 'Customer Discount (optional)')}</div>
+            <div class="field" style="margin-bottom:6px;">
+                <input type="number" id="endSessionDiscountInput" inputmode="decimal" min="0" step="0.01" placeholder="${t('مثلاً 10', 'e.g. 10')}">
+            </div>
+            <div class="segment-row segment-total" style="margin-bottom:10px;">
+                <span class="seg-label">${t('المستحق بعد الخصم', 'Due After Discount')}</span>
+                <span class="seg-value" id="endSessionDueAfterDiscount" style="color:var(--amber);">${moneyDec(totals.grandTotal)}</span>
+            </div>
+            <div class="section-title">${t('العميل دفع كام؟ (اختياري)', 'Amount Paid by Customer (optional)')}</div>
+            <div class="field" style="margin-bottom:6px;">
+                <input type="number" id="endSessionPaidInput" inputmode="decimal" min="0" step="0.01" placeholder="${t('مثلاً 200', 'e.g. 200')}">
+            </div>
+            <div class="segment-row" id="endSessionChangeRow" style="display:none;margin-bottom:8px;">
+                <span class="seg-label" id="endSessionChangeLabel"></span>
+                <span class="seg-value" id="endSessionChangeValue" style="font-weight:700;"></span>
+            </div>
             <div class="section-title">${t('اختر طريقة الدفع', 'Select Payment Method')}</div>`;
         
         if (activeMethods.length === 0) {
@@ -2312,9 +2336,61 @@ function showEndSessionPayment(stationId) {
                 }
             });
         });
+
+        const discountInputEl = document.getElementById('endSessionDiscountInput');
+        const paidInputEl = document.getElementById('endSessionPaidInput');
+        if (discountInputEl) discountInputEl.addEventListener('input', updateEndSessionDiscountCalc);
+        if (paidInputEl) paidInputEl.addEventListener('input', updateEndSessionDiscountCalc);
         
         selectedPaymentMethod = null;
     })();
+}
+
+// ============================================================
+// UPDATE DISCOUNT / PAID / CHANGE CALCULATION (End Session sheet)
+// ✅ هذا الحساب لا يمس totals.grandTotal ولا مصدر الحقيقة في قاعدة
+// البيانات إطلاقاً — بيشتغل فقط على القيمة المعروضة في نفس الشاشة.
+// ============================================================
+function updateEndSessionDiscountCalc() {
+    const discountInputEl = document.getElementById('endSessionDiscountInput');
+    const paidInputEl = document.getElementById('endSessionPaidInput');
+    const dueEl = document.getElementById('endSessionDueAfterDiscount');
+    const changeRow = document.getElementById('endSessionChangeRow');
+    const changeLabel = document.getElementById('endSessionChangeLabel');
+    const changeValue = document.getElementById('endSessionChangeValue');
+    if (!dueEl) return;
+
+    let discount = discountInputEl ? parseFloat(discountInputEl.value) : NaN;
+    if (isNaN(discount) || discount < 0) discount = 0;
+    // الخصم متسقفش أعلى من الإجمالي علشان المستحق ميبقاش رقم سالب
+    if (discount > endSessionGrandTotal) discount = endSessionGrandTotal;
+    endSessionDiscount = discount;
+
+    const dueAfterDiscount = Math.round((endSessionGrandTotal - discount) * 100) / 100;
+    dueEl.textContent = moneyDec(dueAfterDiscount);
+
+    let paid = paidInputEl ? parseFloat(paidInputEl.value) : NaN;
+    if (isNaN(paid) || paidInputEl.value === '') {
+        endSessionPaidAmount = null;
+        if (changeRow) changeRow.style.display = 'none';
+        return;
+    }
+    if (paid < 0) paid = 0;
+    endSessionPaidAmount = paid;
+
+    const diff = Math.round((paid - dueAfterDiscount) * 100) / 100;
+    if (changeRow && changeLabel && changeValue) {
+        changeRow.style.display = 'flex';
+        if (diff >= 0) {
+            changeLabel.textContent = t('الباقي للعميل', 'Change to give back');
+            changeValue.style.color = 'var(--teal, #2dd4bf)';
+            changeValue.textContent = `${moneyDec(diff)} ${t('ج', 'EGP')}`;
+        } else {
+            changeLabel.textContent = t('متبقي على العميل', 'Still owed by customer');
+            changeValue.style.color = 'var(--amber)';
+            changeValue.textContent = `${moneyDec(Math.abs(diff))} ${t('ج', 'EGP')}`;
+        }
+    }
 }
 
 
@@ -2393,11 +2469,18 @@ async function confirmEndSessionWithPayment() {
         }
 
         const totals = await calculateTotalAmounts(session.id);
+
+        // ✅ الخصم بيتحسب فوق totals.grandTotal اللي طالع من قاعدة البيانات
+        // نفسها (مفيش أي قيمة مخزّنة في الواجهة بتتلخبط مع الجزء الحالي/الطلبات)
+        let discount = Number(endSessionDiscount) || 0;
+        if (discount < 0) discount = 0;
+        if (discount > totals.grandTotal) discount = totals.grandTotal;
+        const finalAmount = Math.round((totals.grandTotal - discount) * 100) / 100;
         
         const { error } = await supabaseClient.from('sessions').update({
             status: 'completed',
             ended_at: new Date().toISOString(),
-            amount: totals.grandTotal,
+            amount: finalAmount,
             payment_method: selectedPaymentMethod
         }).eq('id', session.id);
         
@@ -2414,7 +2497,7 @@ async function confirmEndSessionWithPayment() {
         renderStationsGrid();
         closeSheet('stationOverlay');
         const pm = paymentMethods.find(p => p.id === selectedPaymentMethod);
-        showToast(`${t('اتقفلت الجلسة —', 'Session closed —')} ${moneyDec(totals.grandTotal)} ${t('ج', 'EGP')} (${pm ? pm.name : ''})`, 'success');
+        showToast(`${t('اتقفلت الجلسة —', 'Session closed —')} ${moneyDec(finalAmount)} ${t('ج', 'EGP')} (${pm ? pm.name : ''})`, 'success');
         
         await renderDashboard();
         if (document.getElementById('view-shift').classList.contains('active')) {
@@ -2478,6 +2561,16 @@ function printReceipt() {
             `;
         }
         
+        // ✅ نفس منطق الخصم المستخدم وقت التأكيد، محسوب فوق totals.grandTotal
+        // القادم من قاعدة البيانات — الإيصال بيعرض بس، مبيغيرش أي قيمة مخزنة
+        let receiptDiscount = Number(endSessionDiscount) || 0;
+        if (receiptDiscount < 0) receiptDiscount = 0;
+        if (receiptDiscount > totals.grandTotal) receiptDiscount = totals.grandTotal;
+        const receiptFinalAmount = Math.round((totals.grandTotal - receiptDiscount) * 100) / 100;
+        const receiptPaid = (endSessionPaidAmount !== null && endSessionPaidAmount !== undefined && !isNaN(endSessionPaidAmount))
+            ? Number(endSessionPaidAmount) : null;
+        const receiptChange = receiptPaid !== null ? Math.round((receiptPaid - receiptFinalAmount) * 100) / 100 : 0;
+
         const receiptContent = `
             <div style="font-family: 'Cairo', Arial, sans-serif; padding: 20px; max-width: 300px; margin: 0 auto; direction: rtl; text-align: center; background: #fff; color: #000;">
                 <div style="font-size: 18px; font-weight: 700; margin-bottom: 4px;">${escapeHtml(business.name)}</div>
@@ -2514,12 +2607,36 @@ function printReceipt() {
                 </div>
                 ${ordersReceiptHtml}
                 <hr style="border: none; border-top: 1px dashed #ccc; margin: 10px 0;">
+                ${receiptDiscount > 0 ? `
+                <div style="font-size: 13px; margin: 6px 0;">
+                    <div style="display:flex;justify-content:space-between;padding:2px 0;">
+                        <span>${t('الإجمالي قبل الخصم', 'Total Before Discount')}</span>
+                        <span>${moneyDec(totals.grandTotal)} ${t('ج', 'EGP')}</span>
+                    </div>
+                    <div style="display:flex;justify-content:space-between;padding:2px 0;">
+                        <span>${t('الخصم', 'Discount')}</span>
+                        <span>-${moneyDec(receiptDiscount)} ${t('ج', 'EGP')}</span>
+                    </div>
+                </div>
+                ` : ''}
                 <div style="font-size: 18px; font-weight: 700; color: #000; margin: 8px 0;">
                     <div style="display:flex;justify-content:space-between;">
                         <span>${t('الإجمالي', 'Total')}</span>
-                        <span>${moneyDec(totals.grandTotal)} ${t('ج', 'EGP')}</span>
+                        <span>${moneyDec(receiptFinalAmount)} ${t('ج', 'EGP')}</span>
                     </div>
                 </div>
+                ${receiptPaid !== null ? `
+                <div style="font-size: 13px; margin: 6px 0;">
+                    <div style="display:flex;justify-content:space-between;padding:2px 0;">
+                        <span>${t('المدفوع', 'Paid')}</span>
+                        <span>${moneyDec(receiptPaid)} ${t('ج', 'EGP')}</span>
+                    </div>
+                    <div style="display:flex;justify-content:space-between;padding:2px 0;font-weight:700;">
+                        <span>${receiptChange >= 0 ? t('الباقي للعميل', 'Change Given') : t('متبقي على العميل', 'Still Owed')}</span>
+                        <span>${moneyDec(Math.abs(receiptChange))} ${t('ج', 'EGP')}</span>
+                    </div>
+                </div>
+                ` : ''}
                 <div style="font-size: 13px; margin: 8px 0;">
                     <div style="display:flex;justify-content:space-between;padding:2px 0;">
                         <span>${t('طريقة الدفع', 'Payment Method')}</span>
