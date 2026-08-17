@@ -228,6 +228,11 @@ function stopCountdownAlerts() {
         countdownAlertInterval = null;
         console.log('🔕 Countdown alerts stopped');
     }
+    // إيقاف أي مؤقتات أخرى
+    if (ringTimeout) {
+        clearTimeout(ringTimeout);
+        ringTimeout = null;
+    }
 }
 
 // ========================
