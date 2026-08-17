@@ -2,8 +2,8 @@
 // ============================================================
 // CONFIG
 // ============================================================
-const SUPABASE_URL = 'https://fhjhtgbvtkuhhzitvxtx.supabase.co';
-const SUPABASE_ANON_KEY = 'sb_publishable_X0aLD3gjXGqC_no4gW78ng_TWztP5cd';
+const SUPABASE_URL = 'https://hdrvqgicxxgfolozxgjp.supabase.co';
+const SUPABASE_ANON_KEY = 'sb_publishable_dGNw7eTTempKBdFmAZRjYA_eaeEE2jj';
 const supabaseClient = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 
 // V2 safety helpers: never report success when Supabase rejected the operation.
@@ -47,7 +47,6 @@ function updateTexts() {
         el.textContent = currentLang === 'ar' ? el.dataset.ar : el.dataset.en;
     });
     
-    // تحديث أسماء الأشهر
     updateMonthNames();
     
     renderStationsGrid();
@@ -125,16 +124,12 @@ let currentOrderSessionId = null;
 let selectedPaymentMethod = null;
 let endSessionStationId = null;
 let endingSessionInProgress = false;
-let endSessionGrandTotal = 0;
-let endSessionDiscount = 0;
-let endSessionPaidAmount = null;
 let sessionSegmentsCache = {};
 let activeSegmentCache = {};
 let pendingSwitch = false;
 let transferSourceStationId = null;
 let countdownTimers = {};
 let countdownAlerts = {};
-// تخزين حالة التوجل لكل تصنيف
 let categoryToggleState = {};
 
 // ============================================================
@@ -217,7 +212,7 @@ function applyPermissions() {
 }
 
 // ============================================================
-// SETUP / ACTIVATION / LOCK FLOW
+// SETUP / ACTIVATION / AUTH FLOW
 // ============================================================
 async function handleSetupContinue() {
     const code = document.getElementById('setupBusinessCode').value.trim().toUpperCase();
@@ -235,6 +230,18 @@ async function handleSetupContinue() {
         }
         business = biz;
         localStorage.setItem('psr_business_code', code);
+        
+        // ✅ Check if device is activated
+        const deviceId = getDeviceId();
+        const { data: dev } = await supabaseClient.from('devices').select('*').eq('business_id', biz.id).eq('device_id', deviceId).maybeSingle();
+        if (!dev) {
+            document.getElementById('activationBizName').textContent = biz.name;
+            showScreen('activationScreen');
+            return;
+        }
+        deviceRecord = dev;
+        
+        // ✅ Go to Auth screen instead of Lock screen
         showAuthScreen();
         await dorakAuthBootstrapForBusiness();
     } catch (e) {
@@ -269,6 +276,7 @@ function authFriendlyError(error) {
     if (msg.includes('INVALID_OWNER_CREDENTIAL')) return t('كود النشاط أو PIN المالك غير صحيح.', 'Business code or owner PIN is incorrect.');
     if (msg.includes('BUSINESS_NOT_FOUND')) return t('النشاط غير موجود.', 'Business not found.');
     if (msg.includes('AUTH_REQUIRED')) return t('لازم تسجل دخول أولًا.', 'You must sign in first.');
+    if (msg.includes('NO_BUSINESS_MEMBERSHIP')) return t('الحساب ده مش مربوط بالنشاط ده.', 'This account is not linked to this business.');
     return t('حصل خطأ. حاول مرة تانية.', 'Something went wrong. Please try again.');
 }
 
@@ -313,9 +321,7 @@ async function handleAuthLogin() {
         await enterAuthenticatedApp(authMemberships[0]);
     } catch (e) {
         console.error('Auth login error:', e);
-        errEl.textContent = e.message === 'NO_BUSINESS_MEMBERSHIP'
-            ? t('الحساب ده مش مربوط بالنشاط ده.', 'This account is not linked to this business.')
-            : authFriendlyError(e);
+        errEl.textContent = authFriendlyError(e);
     } finally { btn.disabled = false; }
 }
 
@@ -380,10 +386,8 @@ async function handleAuthSignOut() {
     business = null;
     deviceRecord = null;
     localStorage.removeItem('psr_business_code');
-    const email = document.getElementById('authEmail');
-    const password = document.getElementById('authPassword');
-    if (email) email.value = '';
-    if (password) password.value = '';
+    document.getElementById('authEmail').value = '';
+    document.getElementById('authPassword').value = '';
     showScreen('setupScreen');
 }
 
@@ -426,10 +430,13 @@ async function handleActivateDevice() {
         await supabaseClient.from('activation_codes').update({ used: true, used_at: new Date().toISOString() }).eq('id', actCode.id);
         deviceRecord = newDev;
         showToast(t('تم تفعيل الجهاز بنجاح', 'Device activated successfully'), 'success');
-        proceedToLock();
+        showAuthScreen();
     } catch (e) { console.error(e); errEl.textContent = t('حصل خطأ، حاول تاني.', 'Error, try again.'); }
 }
 
+// ============================================================
+// LOCK SCREEN (Legacy PIN support)
+// ============================================================
 function proceedToLock() {
     document.getElementById('lockBizCode').textContent = business.code;
     document.getElementById('lockBizName').textContent = business.name;
@@ -511,27 +518,20 @@ async function lockApp() {
 
 // ============================================================
 // AUTO-ACTIVATE FROM URL (?biz=CODE&code=ACTIVATION)
-// Used by the "start free trial" button on the marketing/dashboard
-// site, which creates a business + trial activation code and sends
-// the device straight here. Only runs for a device with no existing
-// saved session, so it never hijacks an already-installed device.
 // ============================================================
 async function tryAutoActivateFromURL() {
-    if (localStorage.getItem('psr_business_code')) return; // existing device — don't interfere
+    if (localStorage.getItem('psr_business_code')) return;
     const params = new URLSearchParams(window.location.search);
     const bizCode = params.get('biz');
     const actCodeParam = params.get('code');
     if (!bizCode) return;
 
-    // Clean the URL so a refresh/share doesn't re-trigger this.
     window.history.replaceState({}, document.title, window.location.pathname);
 
     const setupInput = document.getElementById('setupBusinessCode');
     if (setupInput) setupInput.value = bizCode;
     await handleSetupContinue();
 
-    // If handleSetupContinue routed us to the activation screen (new device)
-    // and we have an activation code, fill it in and submit automatically.
     const activationScreen = document.getElementById('activationScreen');
     if (actCodeParam && activationScreen && activationScreen.classList.contains('active')) {
         const actInput = document.getElementById('activationCodeInput');
@@ -570,17 +570,22 @@ async function enterMainApp() {
     document.querySelectorAll('.nav-btn').forEach(b => b.classList.toggle('active', b.dataset.view === 'view-dashboard'));
     
     populateYearSelect();
+    await syncServerClock();
     await loadAllData();
     subscribeRealtime();
     startTicker();
     updateTexts();
     await recoverActiveSession();
+    
+    // ✅ Start countdown alerts
+    if (typeof startCountdownAlerts === 'function') {
+        startCountdownAlerts();
+    }
+    
+    setInterval(syncServerClock, 5 * 60 * 1000);
 }
 
 async function loadAllData() {
-    // Load each area independently. A problem in one table (for example,
-    // duplicate open shifts in an older database) must not prevent the
-    // stations and the rest of the app from rendering.
     const results = await Promise.allSettled([
         loadStations(),
         loadMenuItems(),
@@ -627,7 +632,7 @@ async function loadStations() {
 }
 
 // ============================================================
-// MENU ITEMS - with localStorage fallback
+// MENU ITEMS
 // ============================================================
 async function loadMenuItems() {
     try {
@@ -729,9 +734,6 @@ async function loadPaymentMethods() {
 async function loadOrOpenShift() {
     assertBusinessContext();
 
-    // Do not use maybeSingle() here. The current database contains multiple
-    // open shifts for this business (the console reports 19 rows), so
-    // maybeSingle() throws PGRST116 and used to stop the whole app from rendering.
     const { data: openShifts, error } = await supabaseClient
         .from('shifts')
         .select('*')
@@ -742,10 +744,7 @@ async function loadOrOpenShift() {
     if (error) throw error;
 
     if (openShifts && openShifts.length > 0) {
-        // Use the newest open shift for now. Do NOT automatically delete or
-        // close the other financial records; they need manual review.
         currentShift = openShifts[0];
-
         if (openShifts.length > 1) {
             console.warn(
                 `PS Rental: ${openShifts.length} open shifts found for business ${business.id}. ` +
@@ -764,6 +763,47 @@ async function loadOrOpenShift() {
         'Opening shift'
     );
     currentShift = createdResult.data;
+}
+
+// ============================================================
+// CLOCK SYNC — تصحيح فرق ساعة الجهاز عن وقت السيرفر// ============================================================
+let serverClockOffsetMs = 0;
+
+async function fetchWithTimeout(url, ms) {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), ms);
+    try {
+        return await fetch(url, { signal: controller.signal });
+    } finally {
+        clearTimeout(timeoutId);
+    }
+}
+
+async function syncServerClock() {
+    try {
+        const res = await fetchWithTimeout('https://worldtimeapi.org/api/timezone/Etc/UTC', 4000);
+        const data = await res.json();
+        if (data && data.unixtime) {
+            serverClockOffsetMs = (data.unixtime * 1000) - Date.now();
+            return;
+        }
+    } catch (e) {
+        console.warn('worldtimeapi failed, trying fallback:', e);
+    }
+    try {
+        const res = await fetchWithTimeout('https://timeapi.io/api/Time/current/zone?timeZone=UTC', 4000);
+        const data = await res.json();
+        if (data && data.dateTime) {
+            const serverTime = new Date(data.dateTime + 'Z').getTime();
+            if (!isNaN(serverTime)) serverClockOffsetMs = serverTime - Date.now();
+        }
+    } catch (e) {
+        console.warn('Error syncing server clock (both sources failed):', e);
+    }
+}
+
+function nowCorrected() {
+    return Date.now() + serverClockOffsetMs;
 }
 
 // ============================================================
@@ -911,7 +951,7 @@ async function getCurrentSegmentEstimate(sessionId) {
     if (!activeSeg) return { amount: 0, hours: 0, segment: null };
     
     const start = new Date(activeSeg.started_at);
-    const now = new Date();
+    const now = new Date(nowCorrected());
     let hours = Math.max(0, (now - start) / 3600000);
     let amount = Math.round((hours * Number(activeSeg.rate)) * 100) / 100;
     
@@ -930,7 +970,7 @@ function getCurrentSegmentEstimateFast(sessionId) {
     if (!activeSeg) return { amount: 0, hours: 0, segment: null };
 
     const start = new Date(activeSeg.started_at);
-    const now = new Date();
+    const now = new Date(nowCorrected());
     let hours = Math.max(0, (now - start) / 3600000);
     let amount = Math.round((hours * Number(activeSeg.rate)) * 100) / 100;
 
@@ -947,7 +987,7 @@ function getCurrentSegmentEstimateFast(sessionId) {
 function getRemainingSeconds(segment) {
     if (!segment || segment.timer_type !== 'countdown' || !segment.duration_seconds) return 0;
     const start = new Date(segment.started_at);
-    const now = new Date();
+    const now = new Date(nowCorrected());
     const elapsed = (now - start) / 1000;
     return Math.max(0, segment.duration_seconds - elapsed);
 }
@@ -976,6 +1016,9 @@ function subscribeRealtime() {
 function stopRealtimeAndTimers() {
     if (realtimeChannel) { supabaseClient.removeChannel(realtimeChannel); realtimeChannel = null; }
     if (tickInterval) { clearInterval(tickInterval); tickInterval = null; }
+    if (typeof stopCountdownAlerts === 'function') {
+        stopCountdownAlerts();
+    }
     Object.keys(countdownTimers).forEach(key => {
         if (countdownTimers[key]) clearInterval(countdownTimers[key]);
         delete countdownTimers[key];
@@ -1097,59 +1140,25 @@ function startTicker() {
             if (session) {
                 const { amount } = getCurrentSegmentEstimateFast(session.id);
                 amountEl.textContent = moneyDec(amount);
-                
-                // ✅ تحديث الإجمالي الكلي = قيمة الجزء الحالي + مجموع الطلبات
-                updateGrandTotalWithOrders(session.id, amount);
+            }
+        }
+
+        const totalEl = document.getElementById('overallTotalAmount');
+        if (totalEl && activeStationId) {
+            const session = sessions[activeStationId];
+            if (session) {
+                calculateTotalAmounts(session.id).then(totals => {
+                    const currentEstimate = getCurrentSegmentEstimateFast(session.id);
+                    const grandTotal = Math.round((totals.grandTotal - totals.ordersTotal + currentEstimate.amount + totals.ordersTotal) * 100) / 100;
+                    totalEl.textContent = moneyDec(grandTotal);
+                }).catch(() => {});
             }
         }
     }, 1000);
 }
 
-// ============================================================
-// تحديث الإجمالي الكلي مع الطلبات (لحظي)
-// ============================================================
-async function updateGrandTotalWithOrders(sessionId, currentSegmentAmount) {
-    try {
-        // حساب مجموع الأجزاء (Segments) المغلقة السابقة لنفس الجلسة
-        // (مثال: الجزء القديم Single قبل التحويل لـ Multi)
-        let closedSegmentsTotal = 0;
-        try {
-            const segments = await getSessionSegments(sessionId);
-            closedSegmentsTotal = (segments || []).reduce((sum, seg) => {
-                if (seg.ended_at) {
-                    const amount = (seg.amount !== null && seg.amount !== undefined)
-                        ? Number(seg.amount)
-                        : calculateSegmentAmountFromTimes(seg.started_at, seg.ended_at, seg.rate);
-                    return sum + amount;
-                }
-                return sum;
-            }, 0);
-        } catch (e) {
-            console.warn('Error loading closed segments for grand total:', e);
-        }
-
-        // حساب مجموع الطلبات من activeSessionOrders
-        let ordersTotal = 0;
-        if (activeSessionOrders && activeSessionOrders.length > 0) {
-            ordersTotal = activeSessionOrders.reduce((sum, order) => {
-                return sum + (Number(order.quantity || 0) * Number(order.unit_price || 0));
-            }, 0);
-        }
-        
-        // ✅ الإجمالي الكلي = الأجزاء المغلقة السابقة + الجزء الحالي + الطلبات
-        const grandTotal = closedSegmentsTotal + (currentSegmentAmount || 0) + ordersTotal;
-        
-        const totalEl = document.getElementById('overallTotalAmount');
-        if (totalEl) {
-            totalEl.textContent = moneyDec(grandTotal);
-        }
-    } catch (e) {
-        console.warn('Error updating grand total:', e);
-    }
-}
-
 function formatElapsed(start) {
-    const secs = Math.max(0, Math.floor((Date.now() - start.getTime()) / 1000));
+    const secs = Math.max(0, Math.floor((nowCorrected() - start.getTime()) / 1000));
     const h = Math.floor(secs / 3600), m = Math.floor((secs % 3600) / 60), s = secs % 60;
     return (h > 0 ? String(h).padStart(2, '0') + ':' : '') + String(m).padStart(2, '0') + ':' + String(s).padStart(2, '0');
 }
@@ -1662,15 +1671,6 @@ async function addOrderItem(sessionId, menuItemId) {
             );
         } else {
             activeSessionOrders = refreshedOrders || [];
-            
-            // ✅ تحديث الإجمالي الكلي بعد إضافة الطلب
-            if (activeStationId) {
-                const session = sessions[activeStationId];
-                if (session) {
-                    const { amount } = getCurrentSegmentEstimateFast(session.id);
-                    updateGrandTotalWithOrders(session.id, amount);
-                }
-            }
         }
 
         renderStationOrdersSection();
@@ -1737,15 +1737,6 @@ async function removeOrderItem(orderId) {
         activeSessionOrders = activeSessionOrders.filter(o => o.id !== orderId);
     }
     renderStationOrdersSection();
-    
-    // ✅ تحديث الإجمالي الكلي بعد حذف الطلب
-    if (activeStationId) {
-        const session = sessions[activeStationId];
-        if (session) {
-            const { amount } = getCurrentSegmentEstimateFast(session.id);
-            updateGrandTotalWithOrders(session.id, amount);
-        }
-    }
 }
 
 // ============================================================
@@ -2106,6 +2097,8 @@ async function openStationSheet(stationId) {
     activeSessionOrders = orders || [];
 
     const activeSegStart = activeSeg ? activeSeg.started_at : session.started_at;
+    const liveEarnedNow = activeSeg ? Math.round((Math.max(0, (nowCorrected() - new Date(activeSeg.started_at)) / 3600000) * Number(activeSeg.rate)) * 100) / 100 : 0;
+    const liveGrandTotal = Math.round((totals.grandTotal + liveEarnedNow) * 100) / 100;
 
     body.innerHTML = `
         <div style="text-align:center;margin-bottom:12px;">
@@ -2132,7 +2125,7 @@ async function openStationSheet(stationId) {
             </div>
             <div style="background:var(--bg-sunken);border-radius:var(--radius-sm);padding:8px;text-align:center;">
                 <div style="font-size:10px;color:var(--text-dim);">${t('الإجمالي الكلي', 'Grand Total')}</div>
-                <div class="mono" style="font-size:18px;font-weight:700;color:var(--amber);" id="overallTotalAmount">${moneyDec(currentEstimate.amount + totals.ordersTotal)}</div>
+                <div class="mono" style="font-size:18px;font-weight:700;color:var(--amber);" id="overallTotalAmount" data-base-total="${totals.grandTotal}">${moneyDec(liveGrandTotal)}</div>
             </div>
         </div>
         
@@ -2300,15 +2293,6 @@ function renderStationOrdersSection() {
                 <button class="btn btn-ghost btn-sm" style="padding:6px 10px;" onclick="removeOrderItem('${o.id}')" title="${t('حذف/إنقاص', 'Remove/Decrease')}"><i class="fa-solid fa-minus"></i></button>
             </div>
         </div>`).join('');
-    
-    // ✅ تحديث الإجمالي الكلي بعد عرض الطلبات
-    if (activeStationId) {
-        const session = sessions[activeStationId];
-        if (session) {
-            const { amount } = getCurrentSegmentEstimateFast(session.id);
-            updateGrandTotalWithOrders(session.id, amount);
-        }
-    }
 }
 
 function selectStartMode(mode) {
@@ -2339,7 +2323,7 @@ async function startSessionWithMode(stationId) {
         return;
     }
     
-    const now = new Date().toISOString();
+    const now = new Date(nowCorrected()).toISOString();
     
     try {
         const { data: session, error } = await supabaseClient.from('sessions').insert({
@@ -2370,7 +2354,7 @@ async function startSessionWithMode(stationId) {
 }
 
 // ============================================================
-// END SESSION WITH PAYMENT - من الملف الشغال
+// END SESSION WITH PAYMENT
 // ============================================================
 function showEndSessionPayment(stationId) {
     endSessionStationId = stationId;
@@ -2382,7 +2366,7 @@ function showEndSessionPayment(stationId) {
     (async () => {
         const activeSeg = await getActiveSegment(session.id);
         if (activeSeg && !activeSeg.ended_at) {
-            const now = new Date().toISOString();
+            const now = new Date(nowCorrected()).toISOString();
             const start = new Date(activeSeg.started_at);
             let hours = Math.max(0, (new Date(now) - start) / 3600000);
             let amount = Math.round((hours * Number(activeSeg.rate)) * 100) / 100;
@@ -2427,12 +2411,10 @@ function showEndSessionPayment(stationId) {
         }
         
         const activeMethods = paymentMethods.filter(pm => pm.active !== false);
-
-        // ✅ تخزين الإجمالي الأصلي كمرجع ثابت لحساب الخصم والباقي عليه
-        endSessionGrandTotal = totals.grandTotal;
+        currentEndSessionTotals = totals;
         endSessionDiscount = 0;
-        endSessionPaidAmount = null;
-
+        endSessionAmountPaid = null;
+        
         let paymentHtml = `
             <div style="text-align:center;margin:12px 0;">
                 <div style="font-size:28px;font-weight:700;color:var(--amber);">${moneyDec(totals.grandTotal)} ${t('ج', 'EGP')}</div>
@@ -2444,21 +2426,24 @@ function showEndSessionPayment(stationId) {
                 <div class="segment-row"><span class="seg-label">${t('الطلبات', 'Orders')}</span><span class="seg-value">${moneyDec(totals.ordersTotal)}</span></div>
             </div>
             ${ordersHtml}
-            <div class="section-title" style="margin-top:8px;">${t('خصم للعميل (اختياري)', 'Customer Discount (optional)')}</div>
-            <div class="field" style="margin-bottom:6px;">
-                <input type="number" id="endSessionDiscountInput" inputmode="decimal" min="0" step="0.01" placeholder="${t('مثلاً 10', 'e.g. 10')}">
-            </div>
-            <div class="segment-row segment-total" style="margin-bottom:10px;">
-                <span class="seg-label">${t('المستحق بعد الخصم', 'Due After Discount')}</span>
-                <span class="seg-value" id="endSessionDueAfterDiscount" style="color:var(--amber);">${moneyDec(totals.grandTotal)}</span>
-            </div>
-            <div class="section-title">${t('العميل دفع كام؟ (اختياري)', 'Amount Paid by Customer (optional)')}</div>
-            <div class="field" style="margin-bottom:6px;">
-                <input type="number" id="endSessionPaidInput" inputmode="decimal" min="0" step="0.01" placeholder="${t('مثلاً 200', 'e.g. 200')}">
-            </div>
-            <div class="segment-row" id="endSessionChangeRow" style="display:none;margin-bottom:8px;">
-                <span class="seg-label" id="endSessionChangeLabel"></span>
-                <span class="seg-value" id="endSessionChangeValue" style="font-weight:700;"></span>
+            <div class="section-title">${t('الخصم والدفع', 'Discount & Payment')}</div>
+            <div style="background:var(--bg-sunken);border-radius:var(--radius-sm);padding:10px;margin-bottom:10px;">
+                <div style="margin-bottom:10px;">
+                    <label style="display:block;font-size:12px;color:var(--text-dim);margin-bottom:4px;">${t('خصم (جنيه)', 'Discount (EGP)')}</label>
+                    <input type="number" id="discountInput" class="mono" min="0" step="0.5" value="0" placeholder="0" oninput="updatePaymentCalculation()" style="width:100%;">
+                </div>
+                <div style="display:flex;justify-content:space-between;align-items:center;padding:8px 0;font-weight:700;border-top:1px solid var(--border);border-bottom:1px solid var(--border);margin-bottom:10px;">
+                    <span>${t('الإجمالي بعد الخصم', 'Total After Discount')}</span>
+                    <span class="mono" id="finalTotalDisplay" style="color:var(--amber);font-size:16px;">${moneyDec(totals.grandTotal)}</span>
+                </div>
+                <div style="margin-bottom:8px;">
+                    <label style="display:block;font-size:12px;color:var(--text-dim);margin-bottom:4px;">${t('العميل دفع كام', 'Amount Paid by Customer')}</label>
+                    <input type="number" id="amountPaidInput" class="mono" min="0" step="0.5" placeholder="${moneyDec(totals.grandTotal)}" oninput="updatePaymentCalculation()" style="width:100%;">
+                </div>
+                <div id="changeDueRow" style="display:none;justify-content:space-between;align-items:center;padding:8px 0 2px;font-weight:700;">
+                    <span id="changeDueLabel"></span>
+                    <span class="mono" id="changeDueAmount" style="font-size:16px;"></span>
+                </div>
             </div>
             <div class="section-title">${t('اختر طريقة الدفع', 'Select Payment Method')}</div>`;
         
@@ -2501,66 +2486,13 @@ function showEndSessionPayment(stationId) {
                 }
             });
         });
-
-        const discountInputEl = document.getElementById('endSessionDiscountInput');
-        const paidInputEl = document.getElementById('endSessionPaidInput');
-        if (discountInputEl) discountInputEl.addEventListener('input', updateEndSessionDiscountCalc);
-        if (paidInputEl) paidInputEl.addEventListener('input', updateEndSessionDiscountCalc);
         
         selectedPaymentMethod = null;
     })();
 }
 
 // ============================================================
-// UPDATE DISCOUNT / PAID / CHANGE CALCULATION (End Session sheet)
-// ✅ هذا الحساب لا يمس totals.grandTotal ولا مصدر الحقيقة في قاعدة
-// البيانات إطلاقاً — بيشتغل فقط على القيمة المعروضة في نفس الشاشة.
-// ============================================================
-function updateEndSessionDiscountCalc() {
-    const discountInputEl = document.getElementById('endSessionDiscountInput');
-    const paidInputEl = document.getElementById('endSessionPaidInput');
-    const dueEl = document.getElementById('endSessionDueAfterDiscount');
-    const changeRow = document.getElementById('endSessionChangeRow');
-    const changeLabel = document.getElementById('endSessionChangeLabel');
-    const changeValue = document.getElementById('endSessionChangeValue');
-    if (!dueEl) return;
-
-    let discount = discountInputEl ? parseFloat(discountInputEl.value) : NaN;
-    if (isNaN(discount) || discount < 0) discount = 0;
-    // الخصم متسقفش أعلى من الإجمالي علشان المستحق ميبقاش رقم سالب
-    if (discount > endSessionGrandTotal) discount = endSessionGrandTotal;
-    endSessionDiscount = discount;
-
-    const dueAfterDiscount = Math.round((endSessionGrandTotal - discount) * 100) / 100;
-    dueEl.textContent = moneyDec(dueAfterDiscount);
-
-    let paid = paidInputEl ? parseFloat(paidInputEl.value) : NaN;
-    if (isNaN(paid) || paidInputEl.value === '') {
-        endSessionPaidAmount = null;
-        if (changeRow) changeRow.style.display = 'none';
-        return;
-    }
-    if (paid < 0) paid = 0;
-    endSessionPaidAmount = paid;
-
-    const diff = Math.round((paid - dueAfterDiscount) * 100) / 100;
-    if (changeRow && changeLabel && changeValue) {
-        changeRow.style.display = 'flex';
-        if (diff >= 0) {
-            changeLabel.textContent = t('الباقي للعميل', 'Change to give back');
-            changeValue.style.color = 'var(--teal, #2dd4bf)';
-            changeValue.textContent = `${moneyDec(diff)} ${t('ج', 'EGP')}`;
-        } else {
-            changeLabel.textContent = t('متبقي على العميل', 'Still owed by customer');
-            changeValue.style.color = 'var(--amber)';
-            changeValue.textContent = `${moneyDec(Math.abs(diff))} ${t('ج', 'EGP')}`;
-        }
-    }
-}
-
-
-// ============================================================
-// SELECT PAYMENT METHOD - من الملف الشغال
+// SELECT PAYMENT METHOD
 // ============================================================
 function selectPaymentMethod(pmId) {
     selectedPaymentMethod = pmId;
@@ -2587,7 +2519,54 @@ function selectPaymentMethod(pmId) {
 }
 
 // ============================================================
-// CANCEL END SESSION (Back button) - من الملف الشغال
+// UPDATE PAYMENT CALCULATION
+// ============================================================
+let currentEndSessionTotals = null;
+let endSessionDiscount = 0;
+let endSessionAmountPaid = null;
+
+function updatePaymentCalculation() {
+    if (!currentEndSessionTotals) return;
+    const grandTotal = currentEndSessionTotals.grandTotal;
+
+    const discountInput = document.getElementById('discountInput');
+    let discount = Math.max(0, parseFloat(discountInput.value) || 0);
+    if (discount > grandTotal) {
+        discount = grandTotal;
+        discountInput.value = discount;
+    }
+    const finalTotal = Math.round((grandTotal - discount) * 100) / 100;
+    const finalTotalEl = document.getElementById('finalTotalDisplay');
+    if (finalTotalEl) finalTotalEl.textContent = moneyDec(finalTotal);
+
+    const paidInput = document.getElementById('amountPaidInput');
+    const paidVal = paidInput ? paidInput.value.trim() : '';
+    const changeRow = document.getElementById('changeDueRow');
+    const changeLabel = document.getElementById('changeDueLabel');
+    const changeAmount = document.getElementById('changeDueAmount');
+
+    if (paidVal === '') {
+        if (changeRow) changeRow.style.display = 'none';
+        endSessionAmountPaid = null;
+    } else {
+        const paid = Math.max(0, parseFloat(paidVal) || 0);
+        const diff = Math.round((paid - finalTotal) * 100) / 100;
+        if (changeRow) changeRow.style.display = 'flex';
+        if (diff >= 0) {
+            if (changeLabel) changeLabel.textContent = t('الباقي للعميل', 'Change Due to Customer');
+            if (changeAmount) { changeAmount.textContent = moneyDec(diff); changeAmount.style.color = 'var(--teal)'; }
+        } else {
+            if (changeLabel) changeLabel.textContent = t('باقي على العميل', 'Remaining Owed by Customer');
+            if (changeAmount) { changeAmount.textContent = moneyDec(Math.abs(diff)); changeAmount.style.color = '#ff6b6b'; }
+        }
+        endSessionAmountPaid = paid;
+    }
+
+    endSessionDiscount = discount;
+}
+
+// ============================================================
+// CANCEL END SESSION
 // ============================================================
 function cancelEndSession() {
     const stationId = endSessionStationId || activeStationId;
@@ -2604,7 +2583,7 @@ function cancelEndSession() {
 }
 
 // ============================================================
-// CONFIRM END SESSION WITH PAYMENT - من الملف الشغال
+// CONFIRM END SESSION WITH PAYMENT
 // ============================================================
 async function confirmEndSessionWithPayment() {
     if (!selectedPaymentMethod) {
@@ -2618,7 +2597,7 @@ async function confirmEndSessionWithPayment() {
     try {
         const activeSeg = await getActiveSegment(session.id);
         if (activeSeg && !activeSeg.ended_at) {
-            const now = new Date().toISOString();
+            const now = new Date(nowCorrected()).toISOString();
             const start = new Date(activeSeg.started_at);
             let hours = Math.max(0, (new Date(now) - start) / 3600000);
             let amount = Math.round((hours * Number(activeSeg.rate)) * 100) / 100;
@@ -2634,20 +2613,26 @@ async function confirmEndSessionWithPayment() {
         }
 
         const totals = await calculateTotalAmounts(session.id);
+        const discountAmount = Math.min(Math.max(0, endSessionDiscount || 0), totals.grandTotal);
+        const finalTotal = Math.round((totals.grandTotal - discountAmount) * 100) / 100;
 
-        // ✅ الخصم بيتحسب فوق totals.grandTotal اللي طالع من قاعدة البيانات
-        // نفسها (مفيش أي قيمة مخزّنة في الواجهة بتتلخبط مع الجزء الحالي/الطلبات)
-        let discount = Number(endSessionDiscount) || 0;
-        if (discount < 0) discount = 0;
-        if (discount > totals.grandTotal) discount = totals.grandTotal;
-        const finalAmount = Math.round((totals.grandTotal - discount) * 100) / 100;
-        
-        const { error } = await supabaseClient.from('sessions').update({
+        const basePayload = {
             status: 'completed',
-            ended_at: new Date().toISOString(),
-            amount: finalAmount,
+            ended_at: new Date(nowCorrected()).toISOString(),
+            amount: finalTotal,
             payment_method: selectedPaymentMethod
+        };
+
+        let { error } = await supabaseClient.from('sessions').update({
+            ...basePayload,
+            discount: discountAmount,
+            amount_paid: endSessionAmountPaid
         }).eq('id', session.id);
+
+        if (error && /column .* does not exist/i.test(error.message || '')) {
+            console.warn('discount/amount_paid columns missing — saving without them:', error.message);
+            ({ error } = await supabaseClient.from('sessions').update(basePayload).eq('id', session.id));
+        }
         
         if (error) {
             console.error('Error ending session:', error);
@@ -2658,11 +2643,13 @@ async function confirmEndSessionWithPayment() {
         
         const savedStationId = stationId;
         
+        endSessionDiscount = discountAmount;
+        
         delete sessions[stationId];
         renderStationsGrid();
         closeSheet('stationOverlay');
         const pm = paymentMethods.find(p => p.id === selectedPaymentMethod);
-        showToast(`${t('اتقفلت الجلسة —', 'Session closed —')} ${moneyDec(finalAmount)} ${t('ج', 'EGP')} (${pm ? pm.name : ''})`, 'success');
+        showToast(`${t('اتقفلت الجلسة —', 'Session closed —')} ${moneyDec(finalTotal)} ${t('ج', 'EGP')} (${pm ? pm.name : ''})`, 'success');
         
         await renderDashboard();
         if (document.getElementById('view-shift').classList.contains('active')) {
@@ -2726,16 +2713,6 @@ function printReceipt() {
             `;
         }
         
-        // ✅ نفس منطق الخصم المستخدم وقت التأكيد، محسوب فوق totals.grandTotal
-        // القادم من قاعدة البيانات — الإيصال بيعرض بس، مبيغيرش أي قيمة مخزنة
-        let receiptDiscount = Number(endSessionDiscount) || 0;
-        if (receiptDiscount < 0) receiptDiscount = 0;
-        if (receiptDiscount > totals.grandTotal) receiptDiscount = totals.grandTotal;
-        const receiptFinalAmount = Math.round((totals.grandTotal - receiptDiscount) * 100) / 100;
-        const receiptPaid = (endSessionPaidAmount !== null && endSessionPaidAmount !== undefined && !isNaN(endSessionPaidAmount))
-            ? Number(endSessionPaidAmount) : null;
-        const receiptChange = receiptPaid !== null ? Math.round((receiptPaid - receiptFinalAmount) * 100) / 100 : 0;
-
         const receiptContent = `
             <div style="font-family: 'Cairo', Arial, sans-serif; padding: 20px; max-width: 300px; margin: 0 auto; direction: rtl; text-align: center; background: #fff; color: #000;">
                 <div style="font-size: 18px; font-weight: 700; margin-bottom: 4px;">${escapeHtml(business.name)}</div>
@@ -2772,33 +2749,33 @@ function printReceipt() {
                 </div>
                 ${ordersReceiptHtml}
                 <hr style="border: none; border-top: 1px dashed #ccc; margin: 10px 0;">
-                ${receiptDiscount > 0 ? `
-                <div style="font-size: 13px; margin: 6px 0;">
+                ${endSessionDiscount > 0 ? `
+                <div style="font-size: 13px; margin-bottom: 4px;">
                     <div style="display:flex;justify-content:space-between;padding:2px 0;">
                         <span>${t('الإجمالي قبل الخصم', 'Total Before Discount')}</span>
                         <span>${moneyDec(totals.grandTotal)} ${t('ج', 'EGP')}</span>
                     </div>
-                    <div style="display:flex;justify-content:space-between;padding:2px 0;">
+                    <div style="display:flex;justify-content:space-between;padding:2px 0;color:#c0392b;">
                         <span>${t('الخصم', 'Discount')}</span>
-                        <span>-${moneyDec(receiptDiscount)} ${t('ج', 'EGP')}</span>
+                        <span>- ${moneyDec(endSessionDiscount)} ${t('ج', 'EGP')}</span>
                     </div>
                 </div>
                 ` : ''}
                 <div style="font-size: 18px; font-weight: 700; color: #000; margin: 8px 0;">
                     <div style="display:flex;justify-content:space-between;">
                         <span>${t('الإجمالي', 'Total')}</span>
-                        <span>${moneyDec(receiptFinalAmount)} ${t('ج', 'EGP')}</span>
+                        <span>${moneyDec(Math.max(0, Math.round((totals.grandTotal - endSessionDiscount) * 100) / 100))} ${t('ج', 'EGP')}</span>
                     </div>
                 </div>
-                ${receiptPaid !== null ? `
-                <div style="font-size: 13px; margin: 6px 0;">
+                ${endSessionAmountPaid !== null && endSessionAmountPaid !== undefined ? `
+                <div style="font-size: 13px; margin-bottom: 8px;">
                     <div style="display:flex;justify-content:space-between;padding:2px 0;">
-                        <span>${t('المدفوع', 'Paid')}</span>
-                        <span>${moneyDec(receiptPaid)} ${t('ج', 'EGP')}</span>
+                        <span>${t('دفع العميل', 'Amount Paid')}</span>
+                        <span>${moneyDec(endSessionAmountPaid)} ${t('ج', 'EGP')}</span>
                     </div>
                     <div style="display:flex;justify-content:space-between;padding:2px 0;font-weight:700;">
-                        <span>${receiptChange >= 0 ? t('الباقي للعميل', 'Change Given') : t('متبقي على العميل', 'Still Owed')}</span>
-                        <span>${moneyDec(Math.abs(receiptChange))} ${t('ج', 'EGP')}</span>
+                        <span>${endSessionAmountPaid >= (totals.grandTotal - endSessionDiscount) ? t('الباقي للعميل', 'Change Due') : t('باقي على العميل', 'Remaining Owed')}</span>
+                        <span>${moneyDec(Math.abs(Math.round((endSessionAmountPaid - (totals.grandTotal - endSessionDiscount)) * 100) / 100))} ${t('ج', 'EGP')}</span>
                     </div>
                 </div>
                 ` : ''}
@@ -3179,8 +3156,7 @@ async function viewShiftDetails(shiftId) {
 async function confirmCloseShift() {
     if (!currentShift) return;
     const totals = await getShiftTotals(currentShift);
-    const closedAt = new Date().toISOString();
-    
+    const closedAt = new Date(nowCorrected()).toISOString();
     const closedByName = currentUser?.name || currentUser?.type || t('غير معروف', 'Unknown');
     
     const { data, error } = await supabaseClient
@@ -3265,7 +3241,6 @@ function renderSettings() {
                 </div>
             </div>`).join('');
     
-    // ✅ تحديث حالة الـ Toggle (PIN)
     const pinSection = document.getElementById('settingsChangePin');
     const chevron = document.getElementById('settingsPinChevron');
     if (pinSection && chevron) {
@@ -3275,7 +3250,7 @@ function renderSettings() {
 }
 
 // ============================================================
-// 🔐 تغيير PIN المالك (جديد)
+// CHANGE OWNER PIN
 // ============================================================
 async function changeOwnerPin() {
     const currentPin = document.getElementById('currentPinInput').value.trim();
@@ -3288,13 +3263,11 @@ async function changeOwnerPin() {
         return; 
     }
     
-    // 🔍 التحقق من PIN الحالي
     if (currentPin !== business.owner_pin) { 
         errEl.textContent = t('❌ PIN الحالي غير صحيح.', '❌ Current PIN is incorrect.'); 
         return; 
     }
     
-    // ✅ التحقق من PIN الجديد
     if (!/^\d{4,6}$/.test(newPin)) { 
         errEl.textContent = t('❌ PIN الجديد لازم يكون 4-6 أرقام.', '❌ New PIN must be 4-6 digits.'); 
         return; 
@@ -3308,10 +3281,8 @@ async function changeOwnerPin() {
         
         if (error) throw error;
 
-        // ✅ تحديث المتغير المحلي
         business.owner_pin = newPin;
         
-        // 🧹 تنظيف الحقول
         document.getElementById('currentPinInput').value = '';
         document.getElementById('newPinInput').value = '';
         
@@ -3323,7 +3294,7 @@ async function changeOwnerPin() {
 }
 
 // ============================================================
-// 🏢 إنشاء نشاط جديد من صفحة الدخول (جديد)
+// CREATE BUSINESS FROM SETUP
 // ============================================================
 function openCreateBusinessSheetFromSetup() {
     ['newBizCodeSetup', 'newBizNameSetup', 'newBizPhoneSetup'].forEach(id => document.getElementById(id).value = '');
@@ -3337,7 +3308,7 @@ async function submitCreateBusinessFromSetup() {
     const name = document.getElementById('newBizNameSetup').value.trim();
     const phone = document.getElementById('newBizPhoneSetup').value.trim();
     const total_stations = parseInt(document.getElementById('newBizStationsSetup').value) || 4;
-    const owner_pin = '0000'; // ✅ PIN افتراضي
+    const owner_pin = '0000';
     const err = document.getElementById('createBizErrorSetup');
 
     if (!code || !name) { 
@@ -3367,7 +3338,6 @@ async function submitCreateBusinessFromSetup() {
         closeSheet('createBusinessSheetFromSetup');
         showToast(t('✅ تم إنشاء النشاط! استخدم الكود لتسجيل الدخول.', '✅ Business created! Use the code to login.'), 'success');
         
-        // 🚀 محاولة الدخول التلقائي
         document.getElementById('setupBusinessCode').value = code;
         handleSetupContinue();
     } catch (e) {
@@ -3492,26 +3462,56 @@ function openEmployeeSheet() {
     document.getElementById('employeeError').textContent = '';
     document.getElementById('permStations').checked = true;
     document.getElementById('permShift').checked = false;
+    document.getElementById('permPrices').checked = false;
+    document.getElementById('permMenu').checked = false;
     document.getElementById('permSettings').checked = false;
+    document.getElementById('permEmployees').checked = false;
     openSheet('employeeOverlay');
 }
+
 async function submitEmployee() {
     const name = document.getElementById('employeeName').value.trim();
     const pin = document.getElementById('employeePin').value.trim();
-    if (!name || !/^\d{4,6}$/.test(pin)) { document.getElementById('employeeError').textContent = t('اكتب اسم و PIN من 4 لـ 6 أرقام.', 'Enter name and 4-6 digit PIN.'); return; }
+    const errEl = document.getElementById('employeeError');
+    errEl.textContent = '';
+    
+    if (!name || !/^\d{4,6}$/.test(pin)) { 
+        errEl.textContent = t('اكتب اسم و PIN من 4 لـ 6 أرقام.', 'Enter name and 4-6 digit PIN.'); 
+        return; 
+    }
+    
     const permissions = {
         stations: document.getElementById('permStations').checked,
         shift: document.getElementById('permShift').checked,
-        settings: document.getElementById('permSettings').checked
+        prices: document.getElementById('permPrices').checked,
+        menu: document.getElementById('permMenu').checked,
+        settings: document.getElementById('permSettings').checked,
+        employees: document.getElementById('permEmployees').checked
     };
-    const { data, error } = await supabaseClient.from('employees').insert({ business_id: business.id, name, pin, permissions }).select();
-    if (error || !data || data.length === 0) {
-        document.getElementById('employeeError').textContent = t('فشل حفظ الموظف، حاول تاني.', 'Failed to save employee, try again.');
-        console.error('Error adding employee:', error);
-        return;
+    
+    try {
+        const { data, error } = await supabaseClient.from('employees').insert({ 
+            business_id: business.id, 
+            name, 
+            pin, 
+            permissions,
+            active: true 
+        }).select();
+        
+        if (error || !data || data.length === 0) {
+            errEl.textContent = t('فشل حفظ الموظف، حاول تاني.', 'Failed to save employee, try again.');
+            console.error('Error adding employee:', error);
+            return;
+        }
+        
+        closeSheet('employeeOverlay'); 
+        showToast(t('تمت إضافة الموظف', 'Employee added'), 'success');
+        await loadEmployees(); 
+        renderSettings();
+    } catch (e) {
+        console.error('Error in submitEmployee:', e);
+        errEl.textContent = t('حصل خطأ: ' + e.message, 'Error: ' + e.message);
     }
-    closeSheet('employeeOverlay'); showToast(t('تمت إضافة الموظف', 'Employee added'), 'success');
-    await loadEmployees(); renderSettings();
 }
 
 async function deleteEmployee(employeeId) {
@@ -3596,6 +3596,8 @@ async function refreshStationSheetContent(stationId) {
     activeSessionOrders = orders || [];
 
     const activeSegStart = activeSeg ? activeSeg.started_at : session.started_at;
+    const liveEarnedNow = activeSeg ? Math.round((Math.max(0, (nowCorrected() - new Date(activeSeg.started_at)) / 3600000) * Number(activeSeg.rate)) * 100) / 100 : 0;
+    const liveGrandTotal = Math.round((totals.grandTotal + liveEarnedNow) * 100) / 100;
     
     body.innerHTML = `
         <div style="text-align:center;margin-bottom:12px;">
@@ -3622,7 +3624,7 @@ async function refreshStationSheetContent(stationId) {
             </div>
             <div style="background:var(--bg-sunken);border-radius:var(--radius-sm);padding:8px;text-align:center;">
                 <div style="font-size:10px;color:var(--text-dim);">${t('الإجمالي الكلي', 'Grand Total')}</div>
-                <div class="mono" style="font-size:18px;font-weight:700;color:var(--amber);" id="overallTotalAmount">${moneyDec(currentEstimate.amount + totals.ordersTotal)}</div>
+                <div class="mono" style="font-size:18px;font-weight:700;color:var(--amber);" id="overallTotalAmount" data-base-total="${totals.grandTotal}">${moneyDec(liveGrandTotal)}</div>
             </div>
         </div>
         
@@ -3678,7 +3680,7 @@ async function refreshStationSheetContent(stationId) {
 }
 
 // ============================================================
-// SWITCH MODE - UPDATED (يدعم التنازلي مع مراعاة الوقت)
+// SWITCH MODE
 // ============================================================
 async function handleSwitchMode(sessionId, newMode, stationId) {
     if (pendingSwitch) return;
@@ -3719,7 +3721,7 @@ async function handleSwitchMode(sessionId, newMode, stationId) {
             return;
         }
 
-        const now = new Date().toISOString();
+        const now = new Date(nowCorrected()).toISOString();
         const start = new Date(activeSeg.started_at);
         let usedSeconds = (new Date(now) - start) / 1000;
         let hours = usedSeconds / 3600;
@@ -3753,10 +3755,6 @@ async function handleSwitchMode(sessionId, newMode, stationId) {
         showToast(t('تم التحويل إلى ' + (newMode === 'single' ? 'Single' : 'Multi'), 'Switched to ' + (newMode === 'single' ? 'Single' : 'Multi')), 'success');
         
         await refreshStationSheetContent(stationId);
-        
-        // ✅ تحديث الإجمالي الكلي بعد التبديل
-        const { amount: newAmount } = getCurrentSegmentEstimateFast(sessionId);
-        await updateGrandTotalWithOrders(sessionId, newAmount);
         
     } catch (e) {
         console.error('Error switching mode:', e);
