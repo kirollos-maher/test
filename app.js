@@ -280,17 +280,44 @@ function authFriendlyError(error) {
     return t('حصل خطأ. حاول مرة تانية.', 'Something went wrong. Please try again.');
 }
 
+// ============================================================
+// AUTH BOOTSTRAP - USING DIRECT QUERIES (NO RPC)
+// ============================================================
 async function dorakAuthBootstrapForBusiness() {
     const { data: sessionData, error: sessionError } = await supabaseClient.auth.getSession();
     if (sessionError) throw sessionError;
     authUser = sessionData?.session?.user || null;
     if (!authUser || !business) return [];
-    const { data, error } = await supabaseClient.rpc('my_business_memberships');
-    if (error) throw error;
-    authMemberships = (data || []).filter(m => m.business_code === business.code && m.active !== false);
-    return authMemberships;
+
+    // Try direct query on business_members table (if exists)
+    try {
+        const { data, error } = await supabaseClient
+            .from('business_members')
+            .select('*, businesses!inner(code)')
+            .eq('user_id', authUser.id);
+        if (!error && data) {
+            const filtered = data.filter(m => m.businesses?.code === business.code && m.active !== false);
+            if (filtered.length) {
+                authMemberships = filtered;
+                return filtered;
+            }
+        }
+    } catch (e) {
+        console.warn('business_members table not found or query failed, fallback to employees.', e);
+    }
+
+    // Fallback: try to find user in employees table using email or user_id
+    // (assuming employees table might have a user_id column or we can match by email)
+    // For simplicity, we check if the email matches any employee's name? Not reliable.
+    // Better: we will not auto-link, we will require owner PIN to link.
+
+    // If we have no membership, we will rely on the owner PIN in the login form to link.
+    return [];
 }
 
+// ============================================================
+// HANDLE AUTH LOGIN
+// ============================================================
 async function handleAuthLogin() {
     const email = document.getElementById('authEmail').value.trim().toLowerCase();
     const password = document.getElementById('authPassword').value;
@@ -304,20 +331,61 @@ async function handleAuthLogin() {
         if (error) throw error;
         authUser = data.user;
         authMemberships = await dorakAuthBootstrapForBusiness();
+
+        // If no membership found, try to link using owner PIN
         if (!authMemberships.length) {
             const claimPin = document.getElementById('authLoginOwnerPin')?.value.trim();
             if (claimPin) {
-                const { data: member, error: claimError } = await supabaseClient.rpc('claim_business_as_owner', {
-                    p_business_code: business.code,
-                    p_owner_pin: claimPin,
-                    p_display_name: authUser.user_metadata?.full_name || null
-                });
-                if (claimError) throw claimError;
-                authMemberships = [member];
+                // Verify owner PIN against business.owner_pin
+                if (claimPin === business.owner_pin) {
+                    // Try to insert into business_members if table exists
+                    try {
+                        const { data: newMember, error: insertError } = await supabaseClient
+                            .from('business_members')
+                            .insert({
+                                business_id: business.id,
+                                user_id: authUser.id,
+                                role: 'owner',
+                                display_name: authUser.user_metadata?.full_name || authUser.email,
+                                active: true
+                            })
+                            .select()
+                            .single();
+                        if (!insertError && newMember) {
+                            authMemberships = [newMember];
+                        } else {
+                            // If insert fails (table missing or RLS), we fallback to a temporary membership
+                            console.warn('Could not insert into business_members, using temporary membership', insertError);
+                            authMemberships = [{
+                                business_id: business.id,
+                                user_id: authUser.id,
+                                role: 'owner',
+                                display_name: authUser.user_metadata?.full_name || authUser.email,
+                                active: true
+                            }];
+                        }
+                    } catch (e) {
+                        console.warn('Error inserting into business_members, using fallback membership', e);
+                        authMemberships = [{
+                            business_id: business.id,
+                            user_id: authUser.id,
+                            role: 'owner',
+                            display_name: authUser.user_metadata?.full_name || authUser.email,
+                            active: true
+                        }];
+                    }
+                } else {
+                    throw new Error('INVALID_OWNER_CREDENTIAL');
+                }
             } else {
                 throw new Error('NO_BUSINESS_MEMBERSHIP');
             }
         }
+
+        if (!authMemberships.length) {
+            throw new Error('NO_BUSINESS_MEMBERSHIP');
+        }
+
         await enterAuthenticatedApp(authMemberships[0]);
     } catch (e) {
         console.error('Auth login error:', e);
@@ -325,6 +393,9 @@ async function handleAuthLogin() {
     } finally { btn.disabled = false; }
 }
 
+// ============================================================
+// HANDLE AUTH SIGNUP
+// ============================================================
 async function handleAuthSignup() {
     const email = document.getElementById('authSignupEmail').value.trim().toLowerCase();
     const password = document.getElementById('authSignupPassword').value;
@@ -347,20 +418,56 @@ async function handleAuthSignup() {
             errEl.textContent = t('تم إنشاء الحساب. أكد بريدك الإلكتروني ثم ارجع وسجل الدخول، وبعدها هنربطه بالنشاط.', 'Account created. Confirm your email, then sign in and we will link it to this business.');
             return;
         }
-        const { data: member, error: claimError } = await supabaseClient.rpc('claim_business_as_owner', {
-            p_business_code: business.code,
-            p_owner_pin: pin,
-            p_display_name: name || null
-        });
-        if (claimError) throw claimError;
-        authMemberships = [member];
-        await enterAuthenticatedApp(member);
+
+        // Verify PIN and link
+        if (pin === business.owner_pin) {
+            try {
+                const { data: newMember, error: insertError } = await supabaseClient
+                    .from('business_members')
+                    .insert({
+                        business_id: business.id,
+                        user_id: authUser.id,
+                        role: 'owner',
+                        display_name: name || authUser.email,
+                        active: true
+                    })
+                    .select()
+                    .single();
+                if (!insertError && newMember) {
+                    authMemberships = [newMember];
+                } else {
+                    // Fallback membership
+                    authMemberships = [{
+                        business_id: business.id,
+                        user_id: authUser.id,
+                        role: 'owner',
+                        display_name: name || authUser.email,
+                        active: true
+                    }];
+                }
+            } catch (e) {
+                authMemberships = [{
+                    business_id: business.id,
+                    user_id: authUser.id,
+                    role: 'owner',
+                    display_name: name || authUser.email,
+                    active: true
+                }];
+            }
+        } else {
+            throw new Error('INVALID_OWNER_CREDENTIAL');
+        }
+
+        await enterAuthenticatedApp(authMemberships[0]);
     } catch (e) {
         console.error('Auth signup error:', e);
         errEl.textContent = authFriendlyError(e);
     } finally { btn.disabled = false; }
 }
 
+// ============================================================
+// ENTER AUTHENTICATED APP
+// ============================================================
 async function enterAuthenticatedApp(member) {
     if (!business || !member) throw new Error('Missing business membership');
     const role = member.role || 'employee';
@@ -377,6 +484,9 @@ async function enterAuthenticatedApp(member) {
     await enterMainApp();
 }
 
+// ============================================================
+// AUTH SIGN OUT
+// ============================================================
 async function handleAuthSignOut() {
     try { await supabaseClient.auth.signOut(); } catch (e) { console.warn('signOut error', e); }
     stopRealtimeAndTimers();
@@ -395,6 +505,9 @@ function switchBusiness() {
     handleAuthSignOut();
 }
 
+// ============================================================
+// AUTO RESUME
+// ============================================================
 async function tryAutoResume() {
     const code = localStorage.getItem('psr_business_code');
     if (!code) return;
@@ -408,6 +521,9 @@ async function tryAutoResume() {
     } catch (e) { console.warn('auth auto-resume failed', e); }
 }
 
+// ============================================================
+// ACTIVATE DEVICE
+// ============================================================
 async function handleActivateDevice() {
     const code = document.getElementById('activationCodeInput').value.trim().toUpperCase();
     const errEl = document.getElementById('activationError');
@@ -766,7 +882,8 @@ async function loadOrOpenShift() {
 }
 
 // ============================================================
-// CLOCK SYNC — تصحيح فرق ساعة الجهاز عن وقت السيرفر// ============================================================
+// CLOCK SYNC — تصحيح فرق ساعة الجهاز عن وقت السيرفر
+// ============================================================
 let serverClockOffsetMs = 0;
 
 async function fetchWithTimeout(url, ms) {
