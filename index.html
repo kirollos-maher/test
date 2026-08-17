@@ -112,57 +112,72 @@
     </div>
 </div>
 
-<!-- ============== LOCK SCREEN ============== -->
-<div id="lockScreen" class="screen">
+<!-- ============== AUTH SCREEN ============== -->
+<div id="authScreen" class="screen">
     <div class="centered-screen">
         <div class="brand-mark">✦ DORAK ✦</div>
-        <div class="brand-mark" id="lockBizCode" style="font-size:14px; color:var(--text-dim);">—</div>
-        <div class="brand-title" id="lockBizName" style="font-size:22px;">—</div>
+        <div class="brand-title" id="authBizName" style="font-size:22px;">—</div>
+        <div class="brand-mark" id="authBizCode" style="font-size:14px;color:var(--text-dim);">—</div>
         <div class="card">
-            <div id="lockRoleChoice">
-                <label data-ar="هل انت؟" data-en="Are you?" style="display:block;margin-bottom:10px;">هل انت؟</label>
-                <button class="btn btn-block" style="margin-bottom:10px;" onclick="selectLockRole('owner')">
-                    <i class="fa-solid fa-user-shield"></i> <span data-ar="المالك / الأدمن" data-en="Owner / Admin">المالك / الأدمن</span>
+            <div id="authLoginForm">
+                <div class="section-title" style="text-align:center;margin-bottom:14px;">تسجيل الدخول</div>
+                <div class="field">
+                    <label>البريد الإلكتروني</label>
+                    <input type="email" id="authEmail" autocomplete="email" placeholder="name@example.com">
+                </div>
+                <div class="field">
+                    <label>كلمة المرور</label>
+                    <input type="password" id="authPassword" autocomplete="current-password" placeholder="••••••••">
+                </div>
+                <div class="field">
+                    <label>PIN المالك (لأول ربط فقط)</label>
+                    <input type="password" inputmode="numeric" id="authLoginOwnerPin" class="mono" placeholder="اختياري">
+                </div>
+                <button class="btn btn-amber btn-block" id="authLoginBtn" onclick="handleAuthLogin()">
+                    <i class="fa-solid fa-right-to-bracket"></i> دخول
                 </button>
-                <button class="btn btn-block" onclick="selectLockRole('employee')">
-                    <i class="fa-solid fa-user"></i> <span data-ar="موظف" data-en="Employee">موظف</span>
+                <button class="btn btn-ghost btn-block" style="margin-top:8px;" onclick="showAuthScreen('signup')">
+                    إنشاء حساب مالك لأول مرة
+                </button>
+                <button class="btn btn-ghost btn-block" style="margin-top:8px;" onclick="showScreen('setupScreen')">
+                    تغيير النشاط
                 </button>
             </div>
 
-            <div id="lockOwnerForm" style="display:none;">
+            <div id="authSignupForm" style="display:none;">
+                <div class="section-title" style="text-align:center;margin-bottom:14px;">إنشاء حساب المالك</div>
                 <div class="field">
-                    <label data-ar="PIN المالك" data-en="Owner PIN">PIN المالك</label>
-                    <input type="password" inputmode="numeric" id="lockPinInput" class="mono" placeholder="••••" style="text-align:center;letter-spacing:0.4em;font-size:22px;">
-                    <div style="font-size:11px;color:var(--text-faint);margin-top:6px;text-align:center;" data-ar="الـ PIN الافتراضي هو 0000" data-en="Default PIN is 0000">الـ PIN الافتراضي هو 0000</div>
+                    <label>اسم المالك</label>
+                    <input type="text" id="authOwnerName" autocomplete="name" placeholder="اسمك">
                 </div>
-                <button class="btn btn-amber btn-block" onclick="handleUnlock()">
-                    <i class="fa-solid fa-unlock"></i> <span data-ar="دخول" data-en="Enter">دخول</span>
+                <div class="field">
+                    <label>البريد الإلكتروني</label>
+                    <input type="email" id="authSignupEmail" autocomplete="email" placeholder="name@example.com">
+                </div>
+                <div class="field">
+                    <label>كلمة المرور</label>
+                    <input type="password" id="authSignupPassword" autocomplete="new-password" placeholder="6 أحرف على الأقل">
+                </div>
+                <div class="field">
+                    <label>تأكيد كلمة المرور</label>
+                    <input type="password" id="authSignupPasswordConfirm" autocomplete="new-password" placeholder="أعد كتابة كلمة المرور">
+                </div>
+                <div class="field">
+                    <label>PIN المالك الحالي</label>
+                    <input type="password" inputmode="numeric" id="authOwnerPin" class="mono" placeholder="PIN الحالي">
+                    <div style="font-size:11px;color:var(--text-faint);margin-top:6px;text-align:center;">يُستخدم مرة واحدة لربط حساب Auth بالنشاط الحالي.</div>
+                </div>
+                <button class="btn btn-amber btn-block" id="authSignupBtn" onclick="handleAuthSignup()">
+                    <i class="fa-solid fa-user-plus"></i> إنشاء وربط الحساب
                 </button>
-                <button class="btn btn-block" style="margin-top:10px;" onclick="resetLockRole()">
-                    <i class="fa-solid fa-arrow-right"></i> <span data-ar="رجوع" data-en="Back">رجوع</span>
-                </button>
+                <button class="btn btn-ghost btn-block" style="margin-top:8px;" onclick="showAuthScreen('login')">رجوع لتسجيل الدخول</button>
             </div>
 
-            <div id="lockEmployeeForm" style="display:none;">
-                <div class="field">
-                    <label data-ar="اسمك" data-en="Your Name">اسمك</label>
-                    <input type="text" id="lockEmpName" placeholder="">
-                </div>
-                <div class="field">
-                    <label data-ar="PIN الموظف" data-en="Employee PIN">PIN الموظف</label>
-                    <input type="password" inputmode="numeric" id="lockEmpPin" class="mono" placeholder="••••" style="text-align:center;letter-spacing:0.4em;font-size:22px;">
-                </div>
-                <button class="btn btn-amber btn-block" onclick="handleEmployeeUnlock()">
-                    <i class="fa-solid fa-unlock"></i> <span data-ar="دخول" data-en="Enter">دخول</span>
-                </button>
-                <button class="btn btn-block" style="margin-top:10px;" onclick="resetLockRole()">
-                    <i class="fa-solid fa-arrow-right"></i> <span data-ar="رجوع" data-en="Back">رجوع</span>
-                </button>
-            </div>
-
-            <div class="error-text" id="lockError"></div>
+            <div class="error-text" id="authError"></div>
         </div>
-        <div style="margin-top:14px;font-size:12px;color:var(--text-faint);" class="mono" id="subStatusLine"></div>
+        <div style="margin-top:14px;font-size:12px;color:var(--text-faint);text-align:center;" class="mono">
+            Supabase Auth • Secure Account Access
+        </div>
     </div>
 </div>
 
