@@ -115,6 +115,8 @@ let employees = [];
 let paymentMethods = [];
 let currentShift = null;
 let currentUser = null;
+let authUser = null;
+let authMemberships = [];
 let realtimeChannel = null;
 let tickInterval = null;
 let activeStationId = null;
@@ -225,24 +227,181 @@ async function handleSetupContinue() {
     const btn = document.getElementById('setupContinueBtn');
     btn.disabled = true;
     try {
-        const { data: biz, error } = await supabaseClient.from('businesses').select('*').eq('code', code).single();
-        if (error || !biz) { errEl.textContent = t('مفيش نشاط بالكود ده.', 'No business found with this code.'); return; }
-        business = biz;
-        localStorage.setItem('psr_business_code', code);
-
-        const deviceId = getDeviceId();
-        const { data: dev } = await supabaseClient.from('devices').select('*').eq('business_id', biz.id).eq('device_id', deviceId).maybeSingle();
-        if (!dev) {
-            document.getElementById('activationBizName').textContent = biz.name;
-            showScreen('activationScreen');
+        const { data: biz, error } = await supabaseClient
+            .from('businesses').select('*').eq('code', code).single();
+        if (error || !biz) {
+            errEl.textContent = t('مفيش نشاط بالكود ده.', 'No business found with this code.');
             return;
         }
-        deviceRecord = dev;
-        proceedToLock();
+        business = biz;
+        localStorage.setItem('psr_business_code', code);
+        showAuthScreen();
+        await dorakAuthBootstrapForBusiness();
     } catch (e) {
-        console.error(e);
+        console.error('Business setup error:', e);
         errEl.textContent = t('حصل خطأ في الاتصال، حاول تاني.', 'Connection error, please try again.');
     } finally { btn.disabled = false; }
+}
+
+function showAuthScreen(mode = 'login') {
+    const bizCode = document.getElementById('authBizCode');
+    const bizName = document.getElementById('authBizName');
+    if (bizCode) bizCode.textContent = business?.code || '—';
+    if (bizName) bizName.textContent = business?.name || 'DORAK';
+    const login = document.getElementById('authLoginForm');
+    const signup = document.getElementById('authSignupForm');
+    if (login && signup) {
+        login.style.display = mode === 'login' ? 'block' : 'none';
+        signup.style.display = mode === 'signup' ? 'block' : 'none';
+    }
+    const err = document.getElementById('authError');
+    if (err) err.textContent = '';
+    showScreen('authScreen');
+}
+
+function authFriendlyError(error) {
+    const msg = String(error?.message || error || '');
+    if (/invalid login credentials/i.test(msg)) return t('البريد الإلكتروني أو كلمة المرور غير صحيحة.', 'Invalid email or password.');
+    if (/email not confirmed/i.test(msg)) return t('أكد البريد الإلكتروني أولًا ثم سجل الدخول.', 'Confirm your email first, then sign in.');
+    if (/user already registered/i.test(msg)) return t('البريد الإلكتروني مسجل بالفعل. استخدم تسجيل الدخول.', 'This email is already registered. Use Sign in.');
+    if (/password/i.test(msg) && /6|short|characters/i.test(msg)) return t('كلمة المرور لازم تكون 6 أحرف على الأقل.', 'Password must be at least 6 characters.');
+    if (msg.includes('BUSINESS_ALREADY_CLAIMED')) return t('النشاط مربوط بحساب مالك آخر بالفعل.', 'This business is already claimed by another owner.');
+    if (msg.includes('INVALID_OWNER_CREDENTIAL')) return t('كود النشاط أو PIN المالك غير صحيح.', 'Business code or owner PIN is incorrect.');
+    if (msg.includes('BUSINESS_NOT_FOUND')) return t('النشاط غير موجود.', 'Business not found.');
+    if (msg.includes('AUTH_REQUIRED')) return t('لازم تسجل دخول أولًا.', 'You must sign in first.');
+    return t('حصل خطأ. حاول مرة تانية.', 'Something went wrong. Please try again.');
+}
+
+async function dorakAuthBootstrapForBusiness() {
+    const { data: sessionData, error: sessionError } = await supabaseClient.auth.getSession();
+    if (sessionError) throw sessionError;
+    authUser = sessionData?.session?.user || null;
+    if (!authUser || !business) return [];
+    const { data, error } = await supabaseClient.rpc('my_business_memberships');
+    if (error) throw error;
+    authMemberships = (data || []).filter(m => m.business_code === business.code && m.active !== false);
+    return authMemberships;
+}
+
+async function handleAuthLogin() {
+    const email = document.getElementById('authEmail').value.trim().toLowerCase();
+    const password = document.getElementById('authPassword').value;
+    const errEl = document.getElementById('authError');
+    const btn = document.getElementById('authLoginBtn');
+    errEl.textContent = '';
+    if (!email || !password) { errEl.textContent = t('اكتب البريد الإلكتروني وكلمة المرور.', 'Enter email and password.'); return; }
+    btn.disabled = true;
+    try {
+        const { data, error } = await supabaseClient.auth.signInWithPassword({ email, password });
+        if (error) throw error;
+        authUser = data.user;
+        authMemberships = await dorakAuthBootstrapForBusiness();
+        if (!authMemberships.length) {
+            const claimPin = document.getElementById('authLoginOwnerPin')?.value.trim();
+            if (claimPin) {
+                const { data: member, error: claimError } = await supabaseClient.rpc('claim_business_as_owner', {
+                    p_business_code: business.code,
+                    p_owner_pin: claimPin,
+                    p_display_name: authUser.user_metadata?.full_name || null
+                });
+                if (claimError) throw claimError;
+                authMemberships = [member];
+            } else {
+                throw new Error('NO_BUSINESS_MEMBERSHIP');
+            }
+        }
+        await enterAuthenticatedApp(authMemberships[0]);
+    } catch (e) {
+        console.error('Auth login error:', e);
+        errEl.textContent = e.message === 'NO_BUSINESS_MEMBERSHIP'
+            ? t('الحساب ده مش مربوط بالنشاط ده.', 'This account is not linked to this business.')
+            : authFriendlyError(e);
+    } finally { btn.disabled = false; }
+}
+
+async function handleAuthSignup() {
+    const email = document.getElementById('authSignupEmail').value.trim().toLowerCase();
+    const password = document.getElementById('authSignupPassword').value;
+    const confirm = document.getElementById('authSignupPasswordConfirm').value;
+    const pin = document.getElementById('authOwnerPin').value.trim();
+    const name = document.getElementById('authOwnerName').value.trim();
+    const errEl = document.getElementById('authError');
+    const btn = document.getElementById('authSignupBtn');
+    errEl.textContent = '';
+    if (!email || !password || !confirm || !pin) { errEl.textContent = t('اكمل كل البيانات.', 'Complete all fields.'); return; }
+    if (password.length < 6) { errEl.textContent = t('كلمة المرور لازم تكون 6 أحرف على الأقل.', 'Password must be at least 6 characters.'); return; }
+    if (password !== confirm) { errEl.textContent = t('كلمتا المرور غير متطابقتين.', 'Passwords do not match.'); return; }
+    if (!/^\d{4,8}$/.test(pin)) { errEl.textContent = t('PIN المالك غير صحيح.', 'Owner PIN is invalid.'); return; }
+    btn.disabled = true;
+    try {
+        const { data, error } = await supabaseClient.auth.signUp({ email, password });
+        if (error) throw error;
+        authUser = data.user;
+        if (!data.session) {
+            errEl.textContent = t('تم إنشاء الحساب. أكد بريدك الإلكتروني ثم ارجع وسجل الدخول، وبعدها هنربطه بالنشاط.', 'Account created. Confirm your email, then sign in and we will link it to this business.');
+            return;
+        }
+        const { data: member, error: claimError } = await supabaseClient.rpc('claim_business_as_owner', {
+            p_business_code: business.code,
+            p_owner_pin: pin,
+            p_display_name: name || null
+        });
+        if (claimError) throw claimError;
+        authMemberships = [member];
+        await enterAuthenticatedApp(member);
+    } catch (e) {
+        console.error('Auth signup error:', e);
+        errEl.textContent = authFriendlyError(e);
+    } finally { btn.disabled = false; }
+}
+
+async function enterAuthenticatedApp(member) {
+    if (!business || !member) throw new Error('Missing business membership');
+    const role = member.role || 'employee';
+    currentUser = {
+        type: role === 'owner' || role === 'admin' ? role : 'employee',
+        name: member.display_name || authUser?.email || t('المستخدم', 'User'),
+        email: authUser?.email || '',
+        user_id: authUser?.id || null,
+        role,
+        permissions: member.permissions || {}
+    };
+    localStorage.setItem('psr_business_code', business.code);
+    showToast(t('تم تسجيل الدخول بنجاح', 'Signed in successfully'), 'success');
+    await enterMainApp();
+}
+
+async function handleAuthSignOut() {
+    try { await supabaseClient.auth.signOut(); } catch (e) { console.warn('signOut error', e); }
+    stopRealtimeAndTimers();
+    authUser = null;
+    authMemberships = [];
+    currentUser = null;
+    business = null;
+    deviceRecord = null;
+    localStorage.removeItem('psr_business_code');
+    const email = document.getElementById('authEmail');
+    const password = document.getElementById('authPassword');
+    if (email) email.value = '';
+    if (password) password.value = '';
+    showScreen('setupScreen');
+}
+
+function switchBusiness() {
+    handleAuthSignOut();
+}
+
+async function tryAutoResume() {
+    const code = localStorage.getItem('psr_business_code');
+    if (!code) return;
+    try {
+        const { data: biz } = await supabaseClient.from('businesses').select('*').eq('code', code).single();
+        if (!biz) return;
+        business = biz;
+        const memberships = await dorakAuthBootstrapForBusiness();
+        if (memberships.length) await enterAuthenticatedApp(memberships[0]);
+        else showAuthScreen('login');
+    } catch (e) { console.warn('auth auto-resume failed', e); }
 }
 
 async function handleActivateDevice() {
@@ -346,33 +505,8 @@ async function handleUnlock() {
     errEl.textContent = t('PIN غير صحيح.', 'Incorrect PIN.');
 }
 
-function lockApp() {
-    stopRealtimeAndTimers();
-    currentUser = null;
-    document.getElementById('lockPinInput').value = '';
-    proceedToLock();
-}
-
-function switchBusiness() {
-    stopRealtimeAndTimers();
-    localStorage.removeItem('psr_business_code');
-    business = null; deviceRecord = null; currentUser = null;
-    document.getElementById('setupBusinessCode').value = '';
-    showScreen('setupScreen');
-}
-
-async function tryAutoResume() {
-    const code = localStorage.getItem('psr_business_code');
-    if (!code) return;
-    try {
-        const { data: biz } = await supabaseClient.from('businesses').select('*').eq('code', code).single();
-        if (!biz) return;
-        business = biz;
-        const { data: dev } = await supabaseClient.from('devices').select('*').eq('business_id', biz.id).eq('device_id', getDeviceId()).maybeSingle();
-        if (!dev) return;
-        deviceRecord = dev;
-        proceedToLock();
-    } catch (e) { console.warn('auto-resume failed', e); }
+async function lockApp() {
+    await handleAuthSignOut();
 }
 
 // ============================================================
@@ -407,8 +541,20 @@ async function tryAutoActivateFromURL() {
 }
 
 window.addEventListener('DOMContentLoaded', async () => {
-    await tryAutoActivateFromURL();
-    tryAutoResume();
+    try {
+        await tryAutoActivateFromURL();
+        await tryAutoResume();
+    } catch (e) {
+        console.error('DORAK bootstrap error:', e);
+        showScreen('setupScreen');
+    }
+    supabaseClient.auth.onAuthStateChange(async (event, session) => {
+        authUser = session?.user || null;
+        if (event === 'SIGNED_OUT') {
+            authMemberships = [];
+            currentUser = null;
+        }
+    });
 });
 
 // ============================================================
@@ -1986,7 +2132,7 @@ async function openStationSheet(stationId) {
             </div>
             <div style="background:var(--bg-sunken);border-radius:var(--radius-sm);padding:8px;text-align:center;">
                 <div style="font-size:10px;color:var(--text-dim);">${t('الإجمالي الكلي', 'Grand Total')}</div>
-                <div class="mono" style="font-size:18px;font-weight:700;color:var(--amber);" id="overallTotalAmount">${moneyDec(totals.singleTotal + totals.multiTotal + currentEstimate.amount + totals.ordersTotal)}</div>
+                <div class="mono" style="font-size:18px;font-weight:700;color:var(--amber);" id="overallTotalAmount">${moneyDec(currentEstimate.amount + totals.ordersTotal)}</div>
             </div>
         </div>
         
@@ -3476,7 +3622,7 @@ async function refreshStationSheetContent(stationId) {
             </div>
             <div style="background:var(--bg-sunken);border-radius:var(--radius-sm);padding:8px;text-align:center;">
                 <div style="font-size:10px;color:var(--text-dim);">${t('الإجمالي الكلي', 'Grand Total')}</div>
-                <div class="mono" style="font-size:18px;font-weight:700;color:var(--amber);" id="overallTotalAmount">${moneyDec(totals.singleTotal + totals.multiTotal + currentEstimate.amount + totals.ordersTotal)}</div>
+                <div class="mono" style="font-size:18px;font-weight:700;color:var(--amber);" id="overallTotalAmount">${moneyDec(currentEstimate.amount + totals.ordersTotal)}</div>
             </div>
         </div>
         
