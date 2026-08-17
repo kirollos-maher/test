@@ -948,9 +948,36 @@ function startTicker() {
             if (session) {
                 const { amount } = getCurrentSegmentEstimateFast(session.id);
                 amountEl.textContent = moneyDec(amount);
+                
+                // ✅ تحديث الإجمالي الكلي = قيمة الجزء الحالي + مجموع الطلبات
+                updateGrandTotalWithOrders(session.id, amount);
             }
         }
     }, 1000);
+}
+
+// ============================================================
+// تحديث الإجمالي الكلي مع الطلبات (لحظي)
+// ============================================================
+async function updateGrandTotalWithOrders(sessionId, currentSegmentAmount) {
+    try {
+        // حساب مجموع الطلبات من activeSessionOrders
+        let ordersTotal = 0;
+        if (activeSessionOrders && activeSessionOrders.length > 0) {
+            ordersTotal = activeSessionOrders.reduce((sum, order) => {
+                return sum + (Number(order.quantity || 0) * Number(order.unit_price || 0));
+            }, 0);
+        }
+        
+        const grandTotal = (currentSegmentAmount || 0) + ordersTotal;
+        
+        const totalEl = document.getElementById('overallTotalAmount');
+        if (totalEl) {
+            totalEl.textContent = moneyDec(grandTotal);
+        }
+    } catch (e) {
+        console.warn('Error updating grand total:', e);
+    }
 }
 
 function formatElapsed(start) {
@@ -1425,14 +1452,6 @@ async function addOrderItem(sessionId, menuItemId) {
 
             if (error) throw error;
         } else {
-            // IMPORTANT:
-            // Do NOT use .select().single() here.
-            // If INSERT is allowed by RLS but SELECT is not,
-            // .insert().select().single() reports a false failure.
-            //
-            // We also send business_id when the column exists in the
-            // current V2 schema. If an older database does not have it,
-            // retry once without business_id.
             let insertPayload = {
                 business_id: business.id,
                 session_id: sessionId,
@@ -1461,7 +1480,6 @@ async function addOrderItem(sessionId, menuItemId) {
             if (error) throw error;
         }
 
-        // Reload from DB so the UI has the real row/id.
         const { data: refreshedOrders, error: reloadError } = await supabaseClient
             .from('session_orders')
             .select('*')
@@ -1469,8 +1487,6 @@ async function addOrderItem(sessionId, menuItemId) {
             .order('created_at');
 
         if (reloadError) {
-            // The insert succeeded, but the current RLS SELECT policy
-            // may prevent reading the row back. Do not claim INSERT failed.
             console.error('Order was inserted, but reload failed:', reloadError);
             showToast(
                 t('تم حفظ الطلب، لكن صلاحية قراءة الطلبات تحتاج مراجعة في Supabase.', 'Order was saved, but the SELECT permission for orders needs review in Supabase.'),
@@ -1478,6 +1494,15 @@ async function addOrderItem(sessionId, menuItemId) {
             );
         } else {
             activeSessionOrders = refreshedOrders || [];
+            
+            // ✅ تحديث الإجمالي الكلي بعد إضافة الطلب
+            if (activeStationId) {
+                const session = sessions[activeStationId];
+                if (session) {
+                    const { amount } = getCurrentSegmentEstimateFast(session.id);
+                    updateGrandTotalWithOrders(session.id, amount);
+                }
+            }
         }
 
         renderStationOrdersSection();
@@ -1544,6 +1569,15 @@ async function removeOrderItem(orderId) {
         activeSessionOrders = activeSessionOrders.filter(o => o.id !== orderId);
     }
     renderStationOrdersSection();
+    
+    // ✅ تحديث الإجمالي الكلي بعد حذف الطلب
+    if (activeStationId) {
+        const session = sessions[activeStationId];
+        if (session) {
+            const { amount } = getCurrentSegmentEstimateFast(session.id);
+            updateGrandTotalWithOrders(session.id, amount);
+        }
+    }
 }
 
 // ============================================================
@@ -1930,7 +1964,7 @@ async function openStationSheet(stationId) {
             </div>
             <div style="background:var(--bg-sunken);border-radius:var(--radius-sm);padding:8px;text-align:center;">
                 <div style="font-size:10px;color:var(--text-dim);">${t('الإجمالي الكلي', 'Grand Total')}</div>
-                <div class="mono" style="font-size:18px;font-weight:700;color:var(--amber);" id="overallTotalAmount">${moneyDec(totals.grandTotal)}</div>
+                <div class="mono" style="font-size:18px;font-weight:700;color:var(--amber);" id="overallTotalAmount">${moneyDec(currentEstimate.amount + totals.ordersTotal)}</div>
             </div>
         </div>
         
@@ -2098,6 +2132,15 @@ function renderStationOrdersSection() {
                 <button class="btn btn-ghost btn-sm" style="padding:6px 10px;" onclick="removeOrderItem('${o.id}')" title="${t('حذف/إنقاص', 'Remove/Decrease')}"><i class="fa-solid fa-minus"></i></button>
             </div>
         </div>`).join('');
+    
+    // ✅ تحديث الإجمالي الكلي بعد عرض الطلبات
+    if (activeStationId) {
+        const session = sessions[activeStationId];
+        if (session) {
+            const { amount } = getCurrentSegmentEstimateFast(session.id);
+            updateGrandTotalWithOrders(session.id, amount);
+        }
+    }
 }
 
 function selectStartMode(mode) {
@@ -2708,6 +2751,7 @@ async function renderShiftView() {
         const revLabel = t('إيراد', 'Revenue');
         const expLabel = t('مصروفات', 'Expenses');
         const netLabel = t('صافي الدخل', 'Net Income');
+        const closedByName = shift.closed_by || t('غير معروف', 'Unknown');
         
         historyHtml += `
             <div class="list-row" style="flex-direction:column;align-items:stretch;padding:12px 4px;border-bottom:1px solid var(--border);cursor:pointer;" onclick="viewShiftDetails('${shift.id}')">
@@ -2726,6 +2770,10 @@ async function renderShiftView() {
                 <div style="display:flex;justify-content:space-between;width:100%;">
                     <div style="font-size:12px;color:var(--text-faint);">${netLabel}</div>
                     <div class="mono" style="font-weight:700;color:var(--amber);">${money(shiftTotals.profit)} ${t('ج', 'EGP')}</div>
+                </div>
+                <div style="display:flex;justify-content:space-between;width:100%;margin-top:4px;font-size:11px;color:var(--text-dim);border-top:1px solid var(--border);padding-top:4px;">
+                    <span>${t('أغلق بواسطة', 'Closed by')}</span>
+                    <span style="font-weight:600;color:var(--text);">${escapeHtml(closedByName)}</span>
                 </div>
             </div>
         `;
@@ -2837,9 +2885,11 @@ async function viewShiftDetails(shiftId) {
     const totals = await getShiftTotals(shift);
     const openedStr = new Date(shift.opened_at).toLocaleString(currentLang === 'ar' ? 'ar-EG' : 'en-US');
     const closedStr = shift.closed_at ? new Date(shift.closed_at).toLocaleString(currentLang === 'ar' ? 'ar-EG' : 'en-US') : '—';
+    const closedByName = shift.closed_by || t('غير معروف', 'Unknown');
     const extraRows = `
         <div class="list-row"><div class="row-title">${t('وقت الفتح', 'Opened At')}</div><div class="row-value mono">${openedStr}</div></div>
-        <div class="list-row"><div class="row-title">${t('وقت الإقفال', 'Closed At')}</div><div class="row-value mono">${closedStr}</div></div>`;
+        <div class="list-row"><div class="row-title">${t('وقت الإقفال', 'Closed At')}</div><div class="row-value mono">${closedStr}</div></div>
+        <div class="list-row"><div class="row-title">${t('أغلق بواسطة', 'Closed by')}</div><div class="row-value mono">${escapeHtml(closedByName)}</div></div>`;
     document.getElementById('shiftDetailsSummary').innerHTML = buildShiftBreakdownHtml(totals, extraRows);
     openSheet('shiftDetailsOverlay');
 }
@@ -2849,6 +2899,8 @@ async function confirmCloseShift() {
     const totals = await getShiftTotals(currentShift);
     const closedAt = new Date().toISOString();
     
+    const closedByName = currentUser?.name || currentUser?.type || t('غير معروف', 'Unknown');
+    
     const { data, error } = await supabaseClient
         .from('shifts')
         .update({ 
@@ -2857,7 +2909,7 @@ async function confirmCloseShift() {
             total_revenue: totals.revenue, 
             total_expenses: totals.expenses, 
             total_profit: totals.profit, 
-            closed_by: currentUser.name || currentUser.type 
+            closed_by: closedByName
         })
         .eq('id', currentShift.id)
         .select();
@@ -3288,7 +3340,7 @@ async function refreshStationSheetContent(stationId) {
             </div>
             <div style="background:var(--bg-sunken);border-radius:var(--radius-sm);padding:8px;text-align:center;">
                 <div style="font-size:10px;color:var(--text-dim);">${t('الإجمالي الكلي', 'Grand Total')}</div>
-                <div class="mono" style="font-size:18px;font-weight:700;color:var(--amber);" id="overallTotalAmount">${moneyDec(totals.grandTotal)}</div>
+                <div class="mono" style="font-size:18px;font-weight:700;color:var(--amber);" id="overallTotalAmount">${moneyDec(currentEstimate.amount + totals.ordersTotal)}</div>
             </div>
         </div>
         
@@ -3419,6 +3471,10 @@ async function handleSwitchMode(sessionId, newMode, stationId) {
         showToast(t('تم التحويل إلى ' + (newMode === 'single' ? 'Single' : 'Multi'), 'Switched to ' + (newMode === 'single' ? 'Single' : 'Multi')), 'success');
         
         await refreshStationSheetContent(stationId);
+        
+        // ✅ تحديث الإجمالي الكلي بعد التبديل
+        const { amount: newAmount } = getCurrentSegmentEstimateFast(sessionId);
+        await updateGrandTotalWithOrders(sessionId, newAmount);
         
     } catch (e) {
         console.error('Error switching mode:', e);
