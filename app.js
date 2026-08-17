@@ -2772,6 +2772,64 @@ async function getShiftTotals(shift) {
     }
 }
 
+// Fetch revenue/expenses for a whole batch of shifts using only 2 queries total
+// instead of 2-3 sequential queries PER shift (which is what made the shift
+// history list take many seconds to appear with a real number of past shifts).
+async function getBatchShiftTotals(shiftsList) {
+    const map = {};
+    shiftsList.forEach(s => { map[s.id] = { revenue: 0, expenses: 0, profit: 0 }; });
+    if (shiftsList.length === 0) return map;
+
+    const openedTimes = shiftsList.map(s => new Date(s.opened_at).getTime());
+    const closedTimes = shiftsList.map(s => new Date(s.closed_at || Date.now()).getTime());
+    const rangeStart = new Date(Math.min(...openedTimes)).toISOString();
+    const rangeEnd = new Date(Math.max(...closedTimes)).toISOString();
+
+    const [sessRes, expRes] = await Promise.all([
+        supabaseClient
+            .from('sessions')
+            .select('id, amount, ended_at')
+            .eq('business_id', business.id)
+            .eq('status', 'completed')
+            .gte('ended_at', rangeStart)
+            .lte('ended_at', rangeEnd),
+        supabaseClient
+            .from('expenses')
+            .select('shift_id, amount')
+            .in('shift_id', shiftsList.map(s => s.id))
+    ]);
+
+    (expRes.data || []).forEach(e => {
+        if (map[e.shift_id]) map[e.shift_id].expenses += Number(e.amount || 0);
+    });
+
+    // Sort once, then walk sessions against shift windows to assign each
+    // session's revenue to the shift that was open when it ended.
+    const sortedShifts = [...shiftsList].sort((a, b) => new Date(a.opened_at) - new Date(b.opened_at));
+    (sessRes.data || []).forEach(sess => {
+        const endedAt = new Date(sess.ended_at).getTime();
+        const shift = sortedShifts.find(s => {
+            const open = new Date(s.opened_at).getTime();
+            const close = new Date(s.closed_at || Date.now()).getTime();
+            return endedAt >= open && endedAt <= close;
+        });
+        if (shift) map[shift.id].revenue += Number(sess.amount || 0);
+    });
+
+    Object.keys(map).forEach(id => { map[id].profit = map[id].revenue - map[id].expenses; });
+    return map;
+}
+
+// Small, nicer "closed by" indicator — crown badge for the owner,
+// person badge for an employee, instead of a plain text row.
+function renderClosedByBadge(closedByName) {
+    const name = closedByName || t('غير معروف', 'Unknown');
+    const isOwner = name === 'المالك' || name === 'Owner';
+    const badgeClass = isOwner ? 'badge-amber' : 'badge-teal';
+    const icon = isOwner ? 'fa-crown' : 'fa-user';
+    return `<span class="badge ${badgeClass}"><i class="fa-solid ${icon}"></i>${escapeHtml(name)}</span>`;
+}
+
 async function renderShiftView() {
     if (!currentShift) {
         document.getElementById('shiftSummary').innerHTML = `
@@ -2860,15 +2918,16 @@ async function renderShiftView() {
         return;
     }
 
+    const totalsMap = await getBatchShiftTotals(pastShifts);
+
     let historyHtml = '';
     for (const shift of pastShifts) {
-        const shiftTotals = await getShiftTotals(shift);
+        const shiftTotals = totalsMap[shift.id] || { revenue: 0, expenses: 0, profit: 0 };
         const dateStr = new Date(shift.closed_at).toLocaleDateString(currentLang === 'ar' ? 'ar-EG' : 'en-US');
         const timeStr = new Date(shift.closed_at).toLocaleTimeString(currentLang === 'ar' ? 'ar-EG' : 'en-US', { hour: '2-digit', minute: '2-digit' });
         const revLabel = t('إيراد', 'Revenue');
         const expLabel = t('مصروفات', 'Expenses');
         const netLabel = t('صافي الدخل', 'Net Income');
-        const closedByName = shift.closed_by || t('غير معروف', 'Unknown');
         
         historyHtml += `
             <div class="list-row" style="flex-direction:column;align-items:stretch;padding:12px 4px;border-bottom:1px solid var(--border);cursor:pointer;" onclick="viewShiftDetails('${shift.id}')">
@@ -2888,9 +2947,9 @@ async function renderShiftView() {
                     <div style="font-size:12px;color:var(--text-faint);">${netLabel}</div>
                     <div class="mono" style="font-weight:700;color:var(--amber);">${money(shiftTotals.profit)} ${t('ج', 'EGP')}</div>
                 </div>
-                <div style="display:flex;justify-content:space-between;width:100%;margin-top:4px;font-size:11px;color:var(--text-dim);border-top:1px solid var(--border);padding-top:4px;">
-                    <span>${t('أغلق بواسطة', 'Closed by')}</span>
-                    <span style="font-weight:600;color:var(--text);">${escapeHtml(closedByName)}</span>
+                <div style="display:flex;justify-content:space-between;align-items:center;width:100%;margin-top:8px;padding-top:8px;border-top:1px solid var(--border);">
+                    <span style="font-size:11px;color:var(--text-faint);">${t('أغلق بواسطة', 'Closed by')}</span>
+                    ${renderClosedByBadge(shift.closed_by)}
                 </div>
             </div>
         `;
@@ -3002,11 +3061,10 @@ async function viewShiftDetails(shiftId) {
     const totals = await getShiftTotals(shift);
     const openedStr = new Date(shift.opened_at).toLocaleString(currentLang === 'ar' ? 'ar-EG' : 'en-US');
     const closedStr = shift.closed_at ? new Date(shift.closed_at).toLocaleString(currentLang === 'ar' ? 'ar-EG' : 'en-US') : '—';
-    const closedByName = shift.closed_by || t('غير معروف', 'Unknown');
     const extraRows = `
         <div class="list-row"><div class="row-title">${t('وقت الفتح', 'Opened At')}</div><div class="row-value mono">${openedStr}</div></div>
         <div class="list-row"><div class="row-title">${t('وقت الإقفال', 'Closed At')}</div><div class="row-value mono">${closedStr}</div></div>
-        <div class="list-row"><div class="row-title">${t('أغلق بواسطة', 'Closed by')}</div><div class="row-value mono">${escapeHtml(closedByName)}</div></div>`;
+        <div class="list-row"><div class="row-title">${t('أغلق بواسطة', 'Closed by')}</div>${renderClosedByBadge(shift.closed_by)}</div>`;
     document.getElementById('shiftDetailsSummary').innerHTML = buildShiftBreakdownHtml(totals, extraRows);
     openSheet('shiftDetailsOverlay');
 }
