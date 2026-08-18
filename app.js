@@ -2358,24 +2358,27 @@ async function startSessionWithMode(stationId) {
     }
     
     const now = new Date(nowCorrected()).toISOString();
+    const deviceId = getDeviceId();
     
     try {
-        // ✅ استخدام business.code وتجهيز device_id
+        // ✅ إرسال جميع الأعمدة المطلوبة
         const { data: session, error } = await supabaseClient
             .from('sessions')
             .insert({
                 business_code: business.code,
                 station_id: stationId,
-                station_number: st.number,  // ✅ مطلوب
-                device_id: getDeviceId(),   // ✅ مطلوب (NOT NULL)
+                station_number: st.number,
+                device_id: deviceId,           // ✅ مطلوب (NOT NULL)
                 rate: rate,
                 started_at: now,
-                start_time: now,            // ✅ مطلوب
-                started_by_device: getDeviceId(),
+                start_time: now,
+                started_by_device: deviceId,
                 current_mode: mode,
                 timer_type: timerType,
                 status: 'active',
-                created_at: now
+                created_at: now,
+                user_id: deviceId,             // ✅ مطلوب (NOT NULL)
+                aal: 'aal1'                    // ✅ مطلوب (USER-DEFINED)
             })
             .select()
             .single();
