@@ -559,6 +559,7 @@ async function loadAllData() {
 
 async function loadStations() {
     assertBusinessContext();
+    // ✅ استخدام business.code بدلاً من business.id
     const { data, error } = await supabaseClient
         .from('stations')
         .select('*')
@@ -788,11 +789,14 @@ async function createSegment(sessionId, mode, startedAt, rate, timerType, durati
         return existing;
     }
 
+    // ✅ استخدام UTC
+    const now = getUTCNow();
+
     const { data, error } = await supabaseClient.from('session_segments').insert({
         session_id: sessionId,
         business_code: business.code,
         mode: mode,
-        started_at: startedAt,
+        started_at: startedAt || now,
         rate: assertPositiveNumber(rate, 'Rate'),
         timer_type: timerType || 'countup',
         duration_seconds: Math.max(0, Math.round(Number(durationSeconds) || 0))
@@ -804,8 +808,11 @@ async function createSegment(sessionId, mode, startedAt, rate, timerType, durati
 }
 
 async function closeSegment(segmentId, endedAt, amount) {
+    // ✅ استخدام UTC إذا لم يتم تمرير وقت
+    const now = endedAt || getUTCNow();
+    
     const { error } = await supabaseClient.from('session_segments')
-        .update({ ended_at: endedAt, amount: amount })
+        .update({ ended_at: now, amount: amount })
         .eq('id', segmentId);
     if (error) throw error;
     sessionSegmentsCache = {};
@@ -839,7 +846,7 @@ function getActiveSegmentFast(sessionId) {
 }
 
 // ============================================================
-// ✅ CLOCK SYNC
+// ✅ CLOCK SYNC - باستخدام UTC
 // ============================================================
 let serverClockOffsetMs = 0;
 
@@ -878,6 +885,11 @@ async function syncServerClock() {
 
 function nowCorrected() {
     return Date.now() + serverClockOffsetMs;
+}
+
+// ✅ دالة مساعدة للحصول على وقت UTC كـ ISO string
+function getUTCNow() {
+    return new Date(nowCorrected()).toISOString();
 }
 
 async function preloadActiveSegments(sessionIds) {
@@ -974,8 +986,8 @@ function getCurrentSegmentEstimateFast(sessionId) {
 function getCurrentSegmentEarnedAmount(sessionId) {
     const activeSeg = getActiveSegmentFast(sessionId);
     if (!activeSeg) return 0;
-    const start = new Date(activeSeg.started_at);
-    const now = new Date(nowCorrected());
+    const start = new Date(activeSeg.started_at).getTime();
+    const now = nowCorrected();
     let elapsedSeconds = Math.max(0, (now - start) / 1000);
     if (activeSeg.timer_type === 'countdown' && activeSeg.duration_seconds) {
         elapsedSeconds = Math.min(elapsedSeconds, activeSeg.duration_seconds);
@@ -986,8 +998,8 @@ function getCurrentSegmentEarnedAmount(sessionId) {
 
 function getRemainingSeconds(segment) {
     if (!segment || segment.timer_type !== 'countdown' || !segment.duration_seconds) return 0;
-    const start = new Date(segment.started_at);
-    const now = new Date(nowCorrected());
+    const start = new Date(segment.started_at).getTime();
+    const now = nowCorrected();
     const elapsed = (now - start) / 1000;
     return Math.max(0, segment.duration_seconds - elapsed);
 }
@@ -1145,7 +1157,9 @@ function startTicker() {
 }
 
 function formatElapsed(start) {
-    const secs = Math.max(0, Math.floor((nowCorrected() - start.getTime()) / 1000));
+    const now = nowCorrected();
+    const startTime = new Date(start).getTime();
+    const secs = Math.max(0, Math.floor((now - startTime) / 1000));
     const h = Math.floor(secs / 3600), m = Math.floor((secs % 3600) / 60), s = secs % 60;
     return (h > 0 ? String(h).padStart(2, '0') + ':' : '') + String(m).padStart(2, '0') + ':' + String(s).padStart(2, '0');
 }
@@ -2357,7 +2371,8 @@ async function startSessionWithMode(stationId) {
         return;
     }
     
-    const now = new Date(nowCorrected()).toISOString();
+    // ✅ استخدام UTC
+    const now = getUTCNow();
     const deviceId = getDeviceId();
     
     try {
@@ -2378,7 +2393,7 @@ async function startSessionWithMode(stationId) {
             duration: 0
         };
         
-        console.log('📝 Creating session with data:', sessionData);
+        console.log('📝 Creating session with data (UTC):', sessionData);
         
         const { data: session, error } = await supabaseClient
             .from('sessions')
@@ -2414,7 +2429,7 @@ async function startSessionWithMode(stationId) {
 }
 
 // ============================================================
-// END SESSION WITH PAYMENT - من الملف الشغال
+// END SESSION WITH PAYMENT
 // ============================================================
 function showEndSessionPayment(stationId) {
     endSessionStationId = stationId;
@@ -2426,7 +2441,7 @@ function showEndSessionPayment(stationId) {
     (async () => {
         const activeSeg = await getActiveSegment(session.id);
         if (activeSeg && !activeSeg.ended_at) {
-            const now = new Date(nowCorrected()).toISOString();
+            const now = getUTCNow();
             const start = new Date(activeSeg.started_at);
             let elapsedSeconds = Math.max(0, (new Date(now) - start) / 1000);
             if (activeSeg.timer_type === 'countdown' && activeSeg.duration_seconds) {
@@ -2548,9 +2563,8 @@ function showEndSessionPayment(stationId) {
     })();
 }
 
-
 // ============================================================
-// SELECT PAYMENT METHOD - من الملف الشغال
+// SELECT PAYMENT METHOD
 // ============================================================
 function selectPaymentMethod(pmId) {
     selectedPaymentMethod = pmId;
@@ -2620,7 +2634,7 @@ function updatePaymentCalculation() {
 }
 
 // ============================================================
-// CANCEL END SESSION (Back button) - من الملف الشغال
+// CANCEL END SESSION (Back button)
 // ============================================================
 function cancelEndSession() {
     const stationId = endSessionStationId || activeStationId;
@@ -2637,7 +2651,7 @@ function cancelEndSession() {
 }
 
 // ============================================================
-// CONFIRM END SESSION WITH PAYMENT - من الملف الشغال
+// CONFIRM END SESSION WITH PAYMENT
 // ============================================================
 async function confirmEndSessionWithPayment() {
     if (!selectedPaymentMethod) {
@@ -2651,7 +2665,7 @@ async function confirmEndSessionWithPayment() {
     try {
         const activeSeg = await getActiveSegment(session.id);
         if (activeSeg && !activeSeg.ended_at) {
-            const now = new Date(nowCorrected()).toISOString();
+            const now = getUTCNow();
             const start = new Date(activeSeg.started_at);
             let elapsedSeconds = Math.max(0, (new Date(now) - start) / 1000);
             if (activeSeg.timer_type === 'countdown' && activeSeg.duration_seconds) {
@@ -2669,7 +2683,7 @@ async function confirmEndSessionWithPayment() {
 
         const basePayload = {
             status: 'completed',
-            ended_at: new Date(nowCorrected()).toISOString(),
+            ended_at: getUTCNow(),
             amount: finalTotal,
             payment_method: selectedPaymentMethod
         };
@@ -2679,7 +2693,8 @@ async function confirmEndSessionWithPayment() {
             .update({
                 ...basePayload,
                 discount: discountAmount,
-                amount_paid: endSessionAmountPaid
+                amount_paid: endSessionAmountPaid,
+                end_time: getUTCNow()
             })
             .eq('id', session.id);
 
@@ -2687,7 +2702,10 @@ async function confirmEndSessionWithPayment() {
             console.warn('discount/amount_paid columns missing — saving without them:', error.message);
             ({ error } = await supabaseClient
                 .from('sessions')
-                .update(basePayload)
+                .update({
+                    ...basePayload,
+                    end_time: getUTCNow()
+                })
                 .eq('id', session.id));
         }
         
@@ -2697,8 +2715,6 @@ async function confirmEndSessionWithPayment() {
             showToast(t('فشل إنهاء الجلسة: ' + error.message, 'Failed to end session: ' + error.message), 'error');
             return;
         }
-        
-        const savedStationId = stationId;
         
         endSessionDiscount = discountAmount;
         
