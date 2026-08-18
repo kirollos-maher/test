@@ -844,30 +844,25 @@ function getActiveSegmentFast(sessionId) {
 }
 
 // ============================================================
-// ✅ نظام الوقت الموحد (UTC) - حل نهائي
+// ✅ نظام الوقت الموحد (UTC) - حل نهائي 100%
 // ============================================================
 
-// ✅ الحصول على المنطقة الزمنية للجهاز
-function getDeviceTimezoneOffset() {
-    const offsetMinutes = new Date().getTimezoneOffset();
-    const offsetHours = -offsetMinutes / 60;
-    console.log(`🌍 Device timezone offset: ${offsetHours}h (${offsetMinutes} minutes)`);
-    return offsetHours;
+// ✅ الحصول على المنطقة الزمنية للجهاز (للتشخيص فقط)
+function getDeviceTimezone() {
+    const tz = Intl.DateTimeFormat().resolvedOptions().timeZone;
+    const offset = -new Date().getTimezoneOffset() / 60;
+    console.log(`🌍 Device Timezone: ${tz}, UTC offset: ${offset}h`);
+    return { timezone: tz, offset: offset };
 }
 
-// ✅ الحصول على الوقت الحالي بتوقيت UTC (كـ Date object)
-function getUTCDate() {
-    return new Date(new Date().toUTCString());
-}
-
-// ✅ الحصول على وقت UTC الحالي كـ ISO string
+// ✅ الحصول على وقت UTC الحالي كـ ISO string (للإرسال إلى Supabase)
 function getUTCNow() {
-    return new Date(new Date().toUTCString()).toISOString();
+    return new Date().toISOString();
 }
 
-// ✅ الحصول على الوقت الحالي بالمللي ثانية (مصحح لـ UTC)
+// ✅ الحصول على الوقت الحالي بالمللي ثانية (UTC)
 function getUTCTimeMs() {
-    return new Date(new Date().toUTCString()).getTime();
+    return Date.now();
 }
 
 // ✅ حساب الوقت المنقضي من start إلى الآن (بالثواني)
@@ -877,8 +872,58 @@ function getElapsedSeconds(startDate) {
     return Math.max(0, Math.floor((now - start) / 1000));
 }
 
-// استدعاء عند بدء التطبيق
-getDeviceTimezoneOffset();
+// ✅ تنسيق الوقت المنقضي
+function formatElapsed(start) {
+    const secs = getElapsedSeconds(start);
+    const h = Math.floor(secs / 3600);
+    const m = Math.floor((secs % 3600) / 60);
+    const s = secs % 60;
+    return (h > 0 ? String(h).padStart(2, '0') + ':' : '') + 
+           String(m).padStart(2, '0') + ':' + 
+           String(s).padStart(2, '0');
+}
+
+// ✅ حساب الوقت المتبقي (للعد التنازلي)
+function getRemainingSeconds(segment) {
+    if (!segment || segment.timer_type !== 'countdown' || !segment.duration_seconds) return 0;
+    const start = new Date(segment.started_at).getTime();
+    const now = getUTCTimeMs();
+    const elapsed = (now - start) / 1000;
+    return Math.max(0, segment.duration_seconds - elapsed);
+}
+
+// ✅ حساب قيمة الجزء الحالي المكتسبة
+function getCurrentSegmentEarnedAmount(sessionId) {
+    const activeSeg = getActiveSegmentFast(sessionId);
+    if (!activeSeg) return 0;
+    const start = new Date(activeSeg.started_at).getTime();
+    const now = getUTCTimeMs();
+    let elapsedSeconds = Math.max(0, (now - start) / 1000);
+    if (activeSeg.timer_type === 'countdown' && activeSeg.duration_seconds) {
+        elapsedSeconds = Math.min(elapsedSeconds, activeSeg.duration_seconds);
+    }
+    const hours = elapsedSeconds / 3600;
+    return Math.round((hours * Number(activeSeg.rate)) * 100) / 100;
+}
+
+// ✅ تقدير قيمة الجزء الحالي
+function getCurrentSegmentEstimateFast(sessionId) {
+    const activeSeg = getActiveSegmentFast(sessionId);
+    if (!activeSeg) return { amount: 0, hours: 0, segment: null };
+    const start = new Date(activeSeg.started_at).getTime();
+    const now = getUTCTimeMs();
+    let elapsedSeconds = Math.max(0, (now - start) / 1000);
+    if (activeSeg.timer_type === 'countdown' && activeSeg.duration_seconds) {
+        elapsedSeconds = Math.min(elapsedSeconds, activeSeg.duration_seconds);
+    }
+    const hours = elapsedSeconds / 3600;
+    const amount = Math.round((hours * Number(activeSeg.rate)) * 100) / 100;
+    return { amount, hours, segment: activeSeg };
+}
+
+// استدعاء التشخيص عند بدء التطبيق
+console.log('🕐 UTC Time:', getUTCNow());
+getDeviceTimezone();
 
 async function preloadActiveSegments(sessionIds) {
     if (!sessionIds || sessionIds.length === 0) return;
