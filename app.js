@@ -846,7 +846,7 @@ function getActiveSegmentFast(sessionId) {
 }
 
 // ============================================================
-// ✅ CLOCK SYNC - باستخدام UTC (النسخة الكاملة المعدلة)
+// ✅ CLOCK SYNC - باستخدام UTC
 // ============================================================
 let serverClockOffsetMs = 0;
 
@@ -887,7 +887,7 @@ async function syncServerClock() {
             }
         }
     } catch (e) {
-        console.warn('timeapi.io failed, using fallback 2:', e);
+        console.warn('timeapi.io failed, using local time:', e);
     }
     
     // محاولة 3: استخدام وقت الجهاز مع تحذير
@@ -2400,11 +2400,23 @@ async function startSessionWithMode(stationId) {
     const now = getUTCNow();
     const deviceId = getDeviceId();
     
+    // ✅ التأكد من وجود business.code
+    if (!business || !business.code) {
+        errEl.textContent = t('خطأ: النشاط غير موجود.', 'Error: Business not found.');
+        return;
+    }
+    
+    // ✅ التأكد من وجود station_id
+    if (!stationId) {
+        errEl.textContent = t('خطأ: معرف الجهاز غير موجود.', 'Error: Station ID not found.');
+        return;
+    }
+    
     try {
         const sessionData = {
-            business_code: business.code,
-            station_id: stationId,
-            station_number: st.number,
+            business_code: business.code,      // ✅ مطلوب (NOT NULL)
+            station_id: stationId,              // ✅ مطلوب (NOT NULL)
+            station_number: st.number || 0,
             device_id: deviceId,
             rate: rate,
             started_at: now,
@@ -2418,7 +2430,7 @@ async function startSessionWithMode(stationId) {
             duration: 0
         };
         
-        console.log('📝 Creating session with data (UTC):', sessionData);
+        console.log('📝 Creating session with data:', sessionData);
         
         const { data: session, error } = await supabaseClient
             .from('sessions')
