@@ -1334,6 +1334,7 @@ async function applyBulkRate(type) {
         const updateData = {};
         updateData[fieldName] = rate;
         
+        // ✅ استخدام business.code بدلاً من business.id
         const { data, error } = await supabaseClient
             .from('stations')
             .update(updateData)
@@ -1357,8 +1358,10 @@ async function applyBulkRate(type) {
             multiInput.value = '';
         }
         
+        // ✅ تحديث stations محلياً
+        stations = data;
+        
         showToast(t(`اتحدث سعر ${typeLabel} لكل الأجهزة`, `${typeLabel} price updated for all devices`), 'success');
-        await loadStations();
         renderSettingsStations();
         renderStationsGrid();
     } catch (e) {
@@ -1562,7 +1565,8 @@ async function submitPaymentMethod() {
             await supabaseClient
                 .from('payment_methods')
                 .update({ name, icon, color, active })
-                .eq('id', id);
+                .eq('id', id)
+                .eq('business_code', business.code);
             showToast(t('تم تحديث طريقة الدفع', 'Payment method updated'), 'success');
         } else {
             await supabaseClient
@@ -1585,7 +1589,8 @@ async function deletePaymentMethodById(pmId) {
         await supabaseClient
             .from('payment_methods')
             .delete()
-            .eq('id', pmId);
+            .eq('id', pmId)
+            .eq('business_code', business.code);
         showToast(t('تم حذف طريقة الدفع', 'Payment method deleted'), 'success');
         await loadPaymentMethods();
         renderSettingsPaymentMethods();
@@ -2356,10 +2361,11 @@ async function startSessionWithMode(stationId) {
     const now = new Date(nowCorrected()).toISOString();
     
     try {
+        // ✅ استخدام business.code بدلاً من business.id
         const { data: session, error } = await supabaseClient
             .from('sessions')
             .insert({
-                business_code: business.code, 
+                business_code: business.code,
                 station_id: stationId, 
                 rate: rate,
                 started_at: now,
@@ -2369,7 +2375,12 @@ async function startSessionWithMode(stationId) {
             })
             .select()
             .single();
-        if (error) { throw error; }
+            
+        if (error) { 
+            console.error('Session creation error:', error);
+            errEl.textContent = t('فشل بدء الجلسة: ' + error.message, 'Failed to start session: ' + error.message);
+            return;
+        }
         
         await createSegment(session.id, mode, now, rate, timerType, durationSeconds);
         
@@ -2383,7 +2394,7 @@ async function startSessionWithMode(stationId) {
         setTimeout(() => openStationSheet(stationId), 300);
     } catch (e) {
         console.error('Error starting session:', e);
-        errEl.textContent = t('فشل بدء الجلسة', 'Failed to start session');
+        errEl.textContent = t('فشل بدء الجلسة: ' + e.message, 'Failed to start session: ' + e.message);
     }
 }
 
