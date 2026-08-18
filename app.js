@@ -2,8 +2,8 @@
 // ============================================================
 // CONFIG
 // ============================================================
-const SUPABASE_URL = 'https://fhjhtgbvtkuhhzitvxtx.supabase.co';
-const SUPABASE_ANON_KEY = 'sb_publishable_X0aLD3gjXGqC_no4gW78ng_TWztP5cd';
+const SUPABASE_URL = 'https://hdrvqgicxxgfolozxgjp.supabase.co';
+const SUPABASE_ANON_KEY = 'sb_publishable_dGNw7eTTempKBdFmAZRjYA_eaeEE2jj';
 const supabaseClient = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 
 // V2 safety helpers: never report success when Supabase rejected the operation.
@@ -115,20 +115,18 @@ let employees = [];
 let paymentMethods = [];
 let currentShift = null;
 let currentUser = null;
-let authUser = null;
-let authMemberships = [];
 let realtimeChannel = null;
 let tickInterval = null;
-let clockSyncInterval = null;
 let activeStationId = null;
 let activeSessionOrders = [];
 let currentOrderSessionId = null;
 let selectedPaymentMethod = null;
 let endSessionStationId = null;
 let endingSessionInProgress = false;
-let endSessionGrandTotal = 0;
+// ✅ حالة الخصم/المبلغ المدفوع لشاشة إنهاء الجلسة
+let currentEndSessionTotals = null;
 let endSessionDiscount = 0;
-let endSessionPaidAmount = null;
+let endSessionAmountPaid = null;
 let sessionSegmentsCache = {};
 let activeSegmentCache = {};
 let pendingSwitch = false;
@@ -138,8 +136,23 @@ let countdownAlerts = {};
 // تخزين حالة التوجل لكل تصنيف
 let categoryToggleState = {};
 
-// ملحوظة: زر تغيير PIN المالك القديم (toggleSettingsPin) اتشال
-// لإن التحقق بقى بالكامل عن طريق Supabase Auth.
+// ============================================================
+// ✅ TOGGLE PIN SECTION (قابل للطي)
+// ============================================================
+let settingsPinExpanded = false;
+
+function toggleSettingsPin() {
+    settingsPinExpanded = !settingsPinExpanded;
+    const pinSection = document.getElementById('settingsChangePin');
+    const chevron = document.getElementById('settingsPinChevron');
+    
+    if (pinSection) {
+        pinSection.style.display = settingsPinExpanded ? 'block' : 'none';
+    }
+    if (chevron) {
+        chevron.style.transform = settingsPinExpanded ? 'rotate(180deg)' : 'rotate(0deg)';
+    }
+}
 
 // ============================================================
 // UTILITIES
@@ -213,168 +226,140 @@ async function handleSetupContinue() {
     const btn = document.getElementById('setupContinueBtn');
     btn.disabled = true;
     try {
-        const { data: biz, error } = await supabaseClient
-            .from('businesses').select('*').eq('code', code).single();
-        if (error || !biz) {
-            errEl.textContent = t('مفيش نشاط بالكود ده.', 'No business found with this code.');
-            return;
-        }
+        const { data: biz, error } = await supabaseClient.from('businesses').select('*').eq('code', code).single();
+        if (error || !biz) { errEl.textContent = t('مفيش نشاط بالكود ده.', 'No business found with this code.'); return; }
         business = biz;
         localStorage.setItem('psr_business_code', code);
-        showAuthScreen();
-        await dorakAuthBootstrapForBusiness();
+
+        const deviceId = getDeviceId();
+        const { data: dev } = await supabaseClient.from('devices').select('*').eq('business_id', biz.id).eq('device_id', deviceId).maybeSingle();
+        if (!dev) {
+            document.getElementById('activationBizName').textContent = biz.name;
+            showScreen('activationScreen');
+            return;
+        }
+        deviceRecord = dev;
+        proceedToLock();
     } catch (e) {
-        console.error('Business setup error:', e);
+        console.error(e);
         errEl.textContent = t('حصل خطأ في الاتصال، حاول تاني.', 'Connection error, please try again.');
     } finally { btn.disabled = false; }
 }
 
-function showAuthScreen(mode = 'login') {
-    const bizCode = document.getElementById('authBizCode');
-    const bizName = document.getElementById('authBizName');
-    if (bizCode) bizCode.textContent = business?.code || '—';
-    if (bizName) bizName.textContent = business?.name || 'DORAK';
-    const login = document.getElementById('authLoginForm');
-    const signup = document.getElementById('authSignupForm');
-    if (login && signup) {
-        login.style.display = mode === 'login' ? 'block' : 'none';
-        signup.style.display = mode === 'signup' ? 'block' : 'none';
+async function handleActivateDevice() {
+    const code = document.getElementById('activationCodeInput').value.trim().toUpperCase();
+    const errEl = document.getElementById('activationError');
+    errEl.textContent = '';
+    if (!code) { errEl.textContent = t('اكتب كود التفعيل.', 'Enter the activation code.'); return; }
+    try {
+        const { data: actCode, error } = await supabaseClient.from('activation_codes').select('*').eq('business_id', business.id).eq('code', code).eq('used', false).single();
+        if (error || !actCode) { errEl.textContent = t('الكود غير صحيح أو مستخدم قبل كده.', 'Invalid or already used code.'); return; }
+
+        const deviceId = getDeviceId();
+        const isTrial = actCode.is_trial === true;
+        const expiry = new Date(); expiry.setDate(expiry.getDate() + (isTrial ? 7 : 30));
+        const { data: newDev, error: devErr } = await supabaseClient.from('devices').insert({
+            business_id: business.id, device_id: deviceId,
+            device_label: isTrial ? t('جهاز — تجربة مجانية', 'Device — Free trial') : t('جهاز بدون اسم', 'Unnamed device'),
+            is_active: true, revoked: false, expiry_date: expiry.toISOString()
+        }).select().single();
+        if (devErr) { errEl.textContent = t('فشل التفعيل، حاول تاني.', 'Activation failed, try again.'); return; }
+
+        await supabaseClient.from('activation_codes').update({ used: true, used_at: new Date().toISOString() }).eq('id', actCode.id);
+        deviceRecord = newDev;
+        showToast(t('تم تفعيل الجهاز بنجاح', 'Device activated successfully'), 'success');
+        proceedToLock();
+    } catch (e) { console.error(e); errEl.textContent = t('حصل خطأ، حاول تاني.', 'Error, try again.'); }
+}
+
+function proceedToLock() {
+    document.getElementById('lockBizCode').textContent = business.code;
+    document.getElementById('lockBizName').textContent = business.name;
+    const expiry = deviceRecord.expiry_date ? new Date(deviceRecord.expiry_date) : null;
+    const subLine = document.getElementById('subStatusLine');
+    if (deviceRecord.revoked || !deviceRecord.is_active) { subLine.textContent = t('الجهاز موقوف — تواصل مع الإدارة', 'Device suspended — contact admin'); }
+    else if (expiry && expiry < new Date()) { subLine.textContent = t('الاشتراك منتهي — تواصل مع الإدارة', 'Subscription expired — contact admin'); }
+    else if (expiry) { const days = Math.ceil((expiry - new Date()) / 86400000); subLine.textContent = t(`متبقي ${days} يوم على الاشتراك`, `${days} days remaining on subscription`); }
+    resetLockRole();
+    showScreen('lockScreen');
+}
+
+function selectLockRole(role) {
+    document.getElementById('lockError').textContent = '';
+    document.getElementById('lockRoleChoice').style.display = 'none';
+    document.getElementById('lockOwnerForm').style.display = role === 'owner' ? 'block' : 'none';
+    document.getElementById('lockEmployeeForm').style.display = role === 'employee' ? 'block' : 'none';
+}
+
+function resetLockRole() {
+    document.getElementById('lockError').textContent = '';
+    document.getElementById('lockPinInput').value = '';
+    document.getElementById('lockEmpName').value = '';
+    document.getElementById('lockEmpPin').value = '';
+    document.getElementById('lockOwnerForm').style.display = 'none';
+    document.getElementById('lockEmployeeForm').style.display = 'none';
+    document.getElementById('lockRoleChoice').style.display = 'block';
+}
+
+async function handleEmployeeUnlock() {
+    const name = document.getElementById('lockEmpName').value.trim();
+    const pin = document.getElementById('lockEmpPin').value.trim();
+    const errEl = document.getElementById('lockError');
+    errEl.textContent = '';
+    if (deviceRecord.revoked || !deviceRecord.is_active) { errEl.textContent = t('الجهاز موقوف.', 'Device suspended.'); return; }
+    if (deviceRecord.expiry_date && new Date(deviceRecord.expiry_date) < new Date()) { errEl.textContent = t('الاشتراك منتهي.', 'Subscription expired.'); return; }
+    if (!name || !pin) { errEl.textContent = t('اكتب الاسم والـ PIN.', 'Enter your name and PIN.'); return; }
+
+    const { data: emps, error } = await supabaseClient.from('employees').select('*').eq('business_id', business.id).eq('active', true);
+    if (error) { errEl.textContent = t('حصل خطأ، حاول تاني.', 'Error, try again.'); console.error('Error loading employees for login:', error); return; }
+    const emp = (emps || []).find(e => e.name && e.name.trim().toLowerCase() === name.toLowerCase() && String(e.pin) === pin);
+    if (emp) {
+        currentUser = { type: 'employee', ...emp };
+        document.getElementById('lockEmpName').value = '';
+        document.getElementById('lockEmpPin').value = '';
+        enterMainApp();
+        return;
     }
-    const err = document.getElementById('authError');
-    if (err) err.textContent = '';
-    showScreen('authScreen');
+    errEl.textContent = t('الاسم أو الـ PIN غير صحيح.', 'Incorrect name or PIN.');
 }
 
-function authFriendlyError(error) {
-    const msg = String(error?.message || error || '');
-    if (/invalid login credentials/i.test(msg)) return t('البريد الإلكتروني أو كلمة المرور غير صحيحة.', 'Invalid email or password.');
-    if (/email not confirmed/i.test(msg)) return t('أكد البريد الإلكتروني أولًا ثم سجل الدخول.', 'Confirm your email first, then sign in.');
-    if (/user already registered/i.test(msg)) return t('البريد الإلكتروني مسجل بالفعل. استخدم تسجيل الدخول.', 'This email is already registered. Use Sign in.');
-    if (/password/i.test(msg) && /6|short|characters/i.test(msg)) return t('كلمة المرور لازم تكون 6 أحرف على الأقل.', 'Password must be at least 6 characters.');
-    if (msg.includes('BUSINESS_ALREADY_CLAIMED')) return t('النشاط مربوط بحساب مالك آخر بالفعل.', 'This business is already claimed by another owner.');
-    if (msg.includes('INVALID_OWNER_CREDENTIAL')) return t('كود النشاط أو PIN المالك غير صحيح.', 'Business code or owner PIN is incorrect.');
-    if (msg.includes('BUSINESS_NOT_FOUND')) return t('النشاط غير موجود.', 'Business not found.');
-    if (msg.includes('AUTH_REQUIRED')) return t('لازم تسجل دخول أولًا.', 'You must sign in first.');
-    return t('حصل خطأ. حاول مرة تانية.', 'Something went wrong. Please try again.');
-}
-
-async function dorakAuthBootstrapForBusiness() {
-    const { data: sessionData, error: sessionError } = await supabaseClient.auth.getSession();
-    if (sessionError) throw sessionError;
-    authUser = sessionData?.session?.user || null;
-    if (!authUser || !business) return [];
-    const { data, error } = await supabaseClient.rpc('my_business_memberships');
-    if (error) throw error;
-    authMemberships = (data || []).filter(m => m.business_code === business.code && m.active !== false);
-    return authMemberships;
-}
-
-async function handleAuthLogin() {
-    const email = document.getElementById('authEmail').value.trim().toLowerCase();
-    const password = document.getElementById('authPassword').value;
-    const errEl = document.getElementById('authError');
-    const btn = document.getElementById('authLoginBtn');
+async function handleUnlock() {
+    const pin = document.getElementById('lockPinInput').value.trim();
+    const errEl = document.getElementById('lockError');
     errEl.textContent = '';
-    if (!email || !password) { errEl.textContent = t('اكتب البريد الإلكتروني وكلمة المرور.', 'Enter email and password.'); return; }
-    btn.disabled = true;
-    try {
-        const { data, error } = await supabaseClient.auth.signInWithPassword({ email, password });
-        if (error) throw error;
-        authUser = data.user;
-        authMemberships = await dorakAuthBootstrapForBusiness();
-        if (!authMemberships.length) {
-            const claimPin = document.getElementById('authLoginOwnerPin')?.value.trim();
-            if (claimPin) {
-                const { data: member, error: claimError } = await supabaseClient.rpc('claim_business_as_owner', {
-                    p_business_code: business.code,
-                    p_owner_pin: claimPin,
-                    p_display_name: authUser.user_metadata?.full_name || null
-                });
-                if (claimError) throw claimError;
-                authMemberships = [member];
-            } else {
-                throw new Error('NO_BUSINESS_MEMBERSHIP');
-            }
-        }
-        await enterAuthenticatedApp(authMemberships[0]);
-    } catch (e) {
-        console.error('Auth login error:', e);
-        errEl.textContent = e.message === 'NO_BUSINESS_MEMBERSHIP'
-            ? t('الحساب ده مش مربوط بالنشاط ده.', 'This account is not linked to this business.')
-            : authFriendlyError(e);
-    } finally { btn.disabled = false; }
+    if (deviceRecord.revoked || !deviceRecord.is_active) { errEl.textContent = t('الجهاز موقوف.', 'Device suspended.'); return; }
+    if (deviceRecord.expiry_date && new Date(deviceRecord.expiry_date) < new Date()) { errEl.textContent = t('الاشتراك منتهي.', 'Subscription expired.'); return; }
+    if (!pin) { errEl.textContent = t('اكتب الـ PIN.', 'Enter the PIN.'); return; }
+
+    if (pin === business.owner_pin) {
+        currentUser = { type: 'owner', name: t('المالك', 'Owner'), permissions: { stations: true, inventory: true, shift: true, settings: true } };
+        document.getElementById('lockPinInput').value = '';
+        enterMainApp();
+        return;
+    }
+    const { data: emp } = await supabaseClient.from('employees').select('*').eq('business_id', business.id).eq('pin', pin).eq('active', true).maybeSingle();
+    if (emp) {
+        currentUser = { type: 'employee', ...emp };
+        document.getElementById('lockPinInput').value = '';
+        enterMainApp();
+        return;
+    }
+    errEl.textContent = t('PIN غير صحيح.', 'Incorrect PIN.');
 }
 
-async function handleAuthSignup() {
-    const email = document.getElementById('authSignupEmail').value.trim().toLowerCase();
-    const password = document.getElementById('authSignupPassword').value;
-    const confirm = document.getElementById('authSignupPasswordConfirm').value;
-    const pin = document.getElementById('authOwnerPin').value.trim();
-    const name = document.getElementById('authOwnerName').value.trim();
-    const errEl = document.getElementById('authError');
-    const btn = document.getElementById('authSignupBtn');
-    errEl.textContent = '';
-    if (!email || !password || !confirm || !pin) { errEl.textContent = t('اكمل كل البيانات.', 'Complete all fields.'); return; }
-    if (password.length < 6) { errEl.textContent = t('كلمة المرور لازم تكون 6 أحرف على الأقل.', 'Password must be at least 6 characters.'); return; }
-    if (password !== confirm) { errEl.textContent = t('كلمتا المرور غير متطابقتين.', 'Passwords do not match.'); return; }
-    if (!/^\d{4,8}$/.test(pin)) { errEl.textContent = t('PIN المالك غير صحيح.', 'Owner PIN is invalid.'); return; }
-    btn.disabled = true;
-    try {
-        const { data, error } = await supabaseClient.auth.signUp({ email, password });
-        if (error) throw error;
-        authUser = data.user;
-        if (!data.session) {
-            errEl.textContent = t('تم إنشاء الحساب. أكد بريدك الإلكتروني ثم ارجع وسجل الدخول، وبعدها هنربطه بالنشاط.', 'Account created. Confirm your email, then sign in and we will link it to this business.');
-            return;
-        }
-        const { data: member, error: claimError } = await supabaseClient.rpc('claim_business_as_owner', {
-            p_business_code: business.code,
-            p_owner_pin: pin,
-            p_display_name: name || null
-        });
-        if (claimError) throw claimError;
-        authMemberships = [member];
-        await enterAuthenticatedApp(member);
-    } catch (e) {
-        console.error('Auth signup error:', e);
-        errEl.textContent = authFriendlyError(e);
-    } finally { btn.disabled = false; }
-}
-
-async function enterAuthenticatedApp(member) {
-    if (!business || !member) throw new Error('Missing business membership');
-    const role = member.role || 'employee';
-    currentUser = {
-        type: role === 'owner' || role === 'admin' ? role : 'employee',
-        name: member.display_name || authUser?.email || t('المستخدم', 'User'),
-        email: authUser?.email || '',
-        user_id: authUser?.id || null,
-        role,
-        permissions: member.permissions || {}
-    };
-    localStorage.setItem('psr_business_code', business.code);
-    showToast(t('تم تسجيل الدخول بنجاح', 'Signed in successfully'), 'success');
-    await enterMainApp();
-}
-
-async function handleAuthSignOut() {
-    try { await supabaseClient.auth.signOut(); } catch (e) { console.warn('signOut error', e); }
+function lockApp() {
     stopRealtimeAndTimers();
-    authUser = null;
-    authMemberships = [];
     currentUser = null;
-    business = null;
-    deviceRecord = null;
-    localStorage.removeItem('psr_business_code');
-    const email = document.getElementById('authEmail');
-    const password = document.getElementById('authPassword');
-    if (email) email.value = '';
-    if (password) password.value = '';
-    showScreen('setupScreen');
+    document.getElementById('lockPinInput').value = '';
+    proceedToLock();
 }
 
 function switchBusiness() {
-    handleAuthSignOut();
+    stopRealtimeAndTimers();
+    localStorage.removeItem('psr_business_code');
+    business = null; deviceRecord = null; currentUser = null;
+    document.getElementById('setupBusinessCode').value = '';
+    showScreen('setupScreen');
 }
 
 async function tryAutoResume() {
@@ -384,33 +369,25 @@ async function tryAutoResume() {
         const { data: biz } = await supabaseClient.from('businesses').select('*').eq('code', code).single();
         if (!biz) return;
         business = biz;
-        const memberships = await dorakAuthBootstrapForBusiness();
-        if (memberships.length) await enterAuthenticatedApp(memberships[0]);
-        else showAuthScreen('login');
-    } catch (e) { console.warn('auth auto-resume failed', e); }
+        const { data: dev } = await supabaseClient.from('devices').select('*').eq('business_id', biz.id).eq('device_id', getDeviceId()).maybeSingle();
+        if (!dev) return;
+        deviceRecord = dev;
+        proceedToLock();
+    } catch (e) { console.warn('auto-resume failed', e); }
 }
 
 // ============================================================
-// ملحوظة: نظام تفعيل الجهاز والـ PIN القديم (activationScreen /
-// lockScreen) اتشال بالكامل — التحقق من الدخول بقى بالكامل عن
-// طريق Supabase Auth (شوف دوال auth فوق).
-// ============================================================
-
-async function lockApp() {
-    await handleAuthSignOut();
-}
-
-// ============================================================
-// AUTO-FILL FROM URL (?biz=CODE)
+// AUTO-ACTIVATE FROM URL (?biz=CODE&code=ACTIVATION)
 // Used by the "start free trial" button on the marketing/dashboard
-// site, which sends the device straight here with the business code
-// pre-filled. Only runs for a device with no existing saved session,
-// so it never hijacks an already-installed device.
+// site, which creates a business + trial activation code and sends
+// the device straight here. Only runs for a device with no existing
+// saved session, so it never hijacks an already-installed device.
 // ============================================================
 async function tryAutoActivateFromURL() {
     if (localStorage.getItem('psr_business_code')) return; // existing device — don't interfere
     const params = new URLSearchParams(window.location.search);
     const bizCode = params.get('biz');
+    const actCodeParam = params.get('code');
     if (!bizCode) return;
 
     // Clean the URL so a refresh/share doesn't re-trigger this.
@@ -419,23 +396,20 @@ async function tryAutoActivateFromURL() {
     const setupInput = document.getElementById('setupBusinessCode');
     if (setupInput) setupInput.value = bizCode;
     await handleSetupContinue();
+
+    // If handleSetupContinue routed us to the activation screen (new device)
+    // and we have an activation code, fill it in and submit automatically.
+    const activationScreen = document.getElementById('activationScreen');
+    if (actCodeParam && activationScreen && activationScreen.classList.contains('active')) {
+        const actInput = document.getElementById('activationCodeInput');
+        if (actInput) actInput.value = actCodeParam;
+        await handleActivateDevice();
+    }
 }
 
 window.addEventListener('DOMContentLoaded', async () => {
-    try {
-        await tryAutoActivateFromURL();
-        await tryAutoResume();
-    } catch (e) {
-        console.error('DORAK bootstrap error:', e);
-        showScreen('setupScreen');
-    }
-    supabaseClient.auth.onAuthStateChange(async (event, session) => {
-        authUser = session?.user || null;
-        if (event === 'SIGNED_OUT') {
-            authMemberships = [];
-            currentUser = null;
-        }
-    });
+    await tryAutoActivateFromURL();
+    tryAutoResume();
 });
 
 // ============================================================
@@ -460,8 +434,7 @@ async function enterMainApp() {
     updateTexts();
     await recoverActiveSession();
     // إعادة مزامنة الساعة كل 5 دقايق عشان نلحق أي انزياح لساعة الجهاز أثناء الاستخدام
-    if (clockSyncInterval) clearInterval(clockSyncInterval);
-    clockSyncInterval = setInterval(syncServerClock, 5 * 60 * 1000);
+    setInterval(syncServerClock, 5 * 60 * 1000);
 }
 
 async function loadAllData() {
@@ -885,6 +858,17 @@ function getCurrentSegmentEstimateFast(sessionId) {
     return { amount, hours, segment: activeSeg };
 }
 
+// قيمة الجزء الحالي المكتسبة فعليًا (على أساس الوقت المنقضي دايمًا، سواء تصاعدي أو تنازلي)
+// نفس المعادلة المستخدمة عند إغلاق الجزء فعليًا في calculateSegmentAmountFromTimes
+function getCurrentSegmentEarnedAmount(sessionId) {
+    const activeSeg = getActiveSegmentFast(sessionId);
+    if (!activeSeg) return 0;
+    const start = new Date(activeSeg.started_at);
+    const now = new Date(nowCorrected());
+    const hours = Math.max(0, (now - start) / 3600000);
+    return Math.round((hours * Number(activeSeg.rate)) * 100) / 100;
+}
+
 function getRemainingSeconds(segment) {
     if (!segment || segment.timer_type !== 'countdown' || !segment.duration_seconds) return 0;
     const start = new Date(segment.started_at);
@@ -917,7 +901,6 @@ function subscribeRealtime() {
 function stopRealtimeAndTimers() {
     if (realtimeChannel) { supabaseClient.removeChannel(realtimeChannel); realtimeChannel = null; }
     if (tickInterval) { clearInterval(tickInterval); tickInterval = null; }
-    if (clockSyncInterval) { clearInterval(clockSyncInterval); clockSyncInterval = null; }
     Object.keys(countdownTimers).forEach(key => {
         if (countdownTimers[key]) clearInterval(countdownTimers[key]);
         delete countdownTimers[key];
@@ -1039,55 +1022,19 @@ function startTicker() {
             if (session) {
                 const { amount } = getCurrentSegmentEstimateFast(session.id);
                 amountEl.textContent = moneyDec(amount);
-                
-                // ✅ تحديث الإجمالي الكلي = قيمة الجزء الحالي + مجموع الطلبات
-                updateGrandTotalWithOrders(session.id, amount);
+            }
+        }
+
+        const overallTotalEl = document.getElementById('overallTotalAmount');
+        if (overallTotalEl && activeStationId) {
+            const session = sessions[activeStationId];
+            if (session) {
+                const baseTotal = Number(overallTotalEl.dataset.baseTotal || 0);
+                const earnedNow = getCurrentSegmentEarnedAmount(session.id);
+                overallTotalEl.textContent = moneyDec(Math.round((baseTotal + earnedNow) * 100) / 100);
             }
         }
     }, 1000);
-}
-
-// ============================================================
-// تحديث الإجمالي الكلي مع الطلبات (لحظي)
-// ============================================================
-async function updateGrandTotalWithOrders(sessionId, currentSegmentAmount) {
-    try {
-        // حساب مجموع الأجزاء (Segments) المغلقة السابقة لنفس الجلسة
-        // (مثال: الجزء القديم Single قبل التحويل لـ Multi)
-        let closedSegmentsTotal = 0;
-        try {
-            const segments = await getSessionSegments(sessionId);
-            closedSegmentsTotal = (segments || []).reduce((sum, seg) => {
-                if (seg.ended_at) {
-                    const amount = (seg.amount !== null && seg.amount !== undefined)
-                        ? Number(seg.amount)
-                        : calculateSegmentAmountFromTimes(seg.started_at, seg.ended_at, seg.rate);
-                    return sum + amount;
-                }
-                return sum;
-            }, 0);
-        } catch (e) {
-            console.warn('Error loading closed segments for grand total:', e);
-        }
-
-        // حساب مجموع الطلبات من activeSessionOrders
-        let ordersTotal = 0;
-        if (activeSessionOrders && activeSessionOrders.length > 0) {
-            ordersTotal = activeSessionOrders.reduce((sum, order) => {
-                return sum + (Number(order.quantity || 0) * Number(order.unit_price || 0));
-            }, 0);
-        }
-        
-        // ✅ الإجمالي الكلي = الأجزاء المغلقة السابقة + الجزء الحالي + الطلبات
-        const grandTotal = closedSegmentsTotal + (currentSegmentAmount || 0) + ordersTotal;
-        
-        const totalEl = document.getElementById('overallTotalAmount');
-        if (totalEl) {
-            totalEl.textContent = moneyDec(grandTotal);
-        }
-    } catch (e) {
-        console.warn('Error updating grand total:', e);
-    }
 }
 
 function formatElapsed(start) {
@@ -1562,6 +1509,14 @@ async function addOrderItem(sessionId, menuItemId) {
 
             if (error) throw error;
         } else {
+            // IMPORTANT:
+            // Do NOT use .select().single() here.
+            // If INSERT is allowed by RLS but SELECT is not,
+            // .insert().select().single() reports a false failure.
+            //
+            // We also send business_id when the column exists in the
+            // current V2 schema. If an older database does not have it,
+            // retry once without business_id.
             let insertPayload = {
                 business_id: business.id,
                 session_id: sessionId,
@@ -1590,6 +1545,7 @@ async function addOrderItem(sessionId, menuItemId) {
             if (error) throw error;
         }
 
+        // Reload from DB so the UI has the real row/id.
         const { data: refreshedOrders, error: reloadError } = await supabaseClient
             .from('session_orders')
             .select('*')
@@ -1597,6 +1553,8 @@ async function addOrderItem(sessionId, menuItemId) {
             .order('created_at');
 
         if (reloadError) {
+            // The insert succeeded, but the current RLS SELECT policy
+            // may prevent reading the row back. Do not claim INSERT failed.
             console.error('Order was inserted, but reload failed:', reloadError);
             showToast(
                 t('تم حفظ الطلب، لكن صلاحية قراءة الطلبات تحتاج مراجعة في Supabase.', 'Order was saved, but the SELECT permission for orders needs review in Supabase.'),
@@ -1604,15 +1562,6 @@ async function addOrderItem(sessionId, menuItemId) {
             );
         } else {
             activeSessionOrders = refreshedOrders || [];
-            
-            // ✅ تحديث الإجمالي الكلي بعد إضافة الطلب
-            if (activeStationId) {
-                const session = sessions[activeStationId];
-                if (session) {
-                    const { amount } = getCurrentSegmentEstimateFast(session.id);
-                    updateGrandTotalWithOrders(session.id, amount);
-                }
-            }
         }
 
         renderStationOrdersSection();
@@ -1679,15 +1628,6 @@ async function removeOrderItem(orderId) {
         activeSessionOrders = activeSessionOrders.filter(o => o.id !== orderId);
     }
     renderStationOrdersSection();
-    
-    // ✅ تحديث الإجمالي الكلي بعد حذف الطلب
-    if (activeStationId) {
-        const session = sessions[activeStationId];
-        if (session) {
-            const { amount } = getCurrentSegmentEstimateFast(session.id);
-            updateGrandTotalWithOrders(session.id, amount);
-        }
-    }
 }
 
 // ============================================================
@@ -1854,7 +1794,7 @@ async function executeCancelSession(stationId) {
     try {
         const activeSeg = await getActiveSegment(session.id);
         if (activeSeg && !activeSeg.ended_at) {
-            const now = new Date(nowCorrected()).toISOString();
+            const now = new Date().toISOString();
             await closeSegment(activeSeg.id, now, 0);
         }
         
@@ -2048,6 +1988,8 @@ async function openStationSheet(stationId) {
     activeSessionOrders = orders || [];
 
     const activeSegStart = activeSeg ? activeSeg.started_at : session.started_at;
+    const liveEarnedNow = activeSeg ? Math.round((Math.max(0, (nowCorrected() - new Date(activeSeg.started_at)) / 3600000) * Number(activeSeg.rate)) * 100) / 100 : 0;
+    const liveGrandTotal = Math.round((totals.grandTotal + liveEarnedNow) * 100) / 100;
 
     body.innerHTML = `
         <div style="text-align:center;margin-bottom:12px;">
@@ -2074,7 +2016,7 @@ async function openStationSheet(stationId) {
             </div>
             <div style="background:var(--bg-sunken);border-radius:var(--radius-sm);padding:8px;text-align:center;">
                 <div style="font-size:10px;color:var(--text-dim);">${t('الإجمالي الكلي', 'Grand Total')}</div>
-                <div class="mono" style="font-size:18px;font-weight:700;color:var(--amber);" id="overallTotalAmount">${moneyDec(currentEstimate.amount + totals.ordersTotal)}</div>
+                <div class="mono" style="font-size:18px;font-weight:700;color:var(--amber);" id="overallTotalAmount" data-base-total="${totals.grandTotal}">${moneyDec(liveGrandTotal)}</div>
             </div>
         </div>
         
@@ -2242,15 +2184,6 @@ function renderStationOrdersSection() {
                 <button class="btn btn-ghost btn-sm" style="padding:6px 10px;" onclick="removeOrderItem('${o.id}')" title="${t('حذف/إنقاص', 'Remove/Decrease')}"><i class="fa-solid fa-minus"></i></button>
             </div>
         </div>`).join('');
-    
-    // ✅ تحديث الإجمالي الكلي بعد عرض الطلبات
-    if (activeStationId) {
-        const session = sessions[activeStationId];
-        if (session) {
-            const { amount } = getCurrentSegmentEstimateFast(session.id);
-            updateGrandTotalWithOrders(session.id, amount);
-        }
-    }
 }
 
 function selectStartMode(mode) {
@@ -2369,12 +2302,10 @@ function showEndSessionPayment(stationId) {
         }
         
         const activeMethods = paymentMethods.filter(pm => pm.active !== false);
-
-        // ✅ تخزين الإجمالي الأصلي كمرجع ثابت لحساب الخصم والباقي عليه
-        endSessionGrandTotal = totals.grandTotal;
+        currentEndSessionTotals = totals;
         endSessionDiscount = 0;
-        endSessionPaidAmount = null;
-
+        endSessionAmountPaid = null;
+        
         let paymentHtml = `
             <div style="text-align:center;margin:12px 0;">
                 <div style="font-size:28px;font-weight:700;color:var(--amber);">${moneyDec(totals.grandTotal)} ${t('ج', 'EGP')}</div>
@@ -2386,21 +2317,24 @@ function showEndSessionPayment(stationId) {
                 <div class="segment-row"><span class="seg-label">${t('الطلبات', 'Orders')}</span><span class="seg-value">${moneyDec(totals.ordersTotal)}</span></div>
             </div>
             ${ordersHtml}
-            <div class="section-title" style="margin-top:8px;">${t('خصم للعميل (اختياري)', 'Customer Discount (optional)')}</div>
-            <div class="field" style="margin-bottom:6px;">
-                <input type="number" id="endSessionDiscountInput" inputmode="decimal" min="0" step="0.01" placeholder="${t('مثلاً 10', 'e.g. 10')}">
-            </div>
-            <div class="segment-row segment-total" style="margin-bottom:10px;">
-                <span class="seg-label">${t('المستحق بعد الخصم', 'Due After Discount')}</span>
-                <span class="seg-value" id="endSessionDueAfterDiscount" style="color:var(--amber);">${moneyDec(totals.grandTotal)}</span>
-            </div>
-            <div class="section-title">${t('العميل دفع كام؟ (اختياري)', 'Amount Paid by Customer (optional)')}</div>
-            <div class="field" style="margin-bottom:6px;">
-                <input type="number" id="endSessionPaidInput" inputmode="decimal" min="0" step="0.01" placeholder="${t('مثلاً 200', 'e.g. 200')}">
-            </div>
-            <div class="segment-row" id="endSessionChangeRow" style="display:none;margin-bottom:8px;">
-                <span class="seg-label" id="endSessionChangeLabel"></span>
-                <span class="seg-value" id="endSessionChangeValue" style="font-weight:700;"></span>
+            <div class="section-title">${t('الخصم والدفع', 'Discount & Payment')}</div>
+            <div style="background:var(--bg-sunken);border-radius:var(--radius-sm);padding:10px;margin-bottom:10px;">
+                <div style="margin-bottom:10px;">
+                    <label style="display:block;font-size:12px;color:var(--text-dim);margin-bottom:4px;">${t('خصم (جنيه)', 'Discount (EGP)')}</label>
+                    <input type="number" id="discountInput" class="mono" min="0" step="0.5" value="0" placeholder="0" oninput="updatePaymentCalculation()" style="width:100%;">
+                </div>
+                <div style="display:flex;justify-content:space-between;align-items:center;padding:8px 0;font-weight:700;border-top:1px solid var(--border);border-bottom:1px solid var(--border);margin-bottom:10px;">
+                    <span>${t('الإجمالي بعد الخصم', 'Total After Discount')}</span>
+                    <span class="mono" id="finalTotalDisplay" style="color:var(--amber);font-size:16px;">${moneyDec(totals.grandTotal)}</span>
+                </div>
+                <div style="margin-bottom:8px;">
+                    <label style="display:block;font-size:12px;color:var(--text-dim);margin-bottom:4px;">${t('العميل دفع كام', 'Amount Paid by Customer')}</label>
+                    <input type="number" id="amountPaidInput" class="mono" min="0" step="0.5" placeholder="${moneyDec(totals.grandTotal)}" oninput="updatePaymentCalculation()" style="width:100%;">
+                </div>
+                <div id="changeDueRow" style="display:none;justify-content:space-between;align-items:center;padding:8px 0 2px;font-weight:700;">
+                    <span id="changeDueLabel"></span>
+                    <span class="mono" id="changeDueAmount" style="font-size:16px;"></span>
+                </div>
             </div>
             <div class="section-title">${t('اختر طريقة الدفع', 'Select Payment Method')}</div>`;
         
@@ -2443,61 +2377,9 @@ function showEndSessionPayment(stationId) {
                 }
             });
         });
-
-        const discountInputEl = document.getElementById('endSessionDiscountInput');
-        const paidInputEl = document.getElementById('endSessionPaidInput');
-        if (discountInputEl) discountInputEl.addEventListener('input', updateEndSessionDiscountCalc);
-        if (paidInputEl) paidInputEl.addEventListener('input', updateEndSessionDiscountCalc);
         
         selectedPaymentMethod = null;
     })();
-}
-
-// ============================================================
-// UPDATE DISCOUNT / PAID / CHANGE CALCULATION (End Session sheet)
-// ✅ هذا الحساب لا يمس totals.grandTotal ولا مصدر الحقيقة في قاعدة
-// البيانات إطلاقاً — بيشتغل فقط على القيمة المعروضة في نفس الشاشة.
-// ============================================================
-function updateEndSessionDiscountCalc() {
-    const discountInputEl = document.getElementById('endSessionDiscountInput');
-    const paidInputEl = document.getElementById('endSessionPaidInput');
-    const dueEl = document.getElementById('endSessionDueAfterDiscount');
-    const changeRow = document.getElementById('endSessionChangeRow');
-    const changeLabel = document.getElementById('endSessionChangeLabel');
-    const changeValue = document.getElementById('endSessionChangeValue');
-    if (!dueEl) return;
-
-    let discount = discountInputEl ? parseFloat(discountInputEl.value) : NaN;
-    if (isNaN(discount) || discount < 0) discount = 0;
-    // الخصم متسقفش أعلى من الإجمالي علشان المستحق ميبقاش رقم سالب
-    if (discount > endSessionGrandTotal) discount = endSessionGrandTotal;
-    endSessionDiscount = discount;
-
-    const dueAfterDiscount = Math.round((endSessionGrandTotal - discount) * 100) / 100;
-    dueEl.textContent = moneyDec(dueAfterDiscount);
-
-    let paid = paidInputEl ? parseFloat(paidInputEl.value) : NaN;
-    if (isNaN(paid) || paidInputEl.value === '') {
-        endSessionPaidAmount = null;
-        if (changeRow) changeRow.style.display = 'none';
-        return;
-    }
-    if (paid < 0) paid = 0;
-    endSessionPaidAmount = paid;
-
-    const diff = Math.round((paid - dueAfterDiscount) * 100) / 100;
-    if (changeRow && changeLabel && changeValue) {
-        changeRow.style.display = 'flex';
-        if (diff >= 0) {
-            changeLabel.textContent = t('الباقي للعميل', 'Change to give back');
-            changeValue.style.color = 'var(--teal, #2dd4bf)';
-            changeValue.textContent = `${moneyDec(diff)} ${t('ج', 'EGP')}`;
-        } else {
-            changeLabel.textContent = t('متبقي على العميل', 'Still owed by customer');
-            changeValue.style.color = 'var(--amber)';
-            changeValue.textContent = `${moneyDec(Math.abs(diff))} ${t('ج', 'EGP')}`;
-        }
-    }
 }
 
 
@@ -2526,6 +2408,49 @@ function selectPaymentMethod(pmId) {
     if (printBtn) {
         printBtn.disabled = false;
     }
+}
+
+// ============================================================
+// ✅ حساب الخصم والباقي أثناء الدفع
+// ============================================================
+function updatePaymentCalculation() {
+    if (!currentEndSessionTotals) return;
+    const grandTotal = currentEndSessionTotals.grandTotal;
+
+    const discountInput = document.getElementById('discountInput');
+    let discount = Math.max(0, parseFloat(discountInput.value) || 0);
+    if (discount > grandTotal) {
+        discount = grandTotal;
+        discountInput.value = discount;
+    }
+    const finalTotal = Math.round((grandTotal - discount) * 100) / 100;
+    const finalTotalEl = document.getElementById('finalTotalDisplay');
+    if (finalTotalEl) finalTotalEl.textContent = moneyDec(finalTotal);
+
+    const paidInput = document.getElementById('amountPaidInput');
+    const paidVal = paidInput ? paidInput.value.trim() : '';
+    const changeRow = document.getElementById('changeDueRow');
+    const changeLabel = document.getElementById('changeDueLabel');
+    const changeAmount = document.getElementById('changeDueAmount');
+
+    if (paidVal === '') {
+        if (changeRow) changeRow.style.display = 'none';
+        endSessionAmountPaid = null;
+    } else {
+        const paid = Math.max(0, parseFloat(paidVal) || 0);
+        const diff = Math.round((paid - finalTotal) * 100) / 100;
+        if (changeRow) changeRow.style.display = 'flex';
+        if (diff >= 0) {
+            if (changeLabel) changeLabel.textContent = t('الباقي للعميل', 'Change Due to Customer');
+            if (changeAmount) { changeAmount.textContent = moneyDec(diff); changeAmount.style.color = 'var(--teal)'; }
+        } else {
+            if (changeLabel) changeLabel.textContent = t('باقي على العميل', 'Remaining Owed by Customer');
+            if (changeAmount) { changeAmount.textContent = moneyDec(Math.abs(diff)); changeAmount.style.color = '#ff6b6b'; }
+        }
+        endSessionAmountPaid = paid;
+    }
+
+    endSessionDiscount = discount;
 }
 
 // ============================================================
@@ -2576,18 +2501,13 @@ async function confirmEndSessionWithPayment() {
         }
 
         const totals = await calculateTotalAmounts(session.id);
-
-        // ✅ الخصم بيتحسب فوق totals.grandTotal اللي طالع من قاعدة البيانات
-        // نفسها (مفيش أي قيمة مخزّنة في الواجهة بتتلخبط مع الجزء الحالي/الطلبات)
-        let discount = Number(endSessionDiscount) || 0;
-        if (discount < 0) discount = 0;
-        if (discount > totals.grandTotal) discount = totals.grandTotal;
-        const finalAmount = Math.round((totals.grandTotal - discount) * 100) / 100;
+        const discountAmount = Math.min(Math.max(0, endSessionDiscount || 0), totals.grandTotal);
+        const finalTotal = Math.round((totals.grandTotal - discountAmount) * 100) / 100;
 
         const basePayload = {
             status: 'completed',
             ended_at: new Date(nowCorrected()).toISOString(),
-            amount: finalAmount,
+            amount: finalTotal,
             payment_method: selectedPaymentMethod
         };
 
@@ -2596,15 +2516,15 @@ async function confirmEndSessionWithPayment() {
         // بدونها عشان قفل الجلسة ميفشلش خالص.
         let { error } = await supabaseClient.from('sessions').update({
             ...basePayload,
-            discount: discount,
-            amount_paid: endSessionPaidAmount
+            discount: discountAmount,
+            amount_paid: endSessionAmountPaid
         }).eq('id', session.id);
 
         if (error && /column .* does not exist/i.test(error.message || '')) {
             console.warn('discount/amount_paid columns missing — saving without them:', error.message);
             ({ error } = await supabaseClient.from('sessions').update(basePayload).eq('id', session.id));
         }
-
+        
         if (error) {
             console.error('Error ending session:', error);
             endingSessionInProgress = false;
@@ -2614,11 +2534,14 @@ async function confirmEndSessionWithPayment() {
         
         const savedStationId = stationId;
         
+        // نثبّت قيمة الخصم النهائية (بعد أي clamp) عشان الإيصال يعرضها صح
+        endSessionDiscount = discountAmount;
+        
         delete sessions[stationId];
         renderStationsGrid();
         closeSheet('stationOverlay');
         const pm = paymentMethods.find(p => p.id === selectedPaymentMethod);
-        showToast(`${t('اتقفلت الجلسة —', 'Session closed —')} ${moneyDec(finalAmount)} ${t('ج', 'EGP')} (${pm ? pm.name : ''})`, 'success');
+        showToast(`${t('اتقفلت الجلسة —', 'Session closed —')} ${moneyDec(finalTotal)} ${t('ج', 'EGP')} (${pm ? pm.name : ''})`, 'success');
         
         await renderDashboard();
         if (document.getElementById('view-shift').classList.contains('active')) {
@@ -2682,16 +2605,6 @@ function printReceipt() {
             `;
         }
         
-        // ✅ نفس منطق الخصم المستخدم وقت التأكيد، محسوب فوق totals.grandTotal
-        // القادم من قاعدة البيانات — الإيصال بيعرض بس، مبيغيرش أي قيمة مخزنة
-        let receiptDiscount = Number(endSessionDiscount) || 0;
-        if (receiptDiscount < 0) receiptDiscount = 0;
-        if (receiptDiscount > totals.grandTotal) receiptDiscount = totals.grandTotal;
-        const receiptFinalAmount = Math.round((totals.grandTotal - receiptDiscount) * 100) / 100;
-        const receiptPaid = (endSessionPaidAmount !== null && endSessionPaidAmount !== undefined && !isNaN(endSessionPaidAmount))
-            ? Number(endSessionPaidAmount) : null;
-        const receiptChange = receiptPaid !== null ? Math.round((receiptPaid - receiptFinalAmount) * 100) / 100 : 0;
-
         const receiptContent = `
             <div style="font-family: 'Cairo', Arial, sans-serif; padding: 20px; max-width: 300px; margin: 0 auto; direction: rtl; text-align: center; background: #fff; color: #000;">
                 <div style="font-size: 18px; font-weight: 700; margin-bottom: 4px;">${escapeHtml(business.name)}</div>
@@ -2728,33 +2641,33 @@ function printReceipt() {
                 </div>
                 ${ordersReceiptHtml}
                 <hr style="border: none; border-top: 1px dashed #ccc; margin: 10px 0;">
-                ${receiptDiscount > 0 ? `
-                <div style="font-size: 13px; margin: 6px 0;">
+                ${endSessionDiscount > 0 ? `
+                <div style="font-size: 13px; margin-bottom: 4px;">
                     <div style="display:flex;justify-content:space-between;padding:2px 0;">
                         <span>${t('الإجمالي قبل الخصم', 'Total Before Discount')}</span>
                         <span>${moneyDec(totals.grandTotal)} ${t('ج', 'EGP')}</span>
                     </div>
-                    <div style="display:flex;justify-content:space-between;padding:2px 0;">
+                    <div style="display:flex;justify-content:space-between;padding:2px 0;color:#c0392b;">
                         <span>${t('الخصم', 'Discount')}</span>
-                        <span>-${moneyDec(receiptDiscount)} ${t('ج', 'EGP')}</span>
+                        <span>- ${moneyDec(endSessionDiscount)} ${t('ج', 'EGP')}</span>
                     </div>
                 </div>
                 ` : ''}
                 <div style="font-size: 18px; font-weight: 700; color: #000; margin: 8px 0;">
                     <div style="display:flex;justify-content:space-between;">
                         <span>${t('الإجمالي', 'Total')}</span>
-                        <span>${moneyDec(receiptFinalAmount)} ${t('ج', 'EGP')}</span>
+                        <span>${moneyDec(Math.max(0, Math.round((totals.grandTotal - endSessionDiscount) * 100) / 100))} ${t('ج', 'EGP')}</span>
                     </div>
                 </div>
-                ${receiptPaid !== null ? `
-                <div style="font-size: 13px; margin: 6px 0;">
+                ${endSessionAmountPaid !== null && endSessionAmountPaid !== undefined ? `
+                <div style="font-size: 13px; margin-bottom: 8px;">
                     <div style="display:flex;justify-content:space-between;padding:2px 0;">
-                        <span>${t('المدفوع', 'Paid')}</span>
-                        <span>${moneyDec(receiptPaid)} ${t('ج', 'EGP')}</span>
+                        <span>${t('دفع العميل', 'Amount Paid')}</span>
+                        <span>${moneyDec(endSessionAmountPaid)} ${t('ج', 'EGP')}</span>
                     </div>
                     <div style="display:flex;justify-content:space-between;padding:2px 0;font-weight:700;">
-                        <span>${receiptChange >= 0 ? t('الباقي للعميل', 'Change Given') : t('متبقي على العميل', 'Still Owed')}</span>
-                        <span>${moneyDec(Math.abs(receiptChange))} ${t('ج', 'EGP')}</span>
+                        <span>${endSessionAmountPaid >= (totals.grandTotal - endSessionDiscount) ? t('الباقي للعميل', 'Change Due') : t('باقي على العميل', 'Remaining Owed')}</span>
+                        <span>${moneyDec(Math.abs(Math.round((endSessionAmountPaid - (totals.grandTotal - endSessionDiscount)) * 100) / 100))} ${t('ج', 'EGP')}</span>
                     </div>
                 </div>
                 ` : ''}
@@ -2989,7 +2902,6 @@ async function renderShiftView() {
         const revLabel = t('إيراد', 'Revenue');
         const expLabel = t('مصروفات', 'Expenses');
         const netLabel = t('صافي الدخل', 'Net Income');
-        const closedByName = shift.closed_by || t('غير معروف', 'Unknown');
         
         historyHtml += `
             <div class="list-row" style="flex-direction:column;align-items:stretch;padding:12px 4px;border-bottom:1px solid var(--border);cursor:pointer;" onclick="viewShiftDetails('${shift.id}')">
@@ -3008,10 +2920,6 @@ async function renderShiftView() {
                 <div style="display:flex;justify-content:space-between;width:100%;">
                     <div style="font-size:12px;color:var(--text-faint);">${netLabel}</div>
                     <div class="mono" style="font-weight:700;color:var(--amber);">${money(shiftTotals.profit)} ${t('ج', 'EGP')}</div>
-                </div>
-                <div style="display:flex;justify-content:space-between;width:100%;margin-top:4px;font-size:11px;color:var(--text-dim);border-top:1px solid var(--border);padding-top:4px;">
-                    <span>${t('أغلق بواسطة', 'Closed by')}</span>
-                    <span style="font-weight:600;color:var(--text);">${escapeHtml(closedByName)}</span>
                 </div>
             </div>
         `;
@@ -3123,11 +3031,9 @@ async function viewShiftDetails(shiftId) {
     const totals = await getShiftTotals(shift);
     const openedStr = new Date(shift.opened_at).toLocaleString(currentLang === 'ar' ? 'ar-EG' : 'en-US');
     const closedStr = shift.closed_at ? new Date(shift.closed_at).toLocaleString(currentLang === 'ar' ? 'ar-EG' : 'en-US') : '—';
-    const closedByName = shift.closed_by || t('غير معروف', 'Unknown');
     const extraRows = `
         <div class="list-row"><div class="row-title">${t('وقت الفتح', 'Opened At')}</div><div class="row-value mono">${openedStr}</div></div>
-        <div class="list-row"><div class="row-title">${t('وقت الإقفال', 'Closed At')}</div><div class="row-value mono">${closedStr}</div></div>
-        <div class="list-row"><div class="row-title">${t('أغلق بواسطة', 'Closed by')}</div><div class="row-value mono">${escapeHtml(closedByName)}</div></div>`;
+        <div class="list-row"><div class="row-title">${t('وقت الإقفال', 'Closed At')}</div><div class="row-value mono">${closedStr}</div></div>`;
     document.getElementById('shiftDetailsSummary').innerHTML = buildShiftBreakdownHtml(totals, extraRows);
     openSheet('shiftDetailsOverlay');
 }
@@ -3137,8 +3043,6 @@ async function confirmCloseShift() {
     const totals = await getShiftTotals(currentShift);
     const closedAt = new Date().toISOString();
     
-    const closedByName = currentUser?.name || currentUser?.type || t('غير معروف', 'Unknown');
-    
     const { data, error } = await supabaseClient
         .from('shifts')
         .update({ 
@@ -3147,7 +3051,7 @@ async function confirmCloseShift() {
             total_revenue: totals.revenue, 
             total_expenses: totals.expenses, 
             total_profit: totals.profit, 
-            closed_by: closedByName
+            closed_by: currentUser.name || currentUser.type 
         })
         .eq('id', currentShift.id)
         .select();
@@ -3174,12 +3078,40 @@ async function confirmCloseShift() {
 // SETTINGS
 // ============================================================
 function renderSettings() {
-    const roleLabel = currentUser?.type === 'owner' || currentUser?.type === 'admin'
-        ? t('مالك', 'Owner') : t('موظف', 'Employee');
+    const expiry = deviceRecord.expiry_date ? new Date(deviceRecord.expiry_date) : null;
     document.getElementById('settingsSubscription').innerHTML = `
-        <div class="list-row"><div class="row-title">${t('البريد الإلكتروني', 'Email')}</div><div class="row-value mono">${escapeHtml(currentUser?.email || '—')}</div></div>
-        <div class="list-row"><div class="row-title">${t('الصلاحية', 'Role')}</div><div class="badge badge-teal">${roleLabel}</div></div>
-        <div class="list-row"><div class="row-title">${t('كود النشاط', 'Business Code')}</div><div class="row-value mono">${escapeHtml(business?.code || '—')}</div></div>`;
+        <div class="list-row"><div class="row-title">${t('حالة الجهاز', 'Device Status')}</div><div class="badge ${deviceRecord.revoked ? 'badge-red' : 'badge-teal'}">${deviceRecord.revoked ? t('موقوف', 'Suspended') : t('نشط', 'Active')}</div></div>
+        <div class="list-row"><div class="row-title">${t('تاريخ الانتهاء', 'Expiry Date')}</div><div class="row-value mono">${expiry ? expiry.toLocaleDateString(currentLang === 'ar' ? 'ar-EG' : 'en-US') : '—'}</div></div>`;
+
+    // ============================================================
+    // ✅ TOGGLE PIN SECTION — مبني بالكامل من الـ JS عشان يشتغل من غير
+    // ما نحتاج نضيف عناصر ثابتة في الـ HTML يدويًا.
+    // بنستخدم wrapper بـ id ثابت عشان لو renderSettings() اتنادت تاني
+    // (بعد إضافة موظف/صنف مثلاً) منكررش القسم من جديد كل مرة.
+    // ============================================================
+    const pinToggleHtml = `
+        <div class="list-row" style="cursor:pointer;" onclick="toggleSettingsPin()">
+            <div class="row-title">${t('تغيير PIN المالك', 'Change Owner PIN')}</div>
+            <i id="settingsPinChevron" class="fa-solid fa-chevron-down" style="transition:transform .2s;color:var(--text-dim);"></i>
+        </div>
+        <div id="settingsChangePin" style="display:${settingsPinExpanded ? 'block' : 'none'};padding:10px 4px 4px;">
+            <div style="margin-bottom:10px;">
+                <label style="display:block;font-size:12px;color:var(--text-dim);margin-bottom:4px;">${t('الـ PIN الحالي', 'Current PIN')}</label>
+                <input type="password" id="currentPinInput" class="mono" inputmode="numeric" maxlength="6" placeholder="••••" style="width:100%;">
+            </div>
+            <div style="margin-bottom:10px;">
+                <label style="display:block;font-size:12px;color:var(--text-dim);margin-bottom:4px;">${t('الـ PIN الجديد (4-6 أرقام)', 'New PIN (4-6 digits)')}</label>
+                <input type="password" id="newPinInput" class="mono" inputmode="numeric" maxlength="6" placeholder="••••" style="width:100%;">
+            </div>
+            <div id="changePinError" style="color:#ff6b6b;font-size:12px;margin-bottom:10px;"></div>
+            <button class="btn btn-teal btn-block" onclick="changeOwnerPin()">${t('حفظ الـ PIN الجديد', 'Save New PIN')}</button>
+        </div>`;
+    let pinToggleWrap = document.getElementById('settingsPinToggleWrap');
+    if (!pinToggleWrap) {
+        document.getElementById('settingsSubscription').insertAdjacentHTML('afterend', `<div id="settingsPinToggleWrap"></div>`);
+        pinToggleWrap = document.getElementById('settingsPinToggleWrap');
+    }
+    pinToggleWrap.innerHTML = pinToggleHtml;
 
     const groupedMenu = {};
     menuItems.forEach(item => {
@@ -3222,11 +3154,63 @@ function renderSettings() {
                     </button>
                 </div>
             </div>`).join('');
+    
+    // ✅ تحديث حالة الـ Toggle (PIN)
+    const pinSection = document.getElementById('settingsChangePin');
+    const chevron = document.getElementById('settingsPinChevron');
+    if (pinSection && chevron) {
+        pinSection.style.display = settingsPinExpanded ? 'block' : 'none';
+        chevron.style.transform = settingsPinExpanded ? 'rotate(180deg)' : 'rotate(0deg)';
+    }
 }
 
-// ملحوظة: أدوات تغيير PIN المالك القديمة (changeOwnerPin) اتشالت
-// لإن التحقق بقى بالكامل عن طريق Supabase Auth. الـ owner_pin لسه
-// موجود بس كمرجع لعملية claim_business_as_owner.
+// ============================================================
+// 🔐 تغيير PIN المالك (جديد)
+// ============================================================
+async function changeOwnerPin() {
+    const currentPin = document.getElementById('currentPinInput').value.trim();
+    const newPin = document.getElementById('newPinInput').value.trim();
+    const errEl = document.getElementById('changePinError');
+    errEl.textContent = '';
+
+    if (!business) { 
+        errEl.textContent = t('❌ النشاط غير موجود.', '❌ Business not found.'); 
+        return; 
+    }
+    
+    // 🔍 التحقق من PIN الحالي
+    if (currentPin !== business.owner_pin) { 
+        errEl.textContent = t('❌ PIN الحالي غير صحيح.', '❌ Current PIN is incorrect.'); 
+        return; 
+    }
+    
+    // ✅ التحقق من PIN الجديد
+    if (!/^\d{4,6}$/.test(newPin)) { 
+        errEl.textContent = t('❌ PIN الجديد لازم يكون 4-6 أرقام.', '❌ New PIN must be 4-6 digits.'); 
+        return; 
+    }
+
+    try {
+        const { error } = await supabaseClient
+            .from('businesses')
+            .update({ owner_pin: newPin })
+            .eq('id', business.id);
+        
+        if (error) throw error;
+
+        // ✅ تحديث المتغير المحلي
+        business.owner_pin = newPin;
+        
+        // 🧹 تنظيف الحقول
+        document.getElementById('currentPinInput').value = '';
+        document.getElementById('newPinInput').value = '';
+        
+        showToast(t('✅ تم تغيير PIN المالك بنجاح.', '✅ Owner PIN changed successfully.'), 'success');
+    } catch (e) {
+        console.error('❌ Error changing PIN:', e);
+        errEl.textContent = t('❌ فشل تغيير PIN: ' + e.message, '❌ Failed to change PIN: ' + e.message);
+    }
+}
 
 // ============================================================
 // 🏢 إنشاء نشاط جديد من صفحة الدخول (جديد)
@@ -3434,14 +3418,6 @@ async function deleteEmployee(employeeId) {
     }
 }
 
-// ✅ زر الحذف داخل شيت تعديل الموظف (يقرأ الـ id من الحقل المخفي)
-async function deleteEmployeeFromSheet() {
-    const employeeId = document.getElementById('employeeId').value;
-    if (!employeeId) return;
-    await deleteEmployee(employeeId);
-    closeSheet('employeeOverlay');
-}
-
 function escapeHtml(str) { 
     if (!str) return '';
     const d = document.createElement('div'); 
@@ -3510,6 +3486,8 @@ async function refreshStationSheetContent(stationId) {
     activeSessionOrders = orders || [];
 
     const activeSegStart = activeSeg ? activeSeg.started_at : session.started_at;
+    const liveEarnedNow = activeSeg ? Math.round((Math.max(0, (nowCorrected() - new Date(activeSeg.started_at)) / 3600000) * Number(activeSeg.rate)) * 100) / 100 : 0;
+    const liveGrandTotal = Math.round((totals.grandTotal + liveEarnedNow) * 100) / 100;
     
     body.innerHTML = `
         <div style="text-align:center;margin-bottom:12px;">
@@ -3536,7 +3514,7 @@ async function refreshStationSheetContent(stationId) {
             </div>
             <div style="background:var(--bg-sunken);border-radius:var(--radius-sm);padding:8px;text-align:center;">
                 <div style="font-size:10px;color:var(--text-dim);">${t('الإجمالي الكلي', 'Grand Total')}</div>
-                <div class="mono" style="font-size:18px;font-weight:700;color:var(--amber);" id="overallTotalAmount">${moneyDec(currentEstimate.amount + totals.ordersTotal)}</div>
+                <div class="mono" style="font-size:18px;font-weight:700;color:var(--amber);" id="overallTotalAmount" data-base-total="${totals.grandTotal}">${moneyDec(liveGrandTotal)}</div>
             </div>
         </div>
         
@@ -3633,7 +3611,7 @@ async function handleSwitchMode(sessionId, newMode, stationId) {
             return;
         }
 
-        const now = new Date(nowCorrected()).toISOString();
+        const now = new Date().toISOString();
         const start = new Date(activeSeg.started_at);
         let usedSeconds = (new Date(now) - start) / 1000;
         let hours = usedSeconds / 3600;
@@ -3667,10 +3645,6 @@ async function handleSwitchMode(sessionId, newMode, stationId) {
         showToast(t('تم التحويل إلى ' + (newMode === 'single' ? 'Single' : 'Multi'), 'Switched to ' + (newMode === 'single' ? 'Single' : 'Multi')), 'success');
         
         await refreshStationSheetContent(stationId);
-        
-        // ✅ تحديث الإجمالي الكلي بعد التبديل
-        const { amount: newAmount } = getCurrentSegmentEstimateFast(sessionId);
-        await updateGrandTotalWithOrders(sessionId, newAmount);
         
     } catch (e) {
         console.error('Error switching mode:', e);
