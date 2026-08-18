@@ -2,8 +2,8 @@
 // ============================================================
 // CONFIG
 // ============================================================
-const SUPABASE_URL = 'https://fhjhtgbvtkuhhzitvxtx.supabase.co';
-const SUPABASE_ANON_KEY = 'sb_publishable_X0aLD3gjXGqC_no4gW78ng_TWztP5cd';
+const SUPABASE_URL = 'https://hdrvqgicxxgfolozxgjp.supabase.co';
+const SUPABASE_ANON_KEY = 'sb_publishable_dGNw7eTTempKBdFmAZRjYA_eaeEE2jj';
 const supabaseClient = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 
 // V2 safety helpers: never report success when Supabase rejected the operation.
@@ -16,7 +16,7 @@ async function dbResult(promise, context = 'Database operation') {
     return result;
 }
 function assertBusinessContext() {
-    if (!business?.code) throw new Error('Business context is missing');
+    if (!business?.id) throw new Error('Business context is missing');
 }
 function assertPositiveNumber(value, label) {
     const n = Number(value);
@@ -131,6 +131,8 @@ let sessionSegmentsCache = {};
 let activeSegmentCache = {};
 let pendingSwitch = false;
 let transferSourceStationId = null;
+let countdownTimers = {};
+let countdownAlerts = {};
 // تخزين حالة التوجل لكل تصنيف
 let categoryToggleState = {};
 
@@ -224,31 +226,15 @@ async function handleSetupContinue() {
     const btn = document.getElementById('setupContinueBtn');
     btn.disabled = true;
     try {
-        // ✅ البحث عن النشاط باستخدام code
-        const { data: biz, error } = await supabaseClient
-            .from('businesses')
-            .select('*')
-            .eq('code', code)
-            .single();
-            
-        if (error || !biz) { 
-            errEl.textContent = t('مفيش نشاط بالكود ده.', 'No business found with this code.'); 
-            return; 
-        }
+        const { data: biz, error } = await supabaseClient.from('businesses').select('*').eq('code', code).single();
+        if (error || !biz) { errEl.textContent = t('مفيش نشاط بالكود ده.', 'No business found with this code.'); return; }
         business = biz;
         localStorage.setItem('psr_business_code', code);
 
         const deviceId = getDeviceId();
-        // ✅ استخدام business.code بدلاً من business.id
-        const { data: dev } = await supabaseClient
-            .from('devices')
-            .select('*')
-            .eq('business_code', biz.code)
-            .eq('device_id', deviceId)
-            .maybeSingle();
-            
+        const { data: dev } = await supabaseClient.from('devices').select('*').eq('business_id', biz.id).eq('device_id', deviceId).maybeSingle();
         if (!dev) {
-            document.getElementById('activationBizName').textContent = biz.name || biz.business_name;
+            document.getElementById('activationBizName').textContent = biz.name;
             showScreen('activationScreen');
             return;
         }
@@ -266,72 +252,34 @@ async function handleActivateDevice() {
     errEl.textContent = '';
     if (!code) { errEl.textContent = t('اكتب كود التفعيل.', 'Enter the activation code.'); return; }
     try {
-        // ✅ البحث باستخدام business_code بدلاً من business_id
-        const { data: actCode, error } = await supabaseClient
-            .from('activation_codes')
-            .select('*')
-            .eq('business_code', business.code)
-            .eq('code', code)
-            .eq('used', false)
-            .single();
-            
-        if (error || !actCode) { 
-            errEl.textContent = t('الكود غير صحيح أو مستخدم قبل كده.', 'Invalid or already used code.'); 
-            return; 
-        }
+        const { data: actCode, error } = await supabaseClient.from('activation_codes').select('*').eq('business_id', business.id).eq('code', code).eq('used', false).single();
+        if (error || !actCode) { errEl.textContent = t('الكود غير صحيح أو مستخدم قبل كده.', 'Invalid or already used code.'); return; }
 
         const deviceId = getDeviceId();
         const isTrial = actCode.is_trial === true;
-        const expiry = new Date(); 
-        expiry.setDate(expiry.getDate() + (isTrial ? 7 : 30));
-        
-        const { data: newDev, error: devErr } = await supabaseClient
-            .from('devices')
-            .insert({
-                business_code: business.code,
-                device_id: deviceId,
-                device_label: isTrial ? t('جهاز — تجربة مجانية', 'Device — Free trial') : t('جهاز بدون اسم', 'Unnamed device'),
-                is_active: true, 
-                revoked: false, 
-                expiry_date: expiry.toISOString()
-            })
-            .select()
-            .single();
-            
-        if (devErr) { 
-            errEl.textContent = t('فشل التفعيل، حاول تاني.', 'Activation failed, try again.'); 
-            return; 
-        }
+        const expiry = new Date(); expiry.setDate(expiry.getDate() + (isTrial ? 7 : 30));
+        const { data: newDev, error: devErr } = await supabaseClient.from('devices').insert({
+            business_id: business.id, device_id: deviceId,
+            device_label: isTrial ? t('جهاز — تجربة مجانية', 'Device — Free trial') : t('جهاز بدون اسم', 'Unnamed device'),
+            is_active: true, revoked: false, expiry_date: expiry.toISOString()
+        }).select().single();
+        if (devErr) { errEl.textContent = t('فشل التفعيل، حاول تاني.', 'Activation failed, try again.'); return; }
 
-        await supabaseClient
-            .from('activation_codes')
-            .update({ used: true, used_at: new Date().toISOString() })
-            .eq('id', actCode.id);
-            
+        await supabaseClient.from('activation_codes').update({ used: true, used_at: new Date().toISOString() }).eq('id', actCode.id);
         deviceRecord = newDev;
         showToast(t('تم تفعيل الجهاز بنجاح', 'Device activated successfully'), 'success');
         proceedToLock();
-    } catch (e) { 
-        console.error(e); 
-        errEl.textContent = t('حصل خطأ، حاول تاني.', 'Error, try again.'); 
-    }
+    } catch (e) { console.error(e); errEl.textContent = t('حصل خطأ، حاول تاني.', 'Error, try again.'); }
 }
 
 function proceedToLock() {
     document.getElementById('lockBizCode').textContent = business.code;
-    document.getElementById('lockBizName').textContent = business.name || business.business_name;
+    document.getElementById('lockBizName').textContent = business.name;
     const expiry = deviceRecord.expiry_date ? new Date(deviceRecord.expiry_date) : null;
     const subLine = document.getElementById('subStatusLine');
-    if (deviceRecord.revoked || !deviceRecord.is_active) { 
-        subLine.textContent = t('الجهاز موقوف — تواصل مع الإدارة', 'Device suspended — contact admin'); 
-    }
-    else if (expiry && expiry < new Date()) { 
-        subLine.textContent = t('الاشتراك منتهي — تواصل مع الإدارة', 'Subscription expired — contact admin'); 
-    }
-    else if (expiry) { 
-        const days = Math.ceil((expiry - new Date()) / 86400000); 
-        subLine.textContent = t(`متبقي ${days} يوم على الاشتراك`, `${days} days remaining on subscription`); 
-    }
+    if (deviceRecord.revoked || !deviceRecord.is_active) { subLine.textContent = t('الجهاز موقوف — تواصل مع الإدارة', 'Device suspended — contact admin'); }
+    else if (expiry && expiry < new Date()) { subLine.textContent = t('الاشتراك منتهي — تواصل مع الإدارة', 'Subscription expired — contact admin'); }
+    else if (expiry) { const days = Math.ceil((expiry - new Date()) / 86400000); subLine.textContent = t(`متبقي ${days} يوم على الاشتراك`, `${days} days remaining on subscription`); }
     resetLockRole();
     showScreen('lockScreen');
 }
@@ -358,37 +306,13 @@ async function handleEmployeeUnlock() {
     const pin = document.getElementById('lockEmpPin').value.trim();
     const errEl = document.getElementById('lockError');
     errEl.textContent = '';
-    if (deviceRecord.revoked || !deviceRecord.is_active) { 
-        errEl.textContent = t('الجهاز موقوف.', 'Device suspended.'); 
-        return; 
-    }
-    if (deviceRecord.expiry_date && new Date(deviceRecord.expiry_date) < new Date()) { 
-        errEl.textContent = t('الاشتراك منتهي.', 'Subscription expired.'); 
-        return; 
-    }
-    if (!name || !pin) { 
-        errEl.textContent = t('اكتب الاسم والـ PIN.', 'Enter your name and PIN.'); 
-        return; 
-    }
+    if (deviceRecord.revoked || !deviceRecord.is_active) { errEl.textContent = t('الجهاز موقوف.', 'Device suspended.'); return; }
+    if (deviceRecord.expiry_date && new Date(deviceRecord.expiry_date) < new Date()) { errEl.textContent = t('الاشتراك منتهي.', 'Subscription expired.'); return; }
+    if (!name || !pin) { errEl.textContent = t('اكتب الاسم والـ PIN.', 'Enter your name and PIN.'); return; }
 
-    // ✅ استخدام business.code
-    const { data: emps, error } = await supabaseClient
-        .from('employees')
-        .select('*')
-        .eq('business_code', business.code)
-        .eq('active', true);
-        
-    if (error) { 
-        errEl.textContent = t('حصل خطأ، حاول تاني.', 'Error, try again.'); 
-        console.error('Error loading employees for login:', error); 
-        return; 
-    }
-    
-    const emp = (emps || []).find(e => 
-        e.name && e.name.trim().toLowerCase() === name.toLowerCase() && 
-        String(e.pin) === pin
-    );
-    
+    const { data: emps, error } = await supabaseClient.from('employees').select('*').eq('business_id', business.id).eq('active', true);
+    if (error) { errEl.textContent = t('حصل خطأ، حاول تاني.', 'Error, try again.'); console.error('Error loading employees for login:', error); return; }
+    const emp = (emps || []).find(e => e.name && e.name.trim().toLowerCase() === name.toLowerCase() && String(e.pin) === pin);
     if (emp) {
         currentUser = { type: 'employee', ...emp };
         document.getElementById('lockEmpName').value = '';
@@ -403,36 +327,17 @@ async function handleUnlock() {
     const pin = document.getElementById('lockPinInput').value.trim();
     const errEl = document.getElementById('lockError');
     errEl.textContent = '';
-    if (deviceRecord.revoked || !deviceRecord.is_active) { 
-        errEl.textContent = t('الجهاز موقوف.', 'Device suspended.'); 
-        return; 
-    }
-    if (deviceRecord.expiry_date && new Date(deviceRecord.expiry_date) < new Date()) { 
-        errEl.textContent = t('الاشتراك منتهي.', 'Subscription expired.'); 
-        return; 
-    }
-    if (!pin) { 
-        errEl.textContent = t('اكتب الـ PIN.', 'Enter the PIN.'); 
-        return; 
-    }
+    if (deviceRecord.revoked || !deviceRecord.is_active) { errEl.textContent = t('الجهاز موقوف.', 'Device suspended.'); return; }
+    if (deviceRecord.expiry_date && new Date(deviceRecord.expiry_date) < new Date()) { errEl.textContent = t('الاشتراك منتهي.', 'Subscription expired.'); return; }
+    if (!pin) { errEl.textContent = t('اكتب الـ PIN.', 'Enter the PIN.'); return; }
 
-    // ✅ استخدام business.code بدلاً من business.id
     if (pin === business.owner_pin) {
         currentUser = { type: 'owner', name: t('المالك', 'Owner'), permissions: { stations: true, inventory: true, shift: true, settings: true } };
         document.getElementById('lockPinInput').value = '';
         enterMainApp();
         return;
     }
-    
-    // ✅ البحث عن الموظف باستخدام business.code
-    const { data: emp } = await supabaseClient
-        .from('employees')
-        .select('*')
-        .eq('business_code', business.code)
-        .eq('pin', pin)
-        .eq('active', true)
-        .maybeSingle();
-        
+    const { data: emp } = await supabaseClient.from('employees').select('*').eq('business_id', business.id).eq('pin', pin).eq('active', true).maybeSingle();
     if (emp) {
         currentUser = { type: 'employee', ...emp };
         document.getElementById('lockPinInput').value = '';
@@ -461,19 +366,10 @@ async function tryAutoResume() {
     const code = localStorage.getItem('psr_business_code');
     if (!code) return;
     try {
-        const { data: biz } = await supabaseClient
-            .from('businesses')
-            .select('*')
-            .eq('code', code)
-            .single();
+        const { data: biz } = await supabaseClient.from('businesses').select('*').eq('code', code).single();
         if (!biz) return;
         business = biz;
-        const { data: dev } = await supabaseClient
-            .from('devices')
-            .select('*')
-            .eq('business_code', biz.code)
-            .eq('device_id', getDeviceId())
-            .maybeSingle();
+        const { data: dev } = await supabaseClient.from('devices').select('*').eq('business_id', biz.id).eq('device_id', getDeviceId()).maybeSingle();
         if (!dev) return;
         deviceRecord = dev;
         proceedToLock();
@@ -482,20 +378,27 @@ async function tryAutoResume() {
 
 // ============================================================
 // AUTO-ACTIVATE FROM URL (?biz=CODE&code=ACTIVATION)
+// Used by the "start free trial" button on the marketing/dashboard
+// site, which creates a business + trial activation code and sends
+// the device straight here. Only runs for a device with no existing
+// saved session, so it never hijacks an already-installed device.
 // ============================================================
 async function tryAutoActivateFromURL() {
-    if (localStorage.getItem('psr_business_code')) return;
+    if (localStorage.getItem('psr_business_code')) return; // existing device — don't interfere
     const params = new URLSearchParams(window.location.search);
     const bizCode = params.get('biz');
     const actCodeParam = params.get('code');
     if (!bizCode) return;
 
+    // Clean the URL so a refresh/share doesn't re-trigger this.
     window.history.replaceState({}, document.title, window.location.pathname);
 
     const setupInput = document.getElementById('setupBusinessCode');
     if (setupInput) setupInput.value = bizCode;
     await handleSetupContinue();
 
+    // If handleSetupContinue routed us to the activation screen (new device)
+    // and we have an activation code, fill it in and submit automatically.
     const activationScreen = document.getElementById('activationScreen');
     if (actCodeParam && activationScreen && activationScreen.classList.contains('active')) {
         const actInput = document.getElementById('activationCodeInput');
@@ -513,7 +416,7 @@ window.addEventListener('DOMContentLoaded', async () => {
 // MAIN APP ENTRY
 // ============================================================
 async function enterMainApp() {
-    document.getElementById('headerBizName').textContent = business.name || business.business_name;
+    document.getElementById('headerBizName').textContent = business.name;
     document.getElementById('headerBizCode').textContent = business.code;
     showScreen('mainApp');
     applyPermissions();
@@ -522,12 +425,16 @@ async function enterMainApp() {
     document.querySelectorAll('.nav-btn').forEach(b => b.classList.toggle('active', b.dataset.view === 'view-dashboard'));
     
     populateYearSelect();
+    // مبنعملهاش await عشان ملف الشبكة بتاعها (حتى لو بطيء) ميأخرش فتح
+    // التطبيق؛ بمجرد ما تخلص في الخلفية، بتحدّث الأرقام المعروضة تلقائيًا
+    syncServerClock().then(() => { renderStationsGrid(); });
     await loadAllData();
-    await recoverActiveSession();
-    renderStationsGrid();
     subscribeRealtime();
     startTicker();
     updateTexts();
+    await recoverActiveSession();
+    // إعادة مزامنة الساعة كل 5 دقايق عشان نلحق أي انزياح لساعة الجهاز أثناء الاستخدام
+    setInterval(syncServerClock, 5 * 60 * 1000);
 }
 
 async function loadAllData() {
@@ -557,24 +464,14 @@ async function loadAllData() {
 
 async function loadStations() {
     assertBusinessContext();
-    // ✅ استخدام business.code بدلاً من business.id
-    const { data, error } = await supabaseClient
-        .from('stations')
-        .select('*')
-        .eq('business_code', business.code)
-        .order('number');
-        
+    const { data, error } = await supabaseClient.from('stations').select('*').eq('business_id', business.id).order('number');
     if (error) {
         console.error('Error loading stations:', error);
         throw error;
     }
     if (Array.isArray(data) && data.length === 0) {
         const seed = Array.from({ length: business.total_stations || 4 }, (_, i) => ({ 
-            business_code: business.code,
-            number: i + 1, 
-            single_rate: 20, 
-            multi_rate: 30, 
-            name: `جهاز ${i + 1}`
+            business_id: business.id, number: i + 1, single_rate: 20, multi_rate: 30, name: `جهاز ${i + 1}`
         }));
         const createdResult = await dbResult(supabaseClient.from('stations').insert(seed).select(), 'Seeding stations');
         stations = createdResult.data || [];
@@ -582,7 +479,7 @@ async function loadStations() {
         stations = data || [];
     }
     const activeResult = await dbResult(
-        supabaseClient.from('sessions').select('*').eq('business_code', business.code).eq('status', 'active'),
+        supabaseClient.from('sessions').select('*').eq('business_id', business.id).eq('status', 'active'),
         'Loading active sessions'
     );
     sessions = {};
@@ -594,16 +491,10 @@ async function loadStations() {
 // ============================================================
 async function loadMenuItems() {
     try {
-        const { data, error } = await supabaseClient
-            .from('menu_items')
-            .select('*')
-            .eq('business_code', business.code)
-            .eq('active', true)
-            .order('created_at');
-            
+        const { data, error } = await supabaseClient.from('menu_items').select('*').eq('business_id', business.id).eq('active', true).order('created_at');
         if (error) {
             console.warn('Error loading menu items from DB:', error);
-            const localData = localStorage.getItem('psr_menu_items_' + business.code);
+            const localData = localStorage.getItem('psr_menu_items_' + business.id);
             if (localData) {
                 menuItems = JSON.parse(localData);
                 return;
@@ -613,11 +504,11 @@ async function loadMenuItems() {
         }
         if (data) {
             menuItems = data;
-            localStorage.setItem('psr_menu_items_' + business.code, JSON.stringify(data));
+            localStorage.setItem('psr_menu_items_' + business.id, JSON.stringify(data));
         }
     } catch (e) {
         console.warn('Error loading menu items:', e);
-        const localData = localStorage.getItem('psr_menu_items_' + business.code);
+        const localData = localStorage.getItem('psr_menu_items_' + business.id);
         if (localData) {
             menuItems = JSON.parse(localData);
         } else {
@@ -628,11 +519,7 @@ async function loadMenuItems() {
 
 async function saveMenuItemToDB(item) {
     assertBusinessContext();
-    const { data, error } = await supabaseClient
-        .from('menu_items')
-        .insert(item)
-        .select()
-        .single();
+    const { data, error } = await supabaseClient.from('menu_items').insert(item).select().single();
     if (error) {
         console.error('Error saving menu item to DB:', error);
         throw error;
@@ -641,13 +528,7 @@ async function saveMenuItemToDB(item) {
 }
 
 async function updateMenuItemInDB(id, updates) {
-    const { data, error } = await supabaseClient
-        .from('menu_items')
-        .update(updates)
-        .eq('id', id)
-        .eq('business_code', business.code)
-        .select()
-        .single();
+    const { data, error } = await supabaseClient.from('menu_items').update(updates).eq('id', id).eq('business_id', business.id).select().single();
     if (error) {
         console.error('Error updating menu item in DB:', error);
         throw error;
@@ -656,11 +537,7 @@ async function updateMenuItemInDB(id, updates) {
 }
 
 async function deleteMenuItemFromDB(id) {
-    const { error } = await supabaseClient
-        .from('menu_items')
-        .delete()
-        .eq('id', id)
-        .eq('business_code', business.code);
+    const { error } = await supabaseClient.from('menu_items').delete().eq('id', id).eq('business_id', business.id);
     if (error) {
         console.error('Error deleting menu item from DB:', error);
         throw error;
@@ -669,21 +546,13 @@ async function deleteMenuItemFromDB(id) {
 }
 
 async function loadEmployees() {
-    const { data } = await supabaseClient
-        .from('employees')
-        .select('*')
-        .eq('business_code', business.code)
-        .order('created_at');
+    const { data } = await supabaseClient.from('employees').select('*').eq('business_id', business.id).order('created_at');
     employees = data || [];
 }
 
 async function loadPaymentMethods() {
     try {
-        const { data, error } = await supabaseClient
-            .from('payment_methods')
-            .select('*')
-            .eq('business_code', business.code)
-            .order('created_at');
+        const { data, error } = await supabaseClient.from('payment_methods').select('*').eq('business_id', business.id).order('created_at');
         if (error) throw error;
         if (data && data.length > 0) {
             paymentMethods = data;
@@ -694,17 +563,14 @@ async function loadPaymentMethods() {
     }
     
     const defaults = [
-        { business_code: business.code, name: 'كاش', icon: 'fa-money-bill-wave', color: 'badge-green', active: true },
-        { business_code: business.code, name: 'إنستا باي', icon: 'fa-mobile-screen-button', color: 'badge-purple', active: true },
-        { business_code: business.code, name: 'محفظة إلكترونية', icon: 'fa-wallet', color: 'badge-teal', active: true },
-        { business_code: business.code, name: 'بطاقة ائتمان', icon: 'fa-credit-card', color: 'badge-amber', active: true }
+        { business_id: business.id, name: 'كاش', icon: 'fa-money-bill-wave', color: 'badge-green', active: true },
+        { business_id: business.id, name: 'إنستا باي', icon: 'fa-mobile-screen-button', color: 'badge-purple', active: true },
+        { business_id: business.id, name: 'محفظة إلكترونية', icon: 'fa-wallet', color: 'badge-teal', active: true },
+        { business_id: business.id, name: 'بطاقة ائتمان', icon: 'fa-credit-card', color: 'badge-amber', active: true }
     ];
     
     try {
-        const { data: created, error } = await supabaseClient
-            .from('payment_methods')
-            .insert(defaults)
-            .select();
+        const { data: created, error } = await supabaseClient.from('payment_methods').insert(defaults).select();
         if (!error && created) {
             paymentMethods = created;
             return;
@@ -723,20 +589,26 @@ async function loadPaymentMethods() {
 async function loadOrOpenShift() {
     assertBusinessContext();
 
+    // Do not use maybeSingle() here. The current database contains multiple
+    // open shifts for this business (the console reports 19 rows), so
+    // maybeSingle() throws PGRST116 and used to stop the whole app from rendering.
     const { data: openShifts, error } = await supabaseClient
         .from('shifts')
         .select('*')
-        .eq('business_code', business.code)
+        .eq('business_id', business.id)
         .eq('status', 'open')
         .order('opened_at', { ascending: false });
 
     if (error) throw error;
 
     if (openShifts && openShifts.length > 0) {
+        // Use the newest open shift for now. Do NOT automatically delete or
+        // close the other financial records; they need manual review.
         currentShift = openShifts[0];
+
         if (openShifts.length > 1) {
             console.warn(
-                `PS Rental: ${openShifts.length} open shifts found for business ${business.code}. ` +
+                `PS Rental: ${openShifts.length} open shifts found for business ${business.id}. ` +
                 'Using the newest one. Review duplicate open shifts in Supabase.'
             );
         }
@@ -746,7 +618,7 @@ async function loadOrOpenShift() {
     const createdResult = await dbResult(
         supabaseClient
             .from('shifts')
-            .insert({ business_code: business.code, opened_at: new Date().toISOString(), status: 'open' })
+            .insert({ business_id: business.id, opened_at: new Date().toISOString(), status: 'open' })
             .select()
             .single(),
         'Opening shift'
@@ -787,14 +659,11 @@ async function createSegment(sessionId, mode, startedAt, rate, timerType, durati
         return existing;
     }
 
-    // ✅ استخدام UTC
-    const now = getUTCNow();
-
     const { data, error } = await supabaseClient.from('session_segments').insert({
         session_id: sessionId,
-        business_code: business.code,
+        business_id: business.id,
         mode: mode,
-        started_at: startedAt || now,
+        started_at: startedAt,
         rate: assertPositiveNumber(rate, 'Rate'),
         timer_type: timerType || 'countup',
         duration_seconds: Math.max(0, Math.round(Number(durationSeconds) || 0))
@@ -806,11 +675,8 @@ async function createSegment(sessionId, mode, startedAt, rate, timerType, durati
 }
 
 async function closeSegment(segmentId, endedAt, amount) {
-    // ✅ استخدام UTC إذا لم يتم تمرير وقت
-    const now = endedAt || getUTCNow();
-    
     const { error } = await supabaseClient.from('session_segments')
-        .update({ ended_at: now, amount: amount })
+        .update({ ended_at: endedAt, amount: amount })
         .eq('id', segmentId);
     if (error) throw error;
     sessionSegmentsCache = {};
@@ -844,86 +710,58 @@ function getActiveSegmentFast(sessionId) {
 }
 
 // ============================================================
-// ✅ نظام الوقت الموحد (UTC) - حل نهائي 100%
+// ✅ CLOCK SYNC — تصحيح فرق ساعة الجهاز عن وقت السيرفر
+// المشكلة: كل جهاز (لابتوب/موبايل) بيحسب "الوقت المنقضي" بالمقارنة
+// بساعته المحلية هو. لو ساعة الموبايل متأخرة عن اللحظة اللي اتسجل
+// فيها started_at (اللي جت من جهاز تاني)، الفرق بيبقى سالب فيتقفل
+// على 00:00 ويفضل واقف. الحل: نجيب وقت حقيقي مرجعي مرة عند الدخول
+// ونحسب فرق ثابت (offset) ونستخدمه بدل ما نعتمد على ساعة الجهاز لوحدها.
+//
+// ملحوظة: بنجيب الوقت من محتوى الرد (JSON body) مش من الـ response
+// header، لإن المتصفح بيمنع قراءة هيدر Date في الطلبات cross-origin
+// إلا لو السيرفر يسمح بيه صراحة (Supabase مش بيسمح) — فالاعتماد على
+// الـ header كان بيرجع فاضي دايمًا والتصحيح مكانش بيشتغل فعليًا.
 // ============================================================
+let serverClockOffsetMs = 0;
 
-// ✅ الحصول على المنطقة الزمنية للجهاز (للتشخيص فقط)
-function getDeviceTimezone() {
-    const tz = Intl.DateTimeFormat().resolvedOptions().timeZone;
-    const offset = -new Date().getTimezoneOffset() / 60;
-    console.log(`🌍 Device Timezone: ${tz}, UTC offset: ${offset}h`);
-    return { timezone: tz, offset: offset };
-}
-
-// ✅ الحصول على وقت UTC الحالي كـ ISO string (للإرسال إلى Supabase)
-function getUTCNow() {
-    return new Date().toISOString();
-}
-
-// ✅ الحصول على الوقت الحالي بالمللي ثانية (UTC)
-function getUTCTimeMs() {
-    return Date.now();
-}
-
-// ✅ حساب الوقت المنقضي من start إلى الآن (بالثواني)
-function getElapsedSeconds(startDate) {
-    const now = getUTCTimeMs();
-    const start = new Date(startDate).getTime();
-    return Math.max(0, Math.floor((now - start) / 1000));
-}
-
-// ✅ تنسيق الوقت المنقضي
-function formatElapsed(start) {
-    const secs = getElapsedSeconds(start);
-    const h = Math.floor(secs / 3600);
-    const m = Math.floor((secs % 3600) / 60);
-    const s = secs % 60;
-    return (h > 0 ? String(h).padStart(2, '0') + ':' : '') + 
-           String(m).padStart(2, '0') + ':' + 
-           String(s).padStart(2, '0');
-}
-
-// ✅ حساب الوقت المتبقي (للعد التنازلي)
-function getRemainingSeconds(segment) {
-    if (!segment || segment.timer_type !== 'countdown' || !segment.duration_seconds) return 0;
-    const start = new Date(segment.started_at).getTime();
-    const now = getUTCTimeMs();
-    const elapsed = (now - start) / 1000;
-    return Math.max(0, segment.duration_seconds - elapsed);
-}
-
-// ✅ حساب قيمة الجزء الحالي المكتسبة
-function getCurrentSegmentEarnedAmount(sessionId) {
-    const activeSeg = getActiveSegmentFast(sessionId);
-    if (!activeSeg) return 0;
-    const start = new Date(activeSeg.started_at).getTime();
-    const now = getUTCTimeMs();
-    let elapsedSeconds = Math.max(0, (now - start) / 1000);
-    if (activeSeg.timer_type === 'countdown' && activeSeg.duration_seconds) {
-        elapsedSeconds = Math.min(elapsedSeconds, activeSeg.duration_seconds);
+async function fetchWithTimeout(url, ms) {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), ms);
+    try {
+        return await fetch(url, { signal: controller.signal });
+    } finally {
+        clearTimeout(timeoutId);
     }
-    const hours = elapsedSeconds / 3600;
-    return Math.round((hours * Number(activeSeg.rate)) * 100) / 100;
 }
 
-// ✅ تقدير قيمة الجزء الحالي
-function getCurrentSegmentEstimateFast(sessionId) {
-    const activeSeg = getActiveSegmentFast(sessionId);
-    if (!activeSeg) return { amount: 0, hours: 0, segment: null };
-    const start = new Date(activeSeg.started_at).getTime();
-    const now = getUTCTimeMs();
-    let elapsedSeconds = Math.max(0, (now - start) / 1000);
-    if (activeSeg.timer_type === 'countdown' && activeSeg.duration_seconds) {
-        elapsedSeconds = Math.min(elapsedSeconds, activeSeg.duration_seconds);
+async function syncServerClock() {
+    // المصدر الأول
+    try {
+        const res = await fetchWithTimeout('https://worldtimeapi.org/api/timezone/Etc/UTC', 4000);
+        const data = await res.json();
+        if (data && data.unixtime) {
+            serverClockOffsetMs = (data.unixtime * 1000) - Date.now();
+            return;
+        }
+    } catch (e) {
+        console.warn('worldtimeapi failed, trying fallback:', e);
     }
-    const hours = elapsedSeconds / 3600;
-    const amount = Math.round((hours * Number(activeSeg.rate)) * 100) / 100;
-    return { amount, hours, segment: activeSeg };
+    // مصدر احتياطي لو الأول فشل أو بطيء
+    try {
+        const res = await fetchWithTimeout('https://timeapi.io/api/Time/current/zone?timeZone=UTC', 4000);
+        const data = await res.json();
+        if (data && data.dateTime) {
+            const serverTime = new Date(data.dateTime + 'Z').getTime();
+            if (!isNaN(serverTime)) serverClockOffsetMs = serverTime - Date.now();
+        }
+    } catch (e) {
+        console.warn('Error syncing server clock (both sources failed):', e);
+    }
 }
 
-// استدعاء التشخيص عند بدء التطبيق
-console.log('🕐 UTC Time:', getUTCNow());
-getDeviceTimezone();
+function nowCorrected() {
+    return Date.now() + serverClockOffsetMs;
+}
 
 async function preloadActiveSegments(sessionIds) {
     if (!sessionIds || sessionIds.length === 0) return;
@@ -987,14 +825,16 @@ async function getCurrentSegmentEstimate(sessionId) {
     if (!activeSeg) return { amount: 0, hours: 0, segment: null };
     
     const start = new Date(activeSeg.started_at);
-    const now = new Date(getUTCTimeMs());
-    let elapsedSeconds = Math.max(0, (now - start) / 1000);
+    const now = new Date(nowCorrected());
+    let hours = Math.max(0, (now - start) / 3600000);
+    let amount = Math.round((hours * Number(activeSeg.rate)) * 100) / 100;
     
     if (activeSeg.timer_type === 'countdown' && activeSeg.duration_seconds) {
-        elapsedSeconds = Math.min(elapsedSeconds, activeSeg.duration_seconds);
+        const elapsedSeconds = (now - start) / 1000;
+        const remainingSeconds = Math.max(0, activeSeg.duration_seconds - elapsedSeconds);
+        hours = remainingSeconds / 3600;
+        amount = Math.round((hours * Number(activeSeg.rate)) * 100) / 100;
     }
-    const hours = elapsedSeconds / 3600;
-    const amount = Math.round((hours * Number(activeSeg.rate)) * 100) / 100;
     
     return { amount, hours, segment: activeSeg };
 }
@@ -1003,36 +843,36 @@ function getCurrentSegmentEstimateFast(sessionId) {
     const activeSeg = getActiveSegmentFast(sessionId);
     if (!activeSeg) return { amount: 0, hours: 0, segment: null };
 
-    const start = new Date(activeSeg.started_at).getTime();
-    const now = getUTCTimeMs();
-    let elapsedSeconds = Math.max(0, (now - start) / 1000);
-    
+    const start = new Date(activeSeg.started_at);
+    const now = new Date(nowCorrected());
+    let hours = Math.max(0, (now - start) / 3600000);
+    let amount = Math.round((hours * Number(activeSeg.rate)) * 100) / 100;
+
     if (activeSeg.timer_type === 'countdown' && activeSeg.duration_seconds) {
-        elapsedSeconds = Math.min(elapsedSeconds, activeSeg.duration_seconds);
+        const elapsedSeconds = (now - start) / 1000;
+        const remainingSeconds = Math.max(0, activeSeg.duration_seconds - elapsedSeconds);
+        hours = remainingSeconds / 3600;
+        amount = Math.round((hours * Number(activeSeg.rate)) * 100) / 100;
     }
-    const hours = elapsedSeconds / 3600;
-    const amount = Math.round((hours * Number(activeSeg.rate)) * 100) / 100;
 
     return { amount, hours, segment: activeSeg };
 }
 
+// قيمة الجزء الحالي المكتسبة فعليًا (على أساس الوقت المنقضي دايمًا، سواء تصاعدي أو تنازلي)
+// نفس المعادلة المستخدمة عند إغلاق الجزء فعليًا في calculateSegmentAmountFromTimes
 function getCurrentSegmentEarnedAmount(sessionId) {
     const activeSeg = getActiveSegmentFast(sessionId);
     if (!activeSeg) return 0;
-    const start = new Date(activeSeg.started_at).getTime();
-    const now = getUTCTimeMs();
-    let elapsedSeconds = Math.max(0, (now - start) / 1000);
-    if (activeSeg.timer_type === 'countdown' && activeSeg.duration_seconds) {
-        elapsedSeconds = Math.min(elapsedSeconds, activeSeg.duration_seconds);
-    }
-    const hours = elapsedSeconds / 3600;
+    const start = new Date(activeSeg.started_at);
+    const now = new Date(nowCorrected());
+    const hours = Math.max(0, (now - start) / 3600000);
     return Math.round((hours * Number(activeSeg.rate)) * 100) / 100;
 }
 
 function getRemainingSeconds(segment) {
     if (!segment || segment.timer_type !== 'countdown' || !segment.duration_seconds) return 0;
-    const start = new Date(segment.started_at).getTime();
-    const now = getUTCTimeMs();
+    const start = new Date(segment.started_at);
+    const now = new Date(nowCorrected());
     const elapsed = (now - start) / 1000;
     return Math.max(0, segment.duration_seconds - elapsed);
 }
@@ -1050,17 +890,21 @@ function formatCountdown(seconds) {
 // ============================================================
 function subscribeRealtime() {
     if (realtimeChannel) supabaseClient.removeChannel(realtimeChannel);
-    realtimeChannel = supabaseClient.channel('biz-' + business.code)
-        .on('postgres_changes', { event: '*', schema: 'public', table: 'sessions', filter: 'business_code=eq.' + business.code }, handleSessionChange)
-        .on('postgres_changes', { event: '*', schema: 'public', table: 'session_orders', filter: 'business_code=eq.' + business.code }, handleOrderChange)
-        .on('postgres_changes', { event: '*', schema: 'public', table: 'stations', filter: 'business_code=eq.' + business.code }, handleStationChange)
-        .on('postgres_changes', { event: '*', schema: 'public', table: 'session_segments', filter: 'business_code=eq.' + business.code }, handleSegmentChange)
+    realtimeChannel = supabaseClient.channel('biz-' + business.id)
+        .on('postgres_changes', { event: '*', schema: 'public', table: 'sessions', filter: 'business_id=eq.' + business.id }, handleSessionChange)
+        .on('postgres_changes', { event: '*', schema: 'public', table: 'session_orders', filter: 'business_id=eq.' + business.id }, handleOrderChange)
+        .on('postgres_changes', { event: '*', schema: 'public', table: 'stations', filter: 'business_id=eq.' + business.id }, handleStationChange)
+        .on('postgres_changes', { event: '*', schema: 'public', table: 'session_segments', filter: 'business_id=eq.' + business.id }, handleSegmentChange)
         .subscribe();
 }
 
 function stopRealtimeAndTimers() {
     if (realtimeChannel) { supabaseClient.removeChannel(realtimeChannel); realtimeChannel = null; }
     if (tickInterval) { clearInterval(tickInterval); tickInterval = null; }
+    Object.keys(countdownTimers).forEach(key => {
+        if (countdownTimers[key]) clearInterval(countdownTimers[key]);
+        delete countdownTimers[key];
+    });
 }
 
 function handleSessionChange(payload) {
@@ -1068,6 +912,10 @@ function handleSessionChange(payload) {
     if (!row) return;
     if (payload.eventType === 'DELETE' || (payload.new && payload.new.status === 'completed')) {
         delete sessions[row.station_id];
+        if (countdownTimers[row.station_id]) {
+            clearInterval(countdownTimers[row.station_id]);
+            delete countdownTimers[row.station_id];
+        }
         renderDashboard();
         if (document.getElementById('view-shift').classList.contains('active')) {
             renderShiftView();
@@ -1190,13 +1038,9 @@ function startTicker() {
 }
 
 function formatElapsed(start) {
-    const secs = getElapsedSeconds(start);
-    const h = Math.floor(secs / 3600);
-    const m = Math.floor((secs % 3600) / 60);
-    const s = secs % 60;
-    return (h > 0 ? String(h).padStart(2, '0') + ':' : '') + 
-           String(m).padStart(2, '0') + ':' + 
-           String(s).padStart(2, '0');
+    const secs = Math.max(0, Math.floor((nowCorrected() - start.getTime()) / 1000));
+    const h = Math.floor(secs / 3600), m = Math.floor((secs % 3600) / 60), s = secs % 60;
+    return (h > 0 ? String(h).padStart(2, '0') + ':' : '') + String(m).padStart(2, '0') + ':' + String(s).padStart(2, '0');
 }
 
 // ============================================================
@@ -1205,15 +1049,11 @@ function formatElapsed(start) {
 async function renderDashboard() {
     if (!currentShift) {
         try {
-            const { data: created } = await supabaseClient
-                .from('shifts')
-                .insert({ 
-                    business_code: business.code,
-                    opened_at: new Date().toISOString(),
-                    status: 'open'
-                })
-                .select()
-                .single();
+            const { data: created } = await supabaseClient.from('shifts').insert({ 
+                business_id: business.id,
+                opened_at: new Date().toISOString(),
+                status: 'open'
+            }).select().single();
             if (created) {
                 currentShift = created;
                 showToast(t('تم فتح شيفت جديد تلقائياً', 'New shift opened automatically'), 'success');
@@ -1240,7 +1080,7 @@ async function renderDashboard() {
         const { data: completedSessions } = await supabaseClient
             .from('sessions')
             .select('id, amount')
-            .eq('business_code', business.code)
+            .eq('business_id', business.id)
             .eq('status', 'completed')
             .gte('ended_at', currentShift.opened_at)
             .lte('ended_at', currentShift.closed_at || new Date().toISOString());
@@ -1382,11 +1222,10 @@ async function applyBulkRate(type) {
         const updateData = {};
         updateData[fieldName] = rate;
         
-        // ✅ استخدام business.code بدلاً من business.id
         const { data, error } = await supabaseClient
             .from('stations')
             .update(updateData)
-            .eq('business_code', business.code)
+            .eq('business_id', business.id)
             .select();
 
         if (error) {
@@ -1406,10 +1245,8 @@ async function applyBulkRate(type) {
             multiInput.value = '';
         }
         
-        // ✅ تحديث stations محلياً
-        stations = data;
-        
         showToast(t(`اتحدث سعر ${typeLabel} لكل الأجهزة`, `${typeLabel} price updated for all devices`), 'success');
+        await loadStations();
         renderSettingsStations();
         renderStationsGrid();
     } catch (e) {
@@ -1484,17 +1321,11 @@ async function submitStationManagement() {
 
     try {
         if (id) {
-            const { error } = await supabaseClient
-                .from('stations')
-                .update({ number, name, single_rate: singleRate, multi_rate: multiRate })
-                .eq('id', id)
-                .eq('business_code', business.code);
+            const { error } = await supabaseClient.from('stations').update({ number, name, single_rate: singleRate, multi_rate: multiRate }).eq('id', id).eq('business_id', business.id);
             if (error) throw error;
             showToast(t('تم تحديث الجهاز', 'Device updated'), 'success');
         } else {
-            const { error } = await supabaseClient
-                .from('stations')
-                .insert({ business_code: business.code, number, name, single_rate: singleRate, multi_rate: multiRate });
+            const { error } = await supabaseClient.from('stations').insert({ business_id: business.id, number, name, single_rate: singleRate, multi_rate: multiRate });
             if (error) throw error;
             showToast(t('تم إضافة الجهاز', 'Device added'), 'success');
         }
@@ -1518,11 +1349,7 @@ async function deleteStationById(stationId) {
     }
 
     try {
-        const { error } = await supabaseClient
-            .from('stations')
-            .delete()
-            .eq('id', stationId)
-            .eq('business_code', business.code);
+        const { error } = await supabaseClient.from('stations').delete().eq('id', stationId).eq('business_id', business.id);
         if (error) throw error;
         showToast(t('تم حذف الجهاز', 'Device deleted'), 'success');
         await loadStations();
@@ -1610,16 +1437,10 @@ async function submitPaymentMethod() {
 
     try {
         if (id) {
-            await supabaseClient
-                .from('payment_methods')
-                .update({ name, icon, color, active })
-                .eq('id', id)
-                .eq('business_code', business.code);
+            await supabaseClient.from('payment_methods').update({ name, icon, color, active }).eq('id', id);
             showToast(t('تم تحديث طريقة الدفع', 'Payment method updated'), 'success');
         } else {
-            await supabaseClient
-                .from('payment_methods')
-                .insert({ business_code: business.code, name, icon, color, active });
+            await supabaseClient.from('payment_methods').insert({ business_id: business.id, name, icon, color, active });
             showToast(t('تم إضافة طريقة الدفع', 'Payment method added'), 'success');
         }
         closeSheet('paymentMethodOverlay');
@@ -1634,11 +1455,7 @@ async function submitPaymentMethod() {
 async function deletePaymentMethodById(pmId) {
     if (!confirm(t('هل أنت متأكد من حذف طريقة الدفع هذه؟', 'Are you sure you want to delete this payment method?'))) return;
     try {
-        await supabaseClient
-            .from('payment_methods')
-            .delete()
-            .eq('id', pmId)
-            .eq('business_code', business.code);
+        await supabaseClient.from('payment_methods').delete().eq('id', pmId);
         showToast(t('تم حذف طريقة الدفع', 'Payment method deleted'), 'success');
         await loadPaymentMethods();
         renderSettingsPaymentMethods();
@@ -1692,8 +1509,16 @@ async function addOrderItem(sessionId, menuItemId) {
 
             if (error) throw error;
         } else {
+            // IMPORTANT:
+            // Do NOT use .select().single() here.
+            // If INSERT is allowed by RLS but SELECT is not,
+            // .insert().select().single() reports a false failure.
+            //
+            // We also send business_id when the column exists in the
+            // current V2 schema. If an older database does not have it,
+            // retry once without business_id.
             let insertPayload = {
-                business_code: business.code,
+                business_id: business.id,
                 session_id: sessionId,
                 menu_item_id: item.id,
                 item_name: item.name,
@@ -1707,10 +1532,10 @@ async function addOrderItem(sessionId, menuItemId) {
 
             if (error && (
                 error.code === '42703' ||
-                /business_code/i.test(error.message || '') &&
+                /business_id/i.test(error.message || '') &&
                 /column/i.test(error.message || '')
             )) {
-                delete insertPayload.business_code;
+                delete insertPayload.business_id;
 
                 ({ error } = await supabaseClient
                     .from('session_orders')
@@ -1720,6 +1545,7 @@ async function addOrderItem(sessionId, menuItemId) {
             if (error) throw error;
         }
 
+        // Reload from DB so the UI has the real row/id.
         const { data: refreshedOrders, error: reloadError } = await supabaseClient
             .from('session_orders')
             .select('*')
@@ -1727,6 +1553,8 @@ async function addOrderItem(sessionId, menuItemId) {
             .order('created_at');
 
         if (reloadError) {
+            // The insert succeeded, but the current RLS SELECT policy
+            // may prevent reading the row back. Do not claim INSERT failed.
             console.error('Order was inserted, but reload failed:', reloadError);
             showToast(
                 t('تم حفظ الطلب، لكن صلاحية قراءة الطلبات تحتاج مراجعة في Supabase.', 'Order was saved, but the SELECT permission for orders needs review in Supabase.'),
@@ -1793,16 +1621,10 @@ async function removeOrderItem(orderId) {
     const order = activeSessionOrders.find(o => o.id === orderId);
     if (!order) return;
     if (order.quantity > 1) {
-        await supabaseClient
-            .from('session_orders')
-            .update({ quantity: order.quantity - 1 })
-            .eq('id', orderId);
+        await supabaseClient.from('session_orders').update({ quantity: order.quantity - 1 }).eq('id', orderId);
         order.quantity -= 1;
     } else {
-        await supabaseClient
-            .from('session_orders')
-            .delete()
-            .eq('id', orderId);
+        await supabaseClient.from('session_orders').delete().eq('id', orderId);
         activeSessionOrders = activeSessionOrders.filter(o => o.id !== orderId);
     }
     renderStationOrdersSection();
@@ -1908,11 +1730,10 @@ async function confirmTransfer() {
     try {
         const currentMode = sourceSession.current_mode || 'single';
         const currentRate = Number(sourceSession.rate) || (currentMode === 'multi' ? Number(targetStation.multi_rate) : Number(targetStation.single_rate));
-        const { error: updateError } = await supabaseClient
-            .from('sessions')
+        const { error: updateError } = await supabaseClient.from('sessions')
             .update({ station_id: targetStationId, rate: currentRate })
             .eq('id', sourceSession.id)
-            .eq('business_code', business.code)
+            .eq('business_id', business.id)
             .eq('status', 'active');
         if (updateError) throw updateError;
 
@@ -1984,20 +1805,11 @@ async function executeCancelSession(stationId) {
         
         if (orders && orders.length > 0) {
             const orderIds = orders.map(o => o.id);
-            await supabaseClient
-                .from('session_orders')
-                .delete()
-                .in('id', orderIds);
+            await supabaseClient.from('session_orders').delete().in('id', orderIds);
         }
         
-        await supabaseClient
-            .from('session_segments')
-            .delete()
-            .eq('session_id', session.id);
-        await supabaseClient
-            .from('sessions')
-            .delete()
-            .eq('id', session.id);
+        await supabaseClient.from('session_segments').delete().eq('session_id', session.id);
+        await supabaseClient.from('sessions').delete().eq('id', session.id);
         
         delete sessions[stationId];
         
@@ -2172,15 +1984,11 @@ async function openStationSheet(stationId) {
     const timerBadgeClass = timerType === 'countdown' ? 'badge-timer-down' : 'badge-timer-up';
     const isCountdown = timerType === 'countdown';
 
-    const { data: orders } = await supabaseClient
-        .from('session_orders')
-        .select('*')
-        .eq('session_id', session.id)
-        .order('created_at');
+    const { data: orders } = await supabaseClient.from('session_orders').select('*').eq('session_id', session.id).order('created_at');
     activeSessionOrders = orders || [];
 
     const activeSegStart = activeSeg ? activeSeg.started_at : session.started_at;
-    const liveEarnedNow = activeSeg ? getCurrentSegmentEarnedAmount(session.id) : 0;
+    const liveEarnedNow = activeSeg ? Math.round((Math.max(0, (nowCorrected() - new Date(activeSeg.started_at)) / 3600000) * Number(activeSeg.rate)) * 100) / 100 : 0;
     const liveGrandTotal = Math.round((totals.grandTotal + liveEarnedNow) * 100) / 100;
 
     body.innerHTML = `
@@ -2406,57 +2214,19 @@ async function startSessionWithMode(stationId) {
         return;
     }
     
-    // ✅ استخدام UTC
-    const now = getUTCNow();
-    const deviceId = getDeviceId();
-    
-    if (!business || !business.code) {
-        errEl.textContent = t('خطأ: النشاط غير موجود.', 'Error: Business not found.');
-        return;
-    }
-    
-    if (!stationId) {
-        errEl.textContent = t('خطأ: معرف الجهاز غير موجود.', 'Error: Station ID not found.');
-        return;
-    }
+    const now = new Date(nowCorrected()).toISOString();
     
     try {
-        const sessionData = {
-            business_code: business.code,
-            station_id: stationId,
-            station_number: st.number || 0,
-            device_id: deviceId,
+        const { data: session, error } = await supabaseClient.from('sessions').insert({
+            business_id: business.id, 
+            station_id: stationId, 
             rate: rate,
             started_at: now,
-            start_time: now,
-            started_by_device: deviceId,
+            started_by_device: getDeviceId(),
             current_mode: mode,
-            timer_type: timerType,
-            status: 'active',
-            created_at: now,
-            amount: 0,
-            duration: 0
-        };
-        
-        console.log('📝 Creating session with data (UTC):', sessionData);
-        console.log('🕐 UTC time used:', now);
-        
-        const { data: session, error } = await supabaseClient
-            .from('sessions')
-            .insert(sessionData)
-            .select()
-            .single();
-            
-        if (error) { 
-            console.error('Session creation error:', error);
-            errEl.textContent = t('فشل بدء الجلسة: ' + error.message, 'Failed to start session: ' + error.message);
-            return;
-        }
-        
-        if (!session) {
-            errEl.textContent = t('فشل بدء الجلسة: لم يتم إرجاع بيانات.', 'Failed to start session: No data returned.');
-            return;
-        }
+            timer_type: timerType
+        }).select().single();
+        if (error) { throw error; }
         
         await createSegment(session.id, mode, now, rate, timerType, durationSeconds);
         
@@ -2470,12 +2240,12 @@ async function startSessionWithMode(stationId) {
         setTimeout(() => openStationSheet(stationId), 300);
     } catch (e) {
         console.error('Error starting session:', e);
-        errEl.textContent = t('فشل بدء الجلسة: ' + e.message, 'Failed to start session: ' + e.message);
+        errEl.textContent = t('فشل بدء الجلسة', 'Failed to start session');
     }
 }
 
 // ============================================================
-// END SESSION WITH PAYMENT
+// END SESSION WITH PAYMENT - من الملف الشغال
 // ============================================================
 function showEndSessionPayment(stationId) {
     endSessionStationId = stationId;
@@ -2487,14 +2257,17 @@ function showEndSessionPayment(stationId) {
     (async () => {
         const activeSeg = await getActiveSegment(session.id);
         if (activeSeg && !activeSeg.ended_at) {
-            const now = getUTCNow();
+            const now = new Date(nowCorrected()).toISOString();
             const start = new Date(activeSeg.started_at);
-            let elapsedSeconds = Math.max(0, (new Date(now) - start) / 1000);
+            let hours = Math.max(0, (new Date(now) - start) / 3600000);
+            let amount = Math.round((hours * Number(activeSeg.rate)) * 100) / 100;
+            
             if (activeSeg.timer_type === 'countdown' && activeSeg.duration_seconds) {
-                elapsedSeconds = Math.min(elapsedSeconds, activeSeg.duration_seconds);
+                const elapsedSeconds = (new Date(now) - start) / 1000;
+                const usedSeconds = Math.min(elapsedSeconds, activeSeg.duration_seconds);
+                hours = usedSeconds / 3600;
+                amount = Math.round((hours * Number(activeSeg.rate)) * 100) / 100;
             }
-            const hours = elapsedSeconds / 3600;
-            const amount = Math.round((hours * Number(activeSeg.rate)) * 100) / 100;
             
             await closeSegment(activeSeg.id, now, amount);
         }
@@ -2609,8 +2382,9 @@ function showEndSessionPayment(stationId) {
     })();
 }
 
+
 // ============================================================
-// SELECT PAYMENT METHOD
+// SELECT PAYMENT METHOD - من الملف الشغال
 // ============================================================
 function selectPaymentMethod(pmId) {
     selectedPaymentMethod = pmId;
@@ -2680,7 +2454,7 @@ function updatePaymentCalculation() {
 }
 
 // ============================================================
-// CANCEL END SESSION (Back button)
+// CANCEL END SESSION (Back button) - من الملف الشغال
 // ============================================================
 function cancelEndSession() {
     const stationId = endSessionStationId || activeStationId;
@@ -2697,7 +2471,7 @@ function cancelEndSession() {
 }
 
 // ============================================================
-// CONFIRM END SESSION WITH PAYMENT
+// CONFIRM END SESSION WITH PAYMENT - من الملف الشغال
 // ============================================================
 async function confirmEndSessionWithPayment() {
     if (!selectedPaymentMethod) {
@@ -2711,14 +2485,17 @@ async function confirmEndSessionWithPayment() {
     try {
         const activeSeg = await getActiveSegment(session.id);
         if (activeSeg && !activeSeg.ended_at) {
-            const now = getUTCNow();
+            const now = new Date(nowCorrected()).toISOString();
             const start = new Date(activeSeg.started_at);
-            let elapsedSeconds = Math.max(0, (new Date(now) - start) / 1000);
+            let hours = Math.max(0, (new Date(now) - start) / 3600000);
+            let amount = Math.round((hours * Number(activeSeg.rate)) * 100) / 100;
+            
             if (activeSeg.timer_type === 'countdown' && activeSeg.duration_seconds) {
-                elapsedSeconds = Math.min(elapsedSeconds, activeSeg.duration_seconds);
+                const elapsedSeconds = (new Date(now) - start) / 1000;
+                const usedSeconds = Math.min(elapsedSeconds, activeSeg.duration_seconds);
+                hours = usedSeconds / 3600;
+                amount = Math.round((hours * Number(activeSeg.rate)) * 100) / 100;
             }
-            const hours = elapsedSeconds / 3600;
-            const amount = Math.round((hours * Number(activeSeg.rate)) * 100) / 100;
             
             await closeSegment(activeSeg.id, now, amount);
         }
@@ -2729,30 +2506,23 @@ async function confirmEndSessionWithPayment() {
 
         const basePayload = {
             status: 'completed',
-            ended_at: getUTCNow(),
+            ended_at: new Date(nowCorrected()).toISOString(),
             amount: finalTotal,
             payment_method: selectedPaymentMethod
         };
 
-        let { error } = await supabaseClient
-            .from('sessions')
-            .update({
-                ...basePayload,
-                discount: discountAmount,
-                amount_paid: endSessionAmountPaid,
-                end_time: getUTCNow()
-            })
-            .eq('id', session.id);
+        // بنحاول نحفظ الخصم والمبلغ المدفوع كمان؛ لو الأعمدة دي لسه مش
+        // مضافة في قاعدة البيانات (discount / amount_paid)، بنرجع نحفظ
+        // بدونها عشان قفل الجلسة ميفشلش خالص.
+        let { error } = await supabaseClient.from('sessions').update({
+            ...basePayload,
+            discount: discountAmount,
+            amount_paid: endSessionAmountPaid
+        }).eq('id', session.id);
 
         if (error && /column .* does not exist/i.test(error.message || '')) {
             console.warn('discount/amount_paid columns missing — saving without them:', error.message);
-            ({ error } = await supabaseClient
-                .from('sessions')
-                .update({
-                    ...basePayload,
-                    end_time: getUTCNow()
-                })
-                .eq('id', session.id));
+            ({ error } = await supabaseClient.from('sessions').update(basePayload).eq('id', session.id));
         }
         
         if (error) {
@@ -2762,6 +2532,9 @@ async function confirmEndSessionWithPayment() {
             return;
         }
         
+        const savedStationId = stationId;
+        
+        // نثبّت قيمة الخصم النهائية (بعد أي clamp) عشان الإيصال يعرضها صح
         endSessionDiscount = discountAmount;
         
         delete sessions[stationId];
@@ -2834,7 +2607,7 @@ function printReceipt() {
         
         const receiptContent = `
             <div style="font-family: 'Cairo', Arial, sans-serif; padding: 20px; max-width: 300px; margin: 0 auto; direction: rtl; text-align: center; background: #fff; color: #000;">
-                <div style="font-size: 18px; font-weight: 700; margin-bottom: 4px;">${escapeHtml(business.name || business.business_name)}</div>
+                <div style="font-size: 18px; font-weight: 700; margin-bottom: 4px;">${escapeHtml(business.name)}</div>
                 <div style="font-size: 12px; color: #666; margin-bottom: 12px;">${escapeHtml(business.code)}</div>
                 <hr style="border: none; border-top: 1px dashed #ccc; margin: 10px 0;">
                 <div style="font-size: 13px; margin-bottom: 8px;">
@@ -2967,9 +2740,7 @@ async function submitExpense() {
     if (!description || !Number.isFinite(amount) || amount <= 0) { errEl.textContent = t('اكتب وصف ومبلغ صحيح.', 'Enter a valid description and amount.'); return; }
     if (!currentShift?.id) { errEl.textContent = t('مفيش شيفت مفتوح.', 'No open shift.'); return; }
     try {
-        const { error } = await supabaseClient
-            .from('expenses')
-            .insert({ business_code: business.code, shift_id: currentShift.id, description, amount });
+        const { error } = await supabaseClient.from('expenses').insert({ business_id: business.id, shift_id: currentShift.id, description, amount });
         if (error) throw error;
         closeSheet('expenseOverlay');
         showToast(t('تم تسجيل المصروف', 'Expense recorded'), 'success');
@@ -2989,7 +2760,7 @@ async function getShiftTotals(shift) {
         const { data: sessRows } = await supabaseClient
             .from('sessions')
             .select('id, amount, payment_method')
-            .eq('business_code', business.code)
+            .eq('business_id', business.id)
             .eq('status', 'completed')
             .gte('ended_at', shift.opened_at)
             .lte('ended_at', shift.closed_at || new Date().toISOString());
@@ -3075,7 +2846,7 @@ async function renderShiftView() {
     let query = supabaseClient
         .from('shifts')
         .select('*')
-        .eq('business_code', business.code)
+        .eq('business_id', business.id)
         .eq('status', 'closed')
         .order('closed_at', { ascending: false });
     
@@ -3158,15 +2929,11 @@ async function renderShiftView() {
 
 async function openNewShift() {
     try {
-        const { data: created } = await supabaseClient
-            .from('shifts')
-            .insert({ 
-                business_code: business.code,
-                opened_at: new Date().toISOString(),
-                status: 'open'
-            })
-            .select()
-            .single();
+        const { data: created } = await supabaseClient.from('shifts').insert({ 
+            business_id: business.id,
+            opened_at: new Date().toISOString(),
+            status: 'open'
+        }).select().single();
         currentShift = created;
         showToast(t('تم فتح شيفت جديد', 'New shift opened'), 'success');
         renderShiftView();
@@ -3181,11 +2948,7 @@ async function deleteShift(shiftId) {
     if (!confirm(t('هل أنت متأكد من حذف هذا الشيفت؟ سيتم حذف كل الجلسات والمصروفات المرتبطة به فقط.', 'Are you sure you want to delete this shift? Only the sessions and expenses that belong to it will be deleted.'))) return;
     
     try {
-        const { data: shift, error: shiftErr } = await supabaseClient
-            .from('shifts')
-            .select('*')
-            .eq('id', shiftId)
-            .single();
+        const { data: shift, error: shiftErr } = await supabaseClient.from('shifts').select('*').eq('id', shiftId).single();
         if (shiftErr || !shift) {
             showToast(t('تعذر إيجاد الشيفت', 'Could not find the shift'), 'error');
             console.error('Error loading shift to delete:', shiftErr);
@@ -3193,39 +2956,23 @@ async function deleteShift(shiftId) {
         }
         const rangeEnd = shift.closed_at || new Date().toISOString();
 
-        await supabaseClient
-            .from('expenses')
-            .delete()
-            .eq('shift_id', shiftId);
+        await supabaseClient.from('expenses').delete().eq('shift_id', shiftId);
         
         const { data: sessionsToDelete } = await supabaseClient
             .from('sessions')
             .select('id')
-            .eq('business_code', business.code)
+            .eq('business_id', business.id)
             .eq('status', 'completed')
             .gte('ended_at', shift.opened_at)
             .lte('ended_at', rangeEnd);
         
         if (sessionsToDelete && sessionsToDelete.length > 0) {
             const sessionIds = sessionsToDelete.map(s => s.id);
-            await supabaseClient
-                .from('session_segments')
-                .delete()
-                .in('session_id', sessionIds);
-            await supabaseClient
-                .from('session_orders')
-                .delete()
-                .in('session_id', sessionIds);
-            await supabaseClient
-                .from('sessions')
-                .delete()
-                .in('id', sessionIds);
+            await supabaseClient.from('session_orders').delete().in('session_id', sessionIds);
+            await supabaseClient.from('sessions').delete().in('id', sessionIds);
         }
         
-        await supabaseClient
-            .from('shifts')
-            .delete()
-            .eq('id', shiftId);
+        await supabaseClient.from('shifts').delete().eq('id', shiftId);
         
         showToast(t('تم حذف الشيفت', 'Shift deleted'), 'success');
         renderShiftView();
@@ -3275,11 +3022,7 @@ async function openCloseShiftSheet() {
 }
 
 async function viewShiftDetails(shiftId) {
-    const { data: shift, error } = await supabaseClient
-        .from('shifts')
-        .select('*')
-        .eq('id', shiftId)
-        .single();
+    const { data: shift, error } = await supabaseClient.from('shifts').select('*').eq('id', shiftId).single();
     if (error || !shift) {
         showToast(t('تعذر تحميل تفاصيل الشيفت', 'Could not load shift details'), 'error');
         console.error('Error loading shift details:', error);
@@ -3340,6 +3083,12 @@ function renderSettings() {
         <div class="list-row"><div class="row-title">${t('حالة الجهاز', 'Device Status')}</div><div class="badge ${deviceRecord.revoked ? 'badge-red' : 'badge-teal'}">${deviceRecord.revoked ? t('موقوف', 'Suspended') : t('نشط', 'Active')}</div></div>
         <div class="list-row"><div class="row-title">${t('تاريخ الانتهاء', 'Expiry Date')}</div><div class="row-value mono">${expiry ? expiry.toLocaleDateString(currentLang === 'ar' ? 'ar-EG' : 'en-US') : '—'}</div></div>`;
 
+    // ============================================================
+    // ✅ TOGGLE PIN SECTION — مبني بالكامل من الـ JS عشان يشتغل من غير
+    // ما نحتاج نضيف عناصر ثابتة في الـ HTML يدويًا.
+    // بنستخدم wrapper بـ id ثابت عشان لو renderSettings() اتنادت تاني
+    // (بعد إضافة موظف/صنف مثلاً) منكررش القسم من جديد كل مرة.
+    // ============================================================
     const pinToggleHtml = `
         <div class="list-row" style="cursor:pointer;" onclick="toggleSettingsPin()">
             <div class="row-title">${t('تغيير PIN المالك', 'Change Owner PIN')}</div>
@@ -3406,6 +3155,7 @@ function renderSettings() {
                 </div>
             </div>`).join('');
     
+    // ✅ تحديث حالة الـ Toggle (PIN)
     const pinSection = document.getElementById('settingsChangePin');
     const chevron = document.getElementById('settingsPinChevron');
     if (pinSection && chevron) {
@@ -3415,7 +3165,7 @@ function renderSettings() {
 }
 
 // ============================================================
-// 🔐 تغيير PIN المالك
+// 🔐 تغيير PIN المالك (جديد)
 // ============================================================
 async function changeOwnerPin() {
     const currentPin = document.getElementById('currentPinInput').value.trim();
@@ -3428,11 +3178,13 @@ async function changeOwnerPin() {
         return; 
     }
     
+    // 🔍 التحقق من PIN الحالي
     if (currentPin !== business.owner_pin) { 
         errEl.textContent = t('❌ PIN الحالي غير صحيح.', '❌ Current PIN is incorrect.'); 
         return; 
     }
     
+    // ✅ التحقق من PIN الجديد
     if (!/^\d{4,6}$/.test(newPin)) { 
         errEl.textContent = t('❌ PIN الجديد لازم يكون 4-6 أرقام.', '❌ New PIN must be 4-6 digits.'); 
         return; 
@@ -3442,12 +3194,14 @@ async function changeOwnerPin() {
         const { error } = await supabaseClient
             .from('businesses')
             .update({ owner_pin: newPin })
-            .eq('code', business.code);
+            .eq('id', business.id);
         
         if (error) throw error;
 
+        // ✅ تحديث المتغير المحلي
         business.owner_pin = newPin;
         
+        // 🧹 تنظيف الحقول
         document.getElementById('currentPinInput').value = '';
         document.getElementById('newPinInput').value = '';
         
@@ -3459,7 +3213,7 @@ async function changeOwnerPin() {
 }
 
 // ============================================================
-// 🏢 إنشاء نشاط جديد من صفحة الدخول
+// 🏢 إنشاء نشاط جديد من صفحة الدخول (جديد)
 // ============================================================
 function openCreateBusinessSheetFromSetup() {
     ['newBizCodeSetup', 'newBizNameSetup', 'newBizPhoneSetup'].forEach(id => document.getElementById(id).value = '');
@@ -3473,7 +3227,7 @@ async function submitCreateBusinessFromSetup() {
     const name = document.getElementById('newBizNameSetup').value.trim();
     const phone = document.getElementById('newBizPhoneSetup').value.trim();
     const total_stations = parseInt(document.getElementById('newBizStationsSetup').value) || 4;
-    const owner_pin = '0000';
+    const owner_pin = '0000'; // ✅ PIN افتراضي
     const err = document.getElementById('createBizErrorSetup');
 
     if (!code || !name) { 
@@ -3482,15 +3236,13 @@ async function submitCreateBusinessFromSetup() {
     }
 
     try {
-        const { error } = await supabaseClient
-            .from('businesses')
-            .insert({ 
-                code, 
-                business_name: name,
-                phone: phone || null, 
-                owner_pin, 
-                total_stations 
-            });
+        const { error } = await supabaseClient.from('businesses').insert({ 
+            code, 
+            name, 
+            phone: phone || null, 
+            owner_pin, 
+            total_stations 
+        });
         
         if (error) {
             if (error.code === '23505') {
@@ -3505,6 +3257,7 @@ async function submitCreateBusinessFromSetup() {
         closeSheet('createBusinessSheetFromSetup');
         showToast(t('✅ تم إنشاء النشاط! استخدم الكود لتسجيل الدخول.', '✅ Business created! Use the code to login.'), 'success');
         
+        // 🚀 محاولة الدخول التلقائي
         document.getElementById('setupBusinessCode').value = code;
         handleSetupContinue();
     } catch (e) {
@@ -3552,7 +3305,7 @@ async function submitMenuItem() {
     
     try {
         const newItem = {
-            business_code: business.code,
+            business_id: business.id,
             name: name,
             price: price,
             category: category,
@@ -3641,10 +3394,7 @@ async function submitEmployee() {
         shift: document.getElementById('permShift').checked,
         settings: document.getElementById('permSettings').checked
     };
-    const { data, error } = await supabaseClient
-        .from('employees')
-        .insert({ business_code: business.code, name, pin, permissions })
-        .select();
+    const { data, error } = await supabaseClient.from('employees').insert({ business_id: business.id, name, pin, permissions }).select();
     if (error || !data || data.length === 0) {
         document.getElementById('employeeError').textContent = t('فشل حفظ الموظف، حاول تاني.', 'Failed to save employee, try again.');
         console.error('Error adding employee:', error);
@@ -3657,11 +3407,7 @@ async function submitEmployee() {
 async function deleteEmployee(employeeId) {
     if (!confirm(t('هل أنت متأكد من حذف هذا الموظف؟', 'Are you sure you want to delete this employee?'))) return;
     try {
-        const { error } = await supabaseClient
-            .from('employees')
-            .delete()
-            .eq('id', employeeId)
-            .eq('business_code', business.code);
+        const { error } = await supabaseClient.from('employees').delete().eq('id', employeeId).eq('business_id', business.id);
         if (error) throw error;
         showToast(t('تم حذف الموظف', 'Employee deleted'), 'success');
         await loadEmployees();
@@ -3687,7 +3433,7 @@ async function recoverActiveSession() {
     const { data: activeSessions } = await supabaseClient
         .from('sessions')
         .select('*')
-        .eq('business_code', business.code)
+        .eq('business_id', business.id)
         .eq('status', 'active');
 
     if (activeSessions && activeSessions.length > 0) {
@@ -3736,15 +3482,11 @@ async function refreshStationSheetContent(stationId) {
     const timerBadgeClass = timerType === 'countdown' ? 'badge-timer-down' : 'badge-timer-up';
     const isCountdown = timerType === 'countdown';
 
-    const { data: orders } = await supabaseClient
-        .from('session_orders')
-        .select('*')
-        .eq('session_id', session.id)
-        .order('created_at');
+    const { data: orders } = await supabaseClient.from('session_orders').select('*').eq('session_id', session.id).order('created_at');
     activeSessionOrders = orders || [];
 
     const activeSegStart = activeSeg ? activeSeg.started_at : session.started_at;
-    const liveEarnedNow = activeSeg ? getCurrentSegmentEarnedAmount(session.id) : 0;
+    const liveEarnedNow = activeSeg ? Math.round((Math.max(0, (nowCorrected() - new Date(activeSeg.started_at)) / 3600000) * Number(activeSeg.rate)) * 100) / 100 : 0;
     const liveGrandTotal = Math.round((totals.grandTotal + liveEarnedNow) * 100) / 100;
     
     body.innerHTML = `
@@ -3871,25 +3613,27 @@ async function handleSwitchMode(sessionId, newMode, stationId) {
 
         const now = new Date().toISOString();
         const start = new Date(activeSeg.started_at);
-        let elapsedSeconds = (new Date(now) - start) / 1000;
+        let usedSeconds = (new Date(now) - start) / 1000;
+        let hours = usedSeconds / 3600;
+        let amount = Math.round((hours * Number(activeSeg.rate)) * 100) / 100;
+
         if (activeSeg.timer_type === 'countdown' && activeSeg.duration_seconds) {
-            elapsedSeconds = Math.min(elapsedSeconds, activeSeg.duration_seconds);
+            usedSeconds = Math.min(usedSeconds, activeSeg.duration_seconds);
+            hours = usedSeconds / 3600;
+            amount = Math.round((hours * Number(activeSeg.rate)) * 100) / 100;
         }
-        const hours = elapsedSeconds / 3600;
-        const amount = Math.round((hours * Number(activeSeg.rate)) * 100) / 100;
 
         const st = stations.find(s => s.id === stationId);
         const newRate = newMode === 'single' ? (st.single_rate || 20) : (st.multi_rate || 30);
         const timerType = activeSeg.timer_type || 'countup';
         const durationSeconds = timerType === 'countdown'
-            ? Math.max(0, Math.round((activeSeg.duration_seconds || 0) - elapsedSeconds))
+            ? Math.max(0, Math.round((activeSeg.duration_seconds || 0) - usedSeconds))
             : Math.round(activeSeg.duration_seconds || 0);
 
         await closeSegment(activeSeg.id, now, amount);
         await createSegment(sessionId, newMode, now, newRate, timerType, durationSeconds);
 
-        await supabaseClient
-            .from('sessions')
+        await supabaseClient.from('sessions')
             .update({ current_mode: newMode, rate: newRate })
             .eq('id', sessionId);
 
