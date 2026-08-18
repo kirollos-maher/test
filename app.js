@@ -866,6 +866,7 @@ async function syncServerClock() {
         const data = await res.json();
         if (data && data.unixtime) {
             serverClockOffsetMs = (data.unixtime * 1000) - Date.now();
+            console.log('🕐 Server clock offset:', serverClockOffsetMs, 'ms');
             return;
         }
     } catch (e) {
@@ -876,7 +877,10 @@ async function syncServerClock() {
         const data = await res.json();
         if (data && data.dateTime) {
             const serverTime = new Date(data.dateTime + 'Z').getTime();
-            if (!isNaN(serverTime)) serverClockOffsetMs = serverTime - Date.now();
+            if (!isNaN(serverTime)) {
+                serverClockOffsetMs = serverTime - Date.now();
+                console.log('🕐 Server clock offset (fallback):', serverClockOffsetMs, 'ms');
+            }
         }
     } catch (e) {
         console.warn('Error syncing server clock (both sources failed):', e);
@@ -884,13 +888,25 @@ async function syncServerClock() {
 }
 
 function nowCorrected() {
+    // ✅ الوقت الحالي مصحح بفارق السيرفر
     return Date.now() + serverClockOffsetMs;
 }
 
-// ✅ دالة مساعدة للحصول على وقت UTC كـ ISO string
+// ✅ دالة للحصول على وقت UTC الحالي
 function getUTCNow() {
     return new Date(nowCorrected()).toISOString();
 }
+
+// ✅ دالة لعرض المنطقة الزمنية للجهاز (للتشخيص)
+function getDeviceTimezone() {
+    const tz = Intl.DateTimeFormat().resolvedOptions().timeZone;
+    const offset = -new Date().getTimezoneOffset() / 60;
+    console.log(`🌍 Device Timezone: ${tz}, UTC offset: ${offset}h`);
+    return { timezone: tz, offset: offset };
+}
+
+// استدعائها عند بدء التطبيق
+getDeviceTimezone();
 
 async function preloadActiveSegments(sessionIds) {
     if (!sessionIds || sessionIds.length === 0) return;
@@ -1157,6 +1173,7 @@ function startTicker() {
 }
 
 function formatElapsed(start) {
+    // ✅ استخدام nowCorrected() بدلاً من Date.now()
     const now = nowCorrected();
     const startTime = new Date(start).getTime();
     const secs = Math.max(0, Math.floor((now - startTime) / 1000));
