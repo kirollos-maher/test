@@ -11,6 +11,57 @@
 <link rel="stylesheet" href="style.css">
 <script src="app.js" defer></script>
 <script src="alerts.js" defer></script>
+
+<style>
+    /* ✅ DORAK Brand في الرأس */
+    .dorak-brand {
+        font-family: 'JetBrains Mono', monospace;
+        font-weight: 800;
+        font-size: 18px;
+        color: var(--amber);
+        letter-spacing: 0.08em;
+        margin-left: 12px;
+        text-shadow: 0 0 20px rgba(255, 138, 30, 0.3);
+        user-select: none;
+    }
+    .dorak-brand .star {
+        color: var(--amber);
+        opacity: 0.7;
+    }
+    .app-header .dorak-brand {
+        color: var(--amber);
+    }
+    [data-theme="light"] .dorak-brand {
+        color: var(--amber-dark);
+        text-shadow: 0 0 20px rgba(255, 138, 30, 0.15);
+    }
+
+    /* ✅ الجرس الموحد بجانب الاسم */
+    #headerBell {
+        font-size: 20px;
+        color: var(--text-dim);
+        transition: all 0.3s ease;
+        cursor: default;
+        margin-left: 8px;
+    }
+    #headerBell.bell-ringing {
+        color: var(--amber);
+        animation: bellBlink 0.6s infinite alternate, bellShake 0.3s infinite;
+    }
+    @keyframes bellBlink {
+        0% { opacity: 0.4; transform: scale(0.9); }
+        100% { opacity: 1; transform: scale(1.1); }
+    }
+    @keyframes bellShake {
+        0% { transform: rotate(-15deg); }
+        100% { transform: rotate(15deg); }
+    }
+
+    /* ✅ تحريك الجرس عند الرنين */
+    .bell-ringing {
+        animation: bellShake 0.3s infinite, bellBlink 0.6s infinite alternate;
+    }
+</style>
 </head>
 <body>
 
@@ -25,6 +76,8 @@
     </div>
 </div>
 
+<div id="v2SecurityBanner" style="display:none;position:fixed;top:0;left:0;right:0;z-index:1000;background:#3b1f00;color:#ffd8a8;padding:8px 12px;text-align:center;font:600 12px Cairo,sans-serif;">V2: تأكد من تطبيق ملف SQL على Supabase قبل استخدام النظام في الإنتاج.</div>
+
 <!-- ============== SETUP SCREEN ============== -->
 <div id="setupScreen" class="screen active">
     <div class="centered-screen">
@@ -38,7 +91,8 @@
             <button class="btn btn-amber btn-block" id="setupContinueBtn" onclick="handleSetupContinue()">
                 <i class="fa-solid fa-arrow-left"></i> <span data-ar="متابعة" data-en="Continue">متابعة</span>
             </button>
-            <button class="btn btn-ghost btn-block" style="margin-top:8px;" onclick="openCreateBusinessSheetFromSetup()">
+            <!-- ✅ زر إنشاء نشاط جديد -->
+            <button class="btn btn-ghost btn-block" style="margin-top: 8px;" onclick="openCreateBusinessSheetFromSetup()">
                 <i class="fa-solid fa-plus"></i> <span data-ar="إنشاء نشاط جديد" data-en="Create New Business">إنشاء نشاط جديد</span>
             </button>
             <div class="error-text" id="setupError"></div>
@@ -46,7 +100,7 @@
     </div>
 </div>
 
-<!-- ============== CREATE BUSINESS SHEET ============== -->
+<!-- ============== CREATE BUSINESS SHEET (من صفحة الدخول) ============== -->
 <div class="overlay" id="createBusinessSheetFromSetup">
     <div class="sheet">
         <div class="sheet-handle"></div>
@@ -70,6 +124,7 @@
             <label data-ar="عدد الأجهزة" data-en="Number of Devices">عدد الأجهزة</label>
             <input type="number" id="newBizStationsSetup" class="mono" value="4">
         </div>
+        <!-- ✅ PIN المالك ثابت = 0000 -->
         <input type="hidden" id="newBizPinSetup" value="0000">
         <button class="btn btn-amber btn-block" onclick="submitCreateBusinessFromSetup()">
             <i class="fa-solid fa-check"></i> <span data-ar="إنشاء" data-en="Create">إنشاء</span>
@@ -96,76 +151,6 @@
             </button>
             <button class="btn btn-ghost btn-block" style="margin-top:8px;" onclick="showScreen('setupScreen')"><span data-ar="رجوع" data-en="Back">رجوع</span></button>
             <div class="error-text" id="activationError"></div>
-        </div>
-    </div>
-</div>
-
-<!-- ============== AUTH SCREEN ============== -->
-<div id="authScreen" class="screen">
-    <div class="centered-screen">
-        <div class="brand-mark">✦ DORAK ✦</div>
-        <div class="brand-title" id="authBizName" style="font-size:22px;">—</div>
-        <div class="brand-mark" id="authBizCode" style="font-size:14px;color:var(--text-dim);">—</div>
-        <div class="card">
-            <div id="authLoginForm">
-                <div class="section-title" style="text-align:center;margin-bottom:14px;" data-ar="تسجيل الدخول" data-en="Sign In">تسجيل الدخول</div>
-                <div class="field">
-                    <label data-ar="البريد الإلكتروني" data-en="Email">البريد الإلكتروني</label>
-                    <input type="email" id="authEmail" autocomplete="email" placeholder="name@example.com">
-                </div>
-                <div class="field">
-                    <label data-ar="كلمة المرور" data-en="Password">كلمة المرور</label>
-                    <input type="password" id="authPassword" autocomplete="current-password" placeholder="••••••••">
-                </div>
-                <div class="field">
-                    <label data-ar="PIN المالك (لأول ربط فقط)" data-en="Owner PIN (for first-time link only)">PIN المالك (لأول ربط فقط)</label>
-                    <input type="password" inputmode="numeric" id="authLoginOwnerPin" class="mono" placeholder="اختياري">
-                    <div style="font-size:11px;color:var(--text-faint);margin-top:6px;text-align:center;" data-ar="استخدم PIN المالك لربط حساب Auth بالنشاط الحالي (مرة واحدة فقط)" data-en="Use the owner PIN to link your Auth account to this business (one-time only)">استخدم PIN المالك لربط حساب Auth بالنشاط الحالي (مرة واحدة فقط)</div>
-                </div>
-                <button class="btn btn-amber btn-block" id="authLoginBtn" onclick="handleAuthLogin()">
-                    <i class="fa-solid fa-right-to-bracket"></i> <span data-ar="دخول" data-en="Sign In">دخول</span>
-                </button>
-                <button class="btn btn-ghost btn-block" style="margin-top:8px;" onclick="showAuthScreen('signup')">
-                    <span data-ar="إنشاء حساب مالك لأول مرة" data-en="Create owner account for first time">إنشاء حساب مالك لأول مرة</span>
-                </button>
-                <button class="btn btn-ghost btn-block" style="margin-top:8px;" onclick="showScreen('setupScreen')">
-                    <span data-ar="تغيير النشاط" data-en="Switch Business">تغيير النشاط</span>
-                </button>
-            </div>
-
-            <div id="authSignupForm" style="display:none;">
-                <div class="section-title" style="text-align:center;margin-bottom:14px;" data-ar="إنشاء حساب المالك" data-en="Create Owner Account">إنشاء حساب المالك</div>
-                <div class="field">
-                    <label data-ar="اسم المالك" data-en="Owner Name">اسم المالك</label>
-                    <input type="text" id="authOwnerName" autocomplete="name" placeholder="اسمك">
-                </div>
-                <div class="field">
-                    <label data-ar="البريد الإلكتروني" data-en="Email">البريد الإلكتروني</label>
-                    <input type="email" id="authSignupEmail" autocomplete="email" placeholder="name@example.com">
-                </div>
-                <div class="field">
-                    <label data-ar="كلمة المرور" data-en="Password">كلمة المرور</label>
-                    <input type="password" id="authSignupPassword" autocomplete="new-password" placeholder="6 أحرف على الأقل">
-                </div>
-                <div class="field">
-                    <label data-ar="تأكيد كلمة المرور" data-en="Confirm Password">تأكيد كلمة المرور</label>
-                    <input type="password" id="authSignupPasswordConfirm" autocomplete="new-password" placeholder="أعد كتابة كلمة المرور">
-                </div>
-                <div class="field">
-                    <label data-ar="PIN المالك الحالي" data-en="Current Owner PIN">PIN المالك الحالي</label>
-                    <input type="password" inputmode="numeric" id="authOwnerPin" class="mono" placeholder="PIN الحالي">
-                    <div style="font-size:11px;color:var(--text-faint);margin-top:6px;text-align:center;" data-ar="يُستخدم مرة واحدة لربط حساب Auth بالنشاط الحالي" data-en="Used once to link Auth account to current business">يُستخدم مرة واحدة لربط حساب Auth بالنشاط الحالي</div>
-                </div>
-                <button class="btn btn-amber btn-block" id="authSignupBtn" onclick="handleAuthSignup()">
-                    <i class="fa-solid fa-user-plus"></i> <span data-ar="إنشاء وربط الحساب" data-en="Create & Link Account">إنشاء وربط الحساب</span>
-                </button>
-                <button class="btn btn-ghost btn-block" style="margin-top:8px;" onclick="showAuthScreen('login')"><span data-ar="رجوع لتسجيل الدخول" data-en="Back to Sign In">رجوع لتسجيل الدخول</span></button>
-            </div>
-
-            <div class="error-text" id="authError"></div>
-        </div>
-        <div style="margin-top:14px;font-size:12px;color:var(--text-faint);text-align:center;" class="mono">
-            Supabase Auth • Secure Account Access
         </div>
     </div>
 </div>
@@ -227,6 +212,7 @@
 <div id="mainApp" class="screen">
     <div class="app-header">
         <div style="display:flex; align-items:center; gap:8px;">
+            <!-- ✅ الجرس الموحد بجانب الاسم -->
             <i class="fa-solid fa-bell" id="headerBell"></i>
             <div>
                 <div class="biz-name" id="headerBizName">—</div>
@@ -302,12 +288,15 @@
 
     <!-- ---------- SETTINGS ---------- -->
     <div class="view" id="view-settings">
+        
+        <!-- ✅ الأجهزة (قابلة للطي) -->
         <div class="section-title" style="cursor:pointer;display:flex;align-items:center;justify-content:space-between;" onclick="toggleSettingsStations()">
             <span><span data-ar="الأجهزة" data-en="Devices">الأجهزة</span> <span id="settingsStationsCount" class="mono" style="color:var(--text-dim);font-weight:400;font-size:12px;"></span></span>
             <i class="fa-solid fa-chevron-down" id="settingsStationsChevron" style="transition:transform .2s;"></i>
         </div>
         <div class="panel" id="settingsStations" style="display:none;"></div>
         
+        <!-- ✅ تحديث الأسعار الجماعية -->
         <div class="panel" style="margin-top:8px;">
             <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:8px;">
                 <input type="number" id="bulkSingleRateInput" class="mono" placeholder="سعر Single (ج/ساعة)" style="width:100%;box-sizing:border-box;background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:8px;padding:10px;">
@@ -320,21 +309,26 @@
         </div>
         <button class="btn btn-ghost btn-block" style="margin-top:8px;" onclick="openStationManagementSheet()"><i class="fa-solid fa-plus"></i> <span data-ar="إضافة جهاز" data-en="Add Device">إضافة جهاز</span></button>
 
+        <!-- ✅ طرق الدفع -->
         <div class="section-title" data-ar="طرق الدفع" data-en="Payment Methods">طرق الدفع</div>
         <div class="panel" id="settingsPaymentMethods"></div>
         <button class="btn btn-ghost btn-block" style="margin-top:8px;" onclick="openPaymentMethodSheet()"><i class="fa-solid fa-plus"></i> <span data-ar="إضافة طريقة دفع" data-en="Add Payment Method">إضافة طريقة دفع</span></button>
 
+        <!-- ✅ الاشتراك -->
         <div class="section-title" data-ar="الاشتراك" data-en="Subscription">الاشتراك</div>
         <div class="panel" id="settingsSubscription"></div>
 
+        <!-- ✅ قائمة الأكل والمشروبات -->
         <div class="section-title" data-ar="قائمة الأكل والمشروبات" data-en="Food & Drinks Menu">قائمة الأكل والمشروبات</div>
         <div class="panel" id="settingsMenu"></div>
         <button class="btn btn-ghost btn-block" style="margin-top:8px;" onclick="openMenuItemSheet()"><i class="fa-solid fa-plus"></i> <span data-ar="إضافة صنف" data-en="Add Item">إضافة صنف</span></button>
 
+        <!-- ✅ الموظفين -->
         <div class="section-title" data-ar="الموظفين" data-en="Employees">الموظفين</div>
         <div class="panel" id="settingsEmployees"></div>
         <button class="btn btn-ghost btn-block" style="margin-top:8px;" onclick="openEmployeeSheet()"><i class="fa-solid fa-plus"></i> <span data-ar="إضافة موظف" data-en="Add Employee">إضافة موظف</span></button>
 
+        <!-- ✅ تغيير PIN المالك (Toggle - قابل للطي) -->
         <div class="section-title" style="cursor:pointer;display:flex;align-items:center;justify-content:space-between;margin-top:20px;" onclick="toggleSettingsPin()">
             <span><i class="fa-solid fa-key" style="color:var(--amber);margin-left:8px;"></i> <span data-ar="تغيير PIN المالك" data-en="Change Owner PIN">تغيير PIN المالك</span></span>
             <i class="fa-solid fa-chevron-down" id="settingsPinChevron" style="transition:transform .2s;"></i>
@@ -354,11 +348,7 @@
             <div class="error-text" id="changePinError"></div>
         </div>
 
-        <div class="section-title" data-ar="الحساب" data-en="Account">الحساب</div>
-        <button class="btn btn-red btn-block" onclick="handleAuthSignOut()">
-            <i class="fa-solid fa-sign-out-alt"></i> <span data-ar="تسجيل الخروج" data-en="Sign Out">تسجيل الخروج</span>
-        </button>
-
+        <!-- ✅ النشاط (تبديل النشاط) -->
         <div class="section-title" data-ar="النشاط" data-en="Business">النشاط</div>
         <button class="btn btn-ghost btn-block" onclick="switchBusiness()"><i class="fa-solid fa-right-left"></i> <span data-ar="تبديل النشاط" data-en="Switch Business">تبديل النشاط</span></button>
     </div>
@@ -521,10 +511,7 @@
                 <label data-ar="الصلاحيات" data-en="Permissions">الصلاحيات</label>
                 <label style="display:flex;align-items:center;gap:8px;font-weight:500;color:var(--text);margin-bottom:6px;"><input type="checkbox" id="permStations" checked> <span data-ar="إدارة الأجهزة والجلسات" data-en="Manage devices & sessions">إدارة الأجهزة والجلسات</span></label>
                 <label style="display:flex;align-items:center;gap:8px;font-weight:500;color:var(--text);margin-bottom:6px;"><input type="checkbox" id="permShift"> <span data-ar="إقفال الشيفت" data-en="Close shift">إقفال الشيفت</span></label>
-                <label style="display:flex;align-items:center;gap:8px;font-weight:500;color:var(--text);margin-bottom:6px;"><input type="checkbox" id="permPrices"> <span data-ar="تعديل أسعار وأجهزة (إضافة/تعديل/حذف)" data-en="Edit devices & prices (add/edit/delete)">تعديل أسعار وأجهزة (إضافة/تعديل/حذف)</span></label>
-                <label style="display:flex;align-items:center;gap:8px;font-weight:500;color:var(--text);margin-bottom:6px;"><input type="checkbox" id="permMenu"> <span data-ar="التحكم في الأصناف والمشروبات" data-en="Manage menu items & drinks">التحكم في الأصناف والمشروبات</span></label>
-                <label style="display:flex;align-items:center;gap:8px;font-weight:500;color:var(--text);margin-bottom:6px;"><input type="checkbox" id="permSettings"> <span data-ar="الدخول لطرق الدفع والاشتراك وبيانات النشاط" data-en="Access payment methods, subscription & business info">الدخول لطرق الدفع والاشتراك وبيانات النشاط</span></label>
-                <label style="display:flex;align-items:center;gap:8px;font-weight:500;color:var(--text);"><input type="checkbox" id="permEmployees"> <span data-ar="إدارة الموظفين وصلاحياتهم" data-en="Manage employees & their permissions">إدارة الموظفين وصلاحياتهم</span></label>
+                <label style="display:flex;align-items:center;gap:8px;font-weight:500;color:var(--text);"><input type="checkbox" id="permSettings"> <span data-ar="الدخول والتعديل في الإعدادات" data-en="Access & edit Settings">الدخول والتعديل في الإعدادات</span></label>
             </div>
             <p style="font-size:11.5px;color:var(--text-faint);margin-bottom:12px;" data-ar="ملاحظة أمان: الـ PIN مخزّن كنص عادي حاليًا لأن التطبيق مفيش له باك إند منفصل — مناسب لتحكم داخلي بسيط، مش بديل عن نظام مستخدمين حقيقي." data-en="Security note: PIN is stored as plain text currently as the app has no separate backend — suitable for simple internal control, not a replacement for a real user system.">
                 ملاحظة أمان: الـ PIN مخزّن كنص عادي حاليًا لأن التطبيق مفيش له باك إند منفصل — مناسب لتحكم داخلي بسيط، مش بديل عن نظام مستخدمين حقيقي.
