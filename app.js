@@ -846,7 +846,7 @@ function getActiveSegmentFast(sessionId) {
 }
 
 // ============================================================
-// ✅ CLOCK SYNC - باستخدام UTC
+// ✅ CLOCK SYNC - باستخدام UTC (النسخة الكاملة المعدلة)
 // ============================================================
 let serverClockOffsetMs = 0;
 
@@ -861,6 +861,7 @@ async function fetchWithTimeout(url, ms) {
 }
 
 async function syncServerClock() {
+    // محاولة 1: worldtimeapi
     try {
         const res = await fetchWithTimeout('https://worldtimeapi.org/api/timezone/Etc/UTC', 4000);
         const data = await res.json();
@@ -872,6 +873,8 @@ async function syncServerClock() {
     } catch (e) {
         console.warn('worldtimeapi failed, trying fallback:', e);
     }
+    
+    // محاولة 2: timeapi.io
     try {
         const res = await fetchWithTimeout('https://timeapi.io/api/Time/current/zone?timeZone=UTC', 4000);
         const data = await res.json();
@@ -880,11 +883,16 @@ async function syncServerClock() {
             if (!isNaN(serverTime)) {
                 serverClockOffsetMs = serverTime - Date.now();
                 console.log('🕐 Server clock offset (fallback):', serverClockOffsetMs, 'ms');
+                return;
             }
         }
     } catch (e) {
-        console.warn('Error syncing server clock (both sources failed):', e);
+        console.warn('timeapi.io failed, using fallback 2:', e);
     }
+    
+    // محاولة 3: استخدام وقت الجهاز مع تحذير
+    console.warn('⚠️ Using local device time (no sync)');
+    serverClockOffsetMs = 0;
 }
 
 function nowCorrected() {
