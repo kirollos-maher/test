@@ -559,7 +559,6 @@ async function loadAllData() {
 
 async function loadStations() {
     assertBusinessContext();
-    // ✅ استخدام business.code بدلاً من business.id
     const { data, error } = await supabaseClient
         .from('stations')
         .select('*')
@@ -2361,17 +2360,22 @@ async function startSessionWithMode(stationId) {
     const now = new Date(nowCorrected()).toISOString();
     
     try {
-        // ✅ استخدام business.code بدلاً من business.id
+        // ✅ استخدام business.code وتجهيز device_id
         const { data: session, error } = await supabaseClient
             .from('sessions')
             .insert({
                 business_code: business.code,
-                station_id: stationId, 
+                station_id: stationId,
+                station_number: st.number,  // ✅ مطلوب
+                device_id: getDeviceId(),   // ✅ مطلوب (NOT NULL)
                 rate: rate,
                 started_at: now,
+                start_time: now,            // ✅ مطلوب
                 started_by_device: getDeviceId(),
                 current_mode: mode,
-                timer_type: timerType
+                timer_type: timerType,
+                status: 'active',
+                created_at: now
             })
             .select()
             .single();
