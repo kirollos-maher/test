@@ -13,7 +13,7 @@
 <script src="alerts.js" defer></script>
 
 <style>
-    /* ✅ DORAK Brand في الرأس */
+    /* ✅ إضافة لـ DORAK Brand في الرأس */
     .dorak-brand {
         font-family: 'JetBrains Mono', monospace;
         font-weight: 800;
@@ -36,13 +36,12 @@
         text-shadow: 0 0 20px rgba(255, 138, 30, 0.15);
     }
 
-    /* ✅ الجرس الموحد بجانب الاسم */
+    /* ✅ تأثير الجرس في الهيدر */
     #headerBell {
         font-size: 20px;
-        color: var(--text-dim);
+        color: var(--text-muted);
         transition: all 0.3s ease;
         cursor: default;
-        margin-left: 8px;
     }
     #headerBell.bell-ringing {
         color: var(--amber);
@@ -55,11 +54,6 @@
     @keyframes bellShake {
         0% { transform: rotate(-15deg); }
         100% { transform: rotate(15deg); }
-    }
-
-    /* ✅ تحريك الجرس عند الرنين */
-    .bell-ringing {
-        animation: bellShake 0.3s infinite, bellBlink 0.6s infinite alternate;
     }
 </style>
 </head>
@@ -91,45 +85,8 @@
             <button class="btn btn-amber btn-block" id="setupContinueBtn" onclick="handleSetupContinue()">
                 <i class="fa-solid fa-arrow-left"></i> <span data-ar="متابعة" data-en="Continue">متابعة</span>
             </button>
-            <!-- ✅ زر إنشاء نشاط جديد -->
-            <button class="btn btn-ghost btn-block" style="margin-top: 8px;" onclick="openCreateBusinessSheetFromSetup()">
-                <i class="fa-solid fa-plus"></i> <span data-ar="إنشاء نشاط جديد" data-en="Create New Business">إنشاء نشاط جديد</span>
-            </button>
             <div class="error-text" id="setupError"></div>
         </div>
-    </div>
-</div>
-
-<!-- ============== CREATE BUSINESS SHEET (من صفحة الدخول) ============== -->
-<div class="overlay" id="createBusinessSheetFromSetup">
-    <div class="sheet">
-        <div class="sheet-handle"></div>
-        <div class="sheet-title">
-            <span data-ar="إنشاء نشاط تجاري جديد" data-en="Create New Business">إنشاء نشاط تجاري جديد</span>
-            <button class="close-x" onclick="closeSheet('createBusinessSheetFromSetup')"><i class="fa-solid fa-xmark"></i></button>
-        </div>
-        <div class="field">
-            <label data-ar="كود النشاط (بالإنجليزي، بدون مسافات)" data-en="Business Code (English, no spaces)">كود النشاط</label>
-            <input type="text" id="newBizCodeSetup" class="mono" style="text-transform:uppercase" placeholder="CAFE01">
-        </div>
-        <div class="field">
-            <label data-ar="اسم النشاط" data-en="Business Name">اسم النشاط</label>
-            <input type="text" id="newBizNameSetup" placeholder="اسم المحل">
-        </div>
-        <div class="field">
-            <label data-ar="رقم تليفون (اختياري)" data-en="Phone (optional)">رقم تليفون</label>
-            <input type="text" id="newBizPhoneSetup" class="mono">
-        </div>
-        <div class="field">
-            <label data-ar="عدد الأجهزة" data-en="Number of Devices">عدد الأجهزة</label>
-            <input type="number" id="newBizStationsSetup" class="mono" value="4">
-        </div>
-        <!-- ✅ PIN المالك ثابت = 0000 -->
-        <input type="hidden" id="newBizPinSetup" value="0000">
-        <button class="btn btn-amber btn-block" onclick="submitCreateBusinessFromSetup()">
-            <i class="fa-solid fa-check"></i> <span data-ar="إنشاء" data-en="Create">إنشاء</span>
-        </button>
-        <div class="error-text" id="createBizErrorSetup"></div>
     </div>
 </div>
 
@@ -176,6 +133,7 @@
                 <div class="field">
                     <label data-ar="PIN المالك" data-en="Owner PIN">PIN المالك</label>
                     <input type="password" inputmode="numeric" id="lockPinInput" class="mono" placeholder="••••" style="text-align:center;letter-spacing:0.4em;font-size:22px;">
+                    <div style="font-size:11px;color:var(--text-faint);margin-top:6px;text-align:center;" data-ar="الـ PIN الافتراضي هو 0000" data-en="Default PIN is 0000">الـ PIN الافتراضي هو 0000</div>
                 </div>
                 <button class="btn btn-amber btn-block" onclick="handleUnlock()">
                     <i class="fa-solid fa-unlock"></i> <span data-ar="دخول" data-en="Enter">دخول</span>
@@ -212,8 +170,11 @@
 <div id="mainApp" class="screen">
     <div class="app-header">
         <div style="display:flex; align-items:center; gap:8px;">
-            <!-- ✅ الجرس الموحد بجانب الاسم -->
-            <i class="fa-solid fa-bell" id="headerBell"></i>
+            <!-- ✅ أيقونة الجرس -->
+            <div style="position:relative;cursor:pointer;" onclick="openQrOrdersSheet()">
+                <i class="fa-solid fa-bell" id="headerBell"></i>
+                <span id="headerBellBadge" style="display:none;position:absolute;top:-6px;inset-inline-end:-8px;background:var(--red);color:#fff;font-size:10px;font-weight:800;min-width:16px;height:16px;border-radius:8px;align-items:center;justify-content:center;padding:0 3px;">0</span>
+            </div>
             <div>
                 <div class="biz-name" id="headerBizName">—</div>
                 <div class="biz-sub mono" id="headerBizCode">—</div>
@@ -233,8 +194,8 @@
     <div class="view active" id="view-dashboard">
         <div class="section-title" data-ar="أداء اليوم" data-en="Today's Performance">أداء اليوم</div>
         <div class="stat-grid">
-            <div class="stat-card accent"><div class="stat-label" data-ar="إيراد اليوم" data-en="Today's Revenue">إيراد اليوم</div><div class="stat-value mono" id="dashRevenue">0</div></div>
-            <div class="stat-card"><div class="stat-label" data-ar="مصروفات اليوم" data-en="Today's Expenses">مصروفات اليوم</div><div class="stat-value mono" id="dashExpenses">0</div></div>
+            <div class="stat-card accent" id="dashRevenueCard"><div class="stat-label" data-ar="إيراد اليوم" data-en="Today's Revenue">إيراد اليوم</div><div class="stat-value mono" id="dashRevenue">0</div></div>
+            <div class="stat-card" id="dashExpensesCard"><div class="stat-label" data-ar="مصروفات اليوم" data-en="Today's Expenses">مصروفات اليوم</div><div class="stat-value mono" id="dashExpenses">0</div></div>
             <div class="stat-card"><div class="stat-label" data-ar="أجهزة شغالة" data-en="Active Devices">أجهزة شغالة</div><div class="stat-value mono" id="dashActive">0</div></div>
             <div class="stat-card"><div class="stat-label" data-ar="أجهزة متاحة" data-en="Available Devices">أجهزة متاحة</div><div class="stat-value mono" id="dashAvailable">0</div></div>
         </div>
@@ -288,15 +249,12 @@
 
     <!-- ---------- SETTINGS ---------- -->
     <div class="view" id="view-settings">
-        
-        <!-- ✅ الأجهزة (قابلة للطي) -->
         <div class="section-title" style="cursor:pointer;display:flex;align-items:center;justify-content:space-between;" onclick="toggleSettingsStations()">
             <span><span data-ar="الأجهزة" data-en="Devices">الأجهزة</span> <span id="settingsStationsCount" class="mono" style="color:var(--text-dim);font-weight:400;font-size:12px;"></span></span>
             <i class="fa-solid fa-chevron-down" id="settingsStationsChevron" style="transition:transform .2s;"></i>
         </div>
         <div class="panel" id="settingsStations" style="display:none;"></div>
         
-        <!-- ✅ تحديث الأسعار الجماعية -->
         <div class="panel" style="margin-top:8px;">
             <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:8px;">
                 <input type="number" id="bulkSingleRateInput" class="mono" placeholder="سعر Single (ج/ساعة)" style="width:100%;box-sizing:border-box;background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:8px;padding:10px;">
@@ -309,46 +267,35 @@
         </div>
         <button class="btn btn-ghost btn-block" style="margin-top:8px;" onclick="openStationManagementSheet()"><i class="fa-solid fa-plus"></i> <span data-ar="إضافة جهاز" data-en="Add Device">إضافة جهاز</span></button>
 
-        <!-- ✅ طرق الدفع -->
+        <div id="settingsSectionQr">
+            <div class="section-title" data-ar="طلب المنيو عبر QR" data-en="QR Menu Ordering">طلب المنيو عبر QR</div>
+            <div class="panel" id="settingsQr" style="padding:14px;">
+                <label style="display:flex;align-items:center;justify-content:space-between;gap:10px;cursor:pointer;">
+                    <span style="font-weight:600;">
+                        <span data-ar="تفعيل طلب العملاء عبر QR" data-en="Enable customer QR ordering">تفعيل طلب العملاء عبر QR</span>
+                        <div style="font-size:11.5px;color:var(--text-faint);font-weight:400;margin-top:2px;" data-ar="لما تفعّلها، كل جهاز هيبقى ليه كود QR يفتح صفحة منيو للعميل، وطلباته هتوصلك بصوت وتنبيه." data-en="Once enabled, each device gets its own QR code that opens a menu page for the customer; their orders reach you with a sound alert.">لما تفعّلها، كل جهاز هيبقى ليه كود QR يفتح صفحة منيو للعميل، وطلباته هتوصلك بصوت وتنبيه.</div>
+                    </span>
+                    <input type="checkbox" id="qrOrderingToggle" onchange="toggleQrOrdering(this.checked)" style="width:20px;height:20px;flex:0 0 auto;">
+                </label>
+            </div>
+            <div class="panel" id="settingsQrHint" style="margin-top:6px;font-size:12px;color:var(--text-faint);padding:0 4px;" data-ar="بعد التفعيل، ادخل على «الأجهزة» فوق واضغط زرار QR جنب أي جهاز عشان تطبعه أو تحطه على الترابيزة." data-en="After enabling, open Devices above and tap the QR button next to any device to print or display it.">بعد التفعيل، ادخل على «الأجهزة» فوق واضغط زرار QR جنب أي جهاز عشان تطبعه أو تحطه على الترابيزة.</div>
+        </div>
+
         <div class="section-title" data-ar="طرق الدفع" data-en="Payment Methods">طرق الدفع</div>
         <div class="panel" id="settingsPaymentMethods"></div>
         <button class="btn btn-ghost btn-block" style="margin-top:8px;" onclick="openPaymentMethodSheet()"><i class="fa-solid fa-plus"></i> <span data-ar="إضافة طريقة دفع" data-en="Add Payment Method">إضافة طريقة دفع</span></button>
 
-        <!-- ✅ الاشتراك -->
         <div class="section-title" data-ar="الاشتراك" data-en="Subscription">الاشتراك</div>
         <div class="panel" id="settingsSubscription"></div>
 
-        <!-- ✅ قائمة الأكل والمشروبات -->
         <div class="section-title" data-ar="قائمة الأكل والمشروبات" data-en="Food & Drinks Menu">قائمة الأكل والمشروبات</div>
         <div class="panel" id="settingsMenu"></div>
         <button class="btn btn-ghost btn-block" style="margin-top:8px;" onclick="openMenuItemSheet()"><i class="fa-solid fa-plus"></i> <span data-ar="إضافة صنف" data-en="Add Item">إضافة صنف</span></button>
 
-        <!-- ✅ الموظفين -->
         <div class="section-title" data-ar="الموظفين" data-en="Employees">الموظفين</div>
         <div class="panel" id="settingsEmployees"></div>
         <button class="btn btn-ghost btn-block" style="margin-top:8px;" onclick="openEmployeeSheet()"><i class="fa-solid fa-plus"></i> <span data-ar="إضافة موظف" data-en="Add Employee">إضافة موظف</span></button>
 
-        <!-- ✅ تغيير PIN المالك (Toggle - قابل للطي) -->
-        <div class="section-title" style="cursor:pointer;display:flex;align-items:center;justify-content:space-between;margin-top:20px;" onclick="toggleSettingsPin()">
-            <span><i class="fa-solid fa-key" style="color:var(--amber);margin-left:8px;"></i> <span data-ar="تغيير PIN المالك" data-en="Change Owner PIN">تغيير PIN المالك</span></span>
-            <i class="fa-solid fa-chevron-down" id="settingsPinChevron" style="transition:transform .2s;"></i>
-        </div>
-        <div class="panel" id="settingsChangePin" style="display:none;margin-bottom:8px;">
-            <div class="field">
-                <label data-ar="PIN الحالي" data-en="Current PIN">PIN الحالي</label>
-                <input type="password" id="currentPinInput" class="mono" maxlength="6" placeholder="••••">
-            </div>
-            <div class="field">
-                <label data-ar="PIN الجديد (4-6 أرقام)" data-en="New PIN (4-6 digits)">PIN الجديد</label>
-                <input type="password" id="newPinInput" class="mono" maxlength="6" placeholder="••••••">
-            </div>
-            <button class="btn btn-amber btn-block" onclick="changeOwnerPin()">
-                <i class="fa-solid fa-key"></i> <span data-ar="تغيير PIN" data-en="Change PIN">تغيير PIN</span>
-            </button>
-            <div class="error-text" id="changePinError"></div>
-        </div>
-
-        <!-- ✅ النشاط (تبديل النشاط) -->
         <div class="section-title" data-ar="النشاط" data-en="Business">النشاط</div>
         <button class="btn btn-ghost btn-block" onclick="switchBusiness()"><i class="fa-solid fa-right-left"></i> <span data-ar="تبديل النشاط" data-en="Switch Business">تبديل النشاط</span></button>
     </div>
@@ -510,14 +457,40 @@
             <div class="field">
                 <label data-ar="الصلاحيات" data-en="Permissions">الصلاحيات</label>
                 <label style="display:flex;align-items:center;gap:8px;font-weight:500;color:var(--text);margin-bottom:6px;"><input type="checkbox" id="permStations" checked> <span data-ar="إدارة الأجهزة والجلسات" data-en="Manage devices & sessions">إدارة الأجهزة والجلسات</span></label>
+                <label style="display:flex;align-items:center;gap:8px;font-weight:500;color:var(--text);margin-bottom:6px;"><input type="checkbox" id="permCancelSession"> <span data-ar="إلغاء جلسة شغالة" data-en="Cancel an active session">إلغاء جلسة شغالة</span></label>
+                <label style="display:flex;align-items:center;gap:8px;font-weight:500;color:var(--text);margin-bottom:6px;"><input type="checkbox" id="permTransferSession"> <span data-ar="نقل جلسة بين الأجهزة" data-en="Transfer a session between devices">نقل جلسة بين الأجهزة</span></label>
+                <label style="display:flex;align-items:center;gap:8px;font-weight:500;color:var(--text);margin-bottom:6px;"><input type="checkbox" id="permExpenses"> <span data-ar="تسجيل مصروفات الشيفت" data-en="Record shift expenses">تسجيل مصروفات الشيفت</span></label>
                 <label style="display:flex;align-items:center;gap:8px;font-weight:500;color:var(--text);margin-bottom:6px;"><input type="checkbox" id="permShift"> <span data-ar="إقفال الشيفت" data-en="Close shift">إقفال الشيفت</span></label>
-                <label style="display:flex;align-items:center;gap:8px;font-weight:500;color:var(--text);"><input type="checkbox" id="permSettings"> <span data-ar="الدخول والتعديل في الإعدادات" data-en="Access & edit Settings">الدخول والتعديل في الإعدادات</span></label>
+                <label style="display:flex;align-items:center;gap:8px;font-weight:500;color:var(--text);margin-bottom:6px;"><input type="checkbox" id="permDeleteShift"> <span data-ar="حذف شيفتات قديمة" data-en="Delete past shifts">حذف شيفتات قديمة</span></label>
+                <label style="display:flex;align-items:center;gap:8px;font-weight:500;color:var(--text);margin-bottom:6px;"><input type="checkbox" id="permReports"> <span data-ar="رؤية الإيراد والصافي والتقارير المالية" data-en="View revenue, net income & financial reports">رؤية الإيراد والصافي والتقارير المالية</span></label>
+                <label style="display:flex;align-items:center;gap:8px;font-weight:500;color:var(--text);margin-bottom:6px;"><input type="checkbox" id="permPrices"> <span data-ar="إدارة الأجهزة والأسعار" data-en="Manage devices & prices">إدارة الأجهزة والأسعار</span></label>
+                <label style="display:flex;align-items:center;gap:8px;font-weight:500;color:var(--text);margin-bottom:6px;"><input type="checkbox" id="permMenu"> <span data-ar="إدارة قائمة الأكل والمشروبات" data-en="Manage the food & drinks menu">إدارة قائمة الأكل والمشروبات</span></label>
+                <label style="display:flex;align-items:center;gap:8px;font-weight:500;color:var(--text);margin-bottom:6px;"><input type="checkbox" id="permEmployees"> <span data-ar="إدارة الموظفين وصلاحياتهم" data-en="Manage employees & permissions">إدارة الموظفين وصلاحياتهم</span></label>
+                <label style="display:flex;align-items:center;gap:8px;font-weight:500;color:var(--text);"><input type="checkbox" id="permSettings"> <span data-ar="الدخول والتعديل في الإعدادات العامة" data-en="Access & edit general Settings">الدخول والتعديل في الإعدادات العامة</span></label>
             </div>
             <p style="font-size:11.5px;color:var(--text-faint);margin-bottom:12px;" data-ar="ملاحظة أمان: الـ PIN مخزّن كنص عادي حاليًا لأن التطبيق مفيش له باك إند منفصل — مناسب لتحكم داخلي بسيط، مش بديل عن نظام مستخدمين حقيقي." data-en="Security note: PIN is stored as plain text currently as the app has no separate backend — suitable for simple internal control, not a replacement for a real user system.">
                 ملاحظة أمان: الـ PIN مخزّن كنص عادي حاليًا لأن التطبيق مفيش له باك إند منفصل — مناسب لتحكم داخلي بسيط، مش بديل عن نظام مستخدمين حقيقي.
             </p>
             <button class="btn btn-amber btn-block" onclick="submitEmployee()"><span data-ar="حفظ" data-en="Save">حفظ</span></button>
             <div class="error-text" id="employeeError"></div>
+        </div>
+    </div>
+
+    <!-- ============== STATION QR SHEET ============== -->
+    <div class="overlay" id="stationQrOverlay">
+        <div class="sheet">
+            <div class="sheet-handle"></div>
+            <div class="sheet-title"><span id="stationQrTitle" data-ar="كود QR للجهاز" data-en="Device QR Code">كود QR للجهاز</span><button class="close-x" onclick="closeSheet('stationQrOverlay')"><i class="fa-solid fa-xmark"></i></button></div>
+            <div id="stationQrBody" style="text-align:center;padding:8px 0 4px;"></div>
+        </div>
+    </div>
+
+    <!-- ============== QR CUSTOMER ORDERS SHEET ============== -->
+    <div class="overlay" id="qrOrdersOverlay">
+        <div class="sheet">
+            <div class="sheet-handle"></div>
+            <div class="sheet-title"><span data-ar="طلبات العملاء (QR)" data-en="Customer Orders (QR)">طلبات العملاء (QR)</span><button class="close-x" onclick="closeSheet('qrOrdersOverlay')"><i class="fa-solid fa-xmark"></i></button></div>
+            <div id="qrOrdersBody" class="panel"></div>
         </div>
     </div>
 
