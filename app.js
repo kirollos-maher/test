@@ -524,12 +524,10 @@ async function enterMainApp() {
     populateYearSelect();
     await loadAllData();
     await recoverActiveSession();
-    await syncServerClock();
     renderStationsGrid();
     subscribeRealtime();
     startTicker();
     updateTexts();
-    setInterval(syncServerClock, 5 * 60 * 1000);
 }
 
 async function loadAllData() {
@@ -846,75 +844,41 @@ function getActiveSegmentFast(sessionId) {
 }
 
 // ============================================================
-// ✅ CLOCK SYNC - باستخدام UTC
+// ✅ نظام الوقت الموحد (UTC) - حل نهائي
 // ============================================================
-let serverClockOffsetMs = 0;
 
-async function fetchWithTimeout(url, ms) {
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), ms);
-    try {
-        return await fetch(url, { signal: controller.signal });
-    } finally {
-        clearTimeout(timeoutId);
-    }
+// ✅ الحصول على المنطقة الزمنية للجهاز
+function getDeviceTimezoneOffset() {
+    const offsetMinutes = new Date().getTimezoneOffset();
+    const offsetHours = -offsetMinutes / 60;
+    console.log(`🌍 Device timezone offset: ${offsetHours}h (${offsetMinutes} minutes)`);
+    return offsetHours;
 }
 
-async function syncServerClock() {
-    // محاولة 1: worldtimeapi
-    try {
-        const res = await fetchWithTimeout('https://worldtimeapi.org/api/timezone/Etc/UTC', 4000);
-        const data = await res.json();
-        if (data && data.unixtime) {
-            serverClockOffsetMs = (data.unixtime * 1000) - Date.now();
-            console.log('🕐 Server clock offset:', serverClockOffsetMs, 'ms');
-            return;
-        }
-    } catch (e) {
-        console.warn('worldtimeapi failed, trying fallback:', e);
-    }
-    
-    // محاولة 2: timeapi.io
-    try {
-        const res = await fetchWithTimeout('https://timeapi.io/api/Time/current/zone?timeZone=UTC', 4000);
-        const data = await res.json();
-        if (data && data.dateTime) {
-            const serverTime = new Date(data.dateTime + 'Z').getTime();
-            if (!isNaN(serverTime)) {
-                serverClockOffsetMs = serverTime - Date.now();
-                console.log('🕐 Server clock offset (fallback):', serverClockOffsetMs, 'ms');
-                return;
-            }
-        }
-    } catch (e) {
-        console.warn('timeapi.io failed, using local time:', e);
-    }
-    
-    // محاولة 3: استخدام وقت الجهاز مع تحذير
-    console.warn('⚠️ Using local device time (no sync)');
-    serverClockOffsetMs = 0;
+// ✅ الحصول على الوقت الحالي بتوقيت UTC (كـ Date object)
+function getUTCDate() {
+    return new Date(new Date().toUTCString());
 }
 
-function nowCorrected() {
-    // ✅ الوقت الحالي مصحح بفارق السيرفر
-    return Date.now() + serverClockOffsetMs;
-}
-
-// ✅ دالة للحصول على وقت UTC الحالي
+// ✅ الحصول على وقت UTC الحالي كـ ISO string
 function getUTCNow() {
-    return new Date(nowCorrected()).toISOString();
+    return new Date(new Date().toUTCString()).toISOString();
 }
 
-// ✅ دالة لعرض المنطقة الزمنية للجهاز (للتشخيص)
-function getDeviceTimezone() {
-    const tz = Intl.DateTimeFormat().resolvedOptions().timeZone;
-    const offset = -new Date().getTimezoneOffset() / 60;
-    console.log(`🌍 Device Timezone: ${tz}, UTC offset: ${offset}h`);
-    return { timezone: tz, offset: offset };
+// ✅ الحصول على الوقت الحالي بالمللي ثانية (مصحح لـ UTC)
+function getUTCTimeMs() {
+    return new Date(new Date().toUTCString()).getTime();
 }
 
-// استدعائها عند بدء التطبيق
-getDeviceTimezone();
+// ✅ حساب الوقت المنقضي من start إلى الآن (بالثواني)
+function getElapsedSeconds(startDate) {
+    const now = getUTCTimeMs();
+    const start = new Date(startDate).getTime();
+    return Math.max(0, Math.floor((now - start) / 1000));
+}
+
+// استدعاء عند بدء التطبيق
+getDeviceTimezoneOffset();
 
 async function preloadActiveSegments(sessionIds) {
     if (!sessionIds || sessionIds.length === 0) return;
@@ -978,7 +942,7 @@ async function getCurrentSegmentEstimate(sessionId) {
     if (!activeSeg) return { amount: 0, hours: 0, segment: null };
     
     const start = new Date(activeSeg.started_at);
-    const now = new Date(nowCorrected());
+    const now = new Date(getUTCTimeMs());
     let elapsedSeconds = Math.max(0, (now - start) / 1000);
     
     if (activeSeg.timer_type === 'countdown' && activeSeg.duration_seconds) {
@@ -994,8 +958,8 @@ function getCurrentSegmentEstimateFast(sessionId) {
     const activeSeg = getActiveSegmentFast(sessionId);
     if (!activeSeg) return { amount: 0, hours: 0, segment: null };
 
-    const start = new Date(activeSeg.started_at);
-    const now = new Date(nowCorrected());
+    const start = new Date(activeSeg.started_at).getTime();
+    const now = getUTCTimeMs();
     let elapsedSeconds = Math.max(0, (now - start) / 1000);
     
     if (activeSeg.timer_type === 'countdown' && activeSeg.duration_seconds) {
@@ -1011,7 +975,7 @@ function getCurrentSegmentEarnedAmount(sessionId) {
     const activeSeg = getActiveSegmentFast(sessionId);
     if (!activeSeg) return 0;
     const start = new Date(activeSeg.started_at).getTime();
-    const now = nowCorrected();
+    const now = getUTCTimeMs();
     let elapsedSeconds = Math.max(0, (now - start) / 1000);
     if (activeSeg.timer_type === 'countdown' && activeSeg.duration_seconds) {
         elapsedSeconds = Math.min(elapsedSeconds, activeSeg.duration_seconds);
@@ -1023,7 +987,7 @@ function getCurrentSegmentEarnedAmount(sessionId) {
 function getRemainingSeconds(segment) {
     if (!segment || segment.timer_type !== 'countdown' || !segment.duration_seconds) return 0;
     const start = new Date(segment.started_at).getTime();
-    const now = nowCorrected();
+    const now = getUTCTimeMs();
     const elapsed = (now - start) / 1000;
     return Math.max(0, segment.duration_seconds - elapsed);
 }
@@ -1181,12 +1145,13 @@ function startTicker() {
 }
 
 function formatElapsed(start) {
-    // ✅ استخدام nowCorrected() بدلاً من Date.now()
-    const now = nowCorrected();
-    const startTime = new Date(start).getTime();
-    const secs = Math.max(0, Math.floor((now - startTime) / 1000));
-    const h = Math.floor(secs / 3600), m = Math.floor((secs % 3600) / 60), s = secs % 60;
-    return (h > 0 ? String(h).padStart(2, '0') + ':' : '') + String(m).padStart(2, '0') + ':' + String(s).padStart(2, '0');
+    const secs = getElapsedSeconds(start);
+    const h = Math.floor(secs / 3600);
+    const m = Math.floor((secs % 3600) / 60);
+    const s = secs % 60;
+    return (h > 0 ? String(h).padStart(2, '0') + ':' : '') + 
+           String(m).padStart(2, '0') + ':' + 
+           String(s).padStart(2, '0');
 }
 
 // ============================================================
@@ -2400,13 +2365,11 @@ async function startSessionWithMode(stationId) {
     const now = getUTCNow();
     const deviceId = getDeviceId();
     
-    // ✅ التأكد من وجود business.code
     if (!business || !business.code) {
         errEl.textContent = t('خطأ: النشاط غير موجود.', 'Error: Business not found.');
         return;
     }
     
-    // ✅ التأكد من وجود station_id
     if (!stationId) {
         errEl.textContent = t('خطأ: معرف الجهاز غير موجود.', 'Error: Station ID not found.');
         return;
@@ -2414,8 +2377,8 @@ async function startSessionWithMode(stationId) {
     
     try {
         const sessionData = {
-            business_code: business.code,      // ✅ مطلوب (NOT NULL)
-            station_id: stationId,              // ✅ مطلوب (NOT NULL)
+            business_code: business.code,
+            station_id: stationId,
             station_number: st.number || 0,
             device_id: deviceId,
             rate: rate,
@@ -2430,7 +2393,8 @@ async function startSessionWithMode(stationId) {
             duration: 0
         };
         
-        console.log('📝 Creating session with data:', sessionData);
+        console.log('📝 Creating session with data (UTC):', sessionData);
+        console.log('🕐 UTC time used:', now);
         
         const { data: session, error } = await supabaseClient
             .from('sessions')
