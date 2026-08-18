@@ -2361,31 +2361,39 @@ async function startSessionWithMode(stationId) {
     const deviceId = getDeviceId();
     
     try {
-        // ✅ إرسال جميع الأعمدة المطلوبة
+        const sessionData = {
+            business_code: business.code,
+            station_id: stationId,
+            station_number: st.number,
+            device_id: deviceId,
+            rate: rate,
+            started_at: now,
+            start_time: now,
+            started_by_device: deviceId,
+            current_mode: mode,
+            timer_type: timerType,
+            status: 'active',
+            created_at: now,
+            amount: 0,
+            duration: 0
+        };
+        
+        console.log('📝 Creating session with data:', sessionData);
+        
         const { data: session, error } = await supabaseClient
             .from('sessions')
-            .insert({
-                business_code: business.code,
-                station_id: stationId,
-                station_number: st.number,
-                device_id: deviceId,           // ✅ مطلوب (NOT NULL)
-                rate: rate,
-                started_at: now,
-                start_time: now,
-                started_by_device: deviceId,
-                current_mode: mode,
-                timer_type: timerType,
-                status: 'active',
-                created_at: now,
-                user_id: deviceId,             // ✅ مطلوب (NOT NULL)
-                aal: 'aal1'                    // ✅ مطلوب (USER-DEFINED)
-            })
+            .insert(sessionData)
             .select()
             .single();
             
         if (error) { 
             console.error('Session creation error:', error);
             errEl.textContent = t('فشل بدء الجلسة: ' + error.message, 'Failed to start session: ' + error.message);
+            return;
+        }
+        
+        if (!session) {
+            errEl.textContent = t('فشل بدء الجلسة: لم يتم إرجاع بيانات.', 'Failed to start session: No data returned.');
             return;
         }
         
