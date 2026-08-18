@@ -47,7 +47,6 @@ function updateTexts() {
         el.textContent = currentLang === 'ar' ? el.dataset.ar : el.dataset.en;
     });
     
-    // تحديث أسماء الأشهر
     updateMonthNames();
     
     renderStationsGrid();
@@ -115,6 +114,8 @@ let employees = [];
 let paymentMethods = [];
 let currentShift = null;
 let currentUser = null;
+let authUser = null;
+let authMemberships = [];
 let realtimeChannel = null;
 let tickInterval = null;
 let activeStationId = null;
@@ -123,17 +124,12 @@ let currentOrderSessionId = null;
 let selectedPaymentMethod = null;
 let endSessionStationId = null;
 let endingSessionInProgress = false;
-// ✅ حالة الخصم/المبلغ المدفوع لشاشة إنهاء الجلسة
-let currentEndSessionTotals = null;
-let endSessionDiscount = 0;
-let endSessionAmountPaid = null;
 let sessionSegmentsCache = {};
 let activeSegmentCache = {};
 let pendingSwitch = false;
 let transferSourceStationId = null;
 let countdownTimers = {};
 let countdownAlerts = {};
-// تخزين حالة التوجل لكل تصنيف
 let categoryToggleState = {};
 
 // ============================================================
@@ -216,7 +212,7 @@ function applyPermissions() {
 }
 
 // ============================================================
-// SETUP / ACTIVATION / LOCK FLOW
+// SETUP / ACTIVATION / AUTH FLOW
 // ============================================================
 async function handleSetupContinue() {
     const code = document.getElementById('setupBusinessCode').value.trim().toUpperCase();
@@ -226,11 +222,16 @@ async function handleSetupContinue() {
     const btn = document.getElementById('setupContinueBtn');
     btn.disabled = true;
     try {
-        const { data: biz, error } = await supabaseClient.from('businesses').select('*').eq('code', code).single();
-        if (error || !biz) { errEl.textContent = t('مفيش نشاط بالكود ده.', 'No business found with this code.'); return; }
+        const { data: biz, error } = await supabaseClient
+            .from('businesses').select('*').eq('code', code).single();
+        if (error || !biz) {
+            errEl.textContent = t('مفيش نشاط بالكود ده.', 'No business found with this code.');
+            return;
+        }
         business = biz;
         localStorage.setItem('psr_business_code', code);
-
+        
+        // ✅ Check if device is activated
         const deviceId = getDeviceId();
         const { data: dev } = await supabaseClient.from('devices').select('*').eq('business_id', biz.id).eq('device_id', deviceId).maybeSingle();
         if (!dev) {
@@ -239,11 +240,234 @@ async function handleSetupContinue() {
             return;
         }
         deviceRecord = dev;
-        proceedToLock();
+        
+        // ✅ Go to Auth screen
+        showAuthScreen();
+        await dorakAuthBootstrapForBusiness();
     } catch (e) {
-        console.error(e);
+        console.error('Business setup error:', e);
         errEl.textContent = t('حصل خطأ في الاتصال، حاول تاني.', 'Connection error, please try again.');
     } finally { btn.disabled = false; }
+}
+
+function showAuthScreen(mode = 'login') {
+    const bizCode = document.getElementById('authBizCode');
+    const bizName = document.getElementById('authBizName');
+    if (bizCode) bizCode.textContent = business?.code || '—';
+    if (bizName) bizName.textContent = business?.name || 'DORAK';
+    const login = document.getElementById('authLoginForm');
+    const signup = document.getElementById('authSignupForm');
+    if (login && signup) {
+        login.style.display = mode === 'login' ? 'block' : 'none';
+        signup.style.display = mode === 'signup' ? 'block' : 'none';
+    }
+    const err = document.getElementById('authError');
+    if (err) err.textContent = '';
+    showScreen('authScreen');
+}
+
+function authFriendlyError(error) {
+    const msg = String(error?.message || error || '');
+    if (/invalid login credentials/i.test(msg)) return t('البريد الإلكتروني أو كلمة المرور غير صحيحة.', 'Invalid email or password.');
+    if (/email not confirmed/i.test(msg)) return t('أكد البريد الإلكتروني أولًا ثم سجل الدخول.', 'Confirm your email first, then sign in.');
+    if (/user already registered/i.test(msg)) return t('البريد الإلكتروني مسجل بالفعل. استخدم تسجيل الدخول.', 'This email is already registered. Use Sign in.');
+    if (/password/i.test(msg) && /6|short|characters/i.test(msg)) return t('كلمة المرور لازم تكون 6 أحرف على الأقل.', 'Password must be at least 6 characters.');
+    if (msg.includes('INVALID_OWNER_CREDENTIAL')) return t('كود النشاط أو PIN المالك غير صحيح.', 'Business code or owner PIN is incorrect.');
+    if (msg.includes('BUSINESS_NOT_FOUND')) return t('النشاط غير موجود.', 'Business not found.');
+    if (msg.includes('AUTH_REQUIRED')) return t('لازم تسجل دخول أولًا.', 'You must sign in first.');
+    if (msg.includes('NO_BUSINESS_MEMBERSHIP')) return t('الحساب ده مش مربوط بالنشاط ده.', 'This account is not linked to this business.');
+    if (msg.includes('User already registered')) return t('البريد الإلكتروني مسجل بالفعل. استخدم تسجيل الدخول.', 'This email is already registered. Use Sign in.');
+    return t('حصل خطأ. حاول مرة تانية.', 'Something went wrong. Please try again.');
+}
+
+async function dorakAuthBootstrapForBusiness() {
+    const { data: sessionData, error: sessionError } = await supabaseClient.auth.getSession();
+    if (sessionError) throw sessionError;
+    authUser = sessionData?.session?.user || null;
+    if (!authUser || !business) return [];
+
+    // ✅ حاول البحث في جدول employees
+    try {
+        const { data: empData } = await supabaseClient
+            .from('employees')
+            .select('*')
+            .eq('business_id', business.id)
+            .eq('email', authUser.email || '')
+            .maybeSingle();
+        if (empData) {
+            return [{
+                business_id: business.id,
+                user_id: authUser.id,
+                role: 'employee',
+                display_name: empData.name || authUser.email,
+                active: true,
+                permissions: empData.permissions || {}
+            }];
+        }
+    } catch (e) { /* ignore */ }
+
+    return []; // ليس عضواً
+}
+
+async function handleAuthLogin() {
+    const email = document.getElementById('authEmail').value.trim().toLowerCase();
+    const password = document.getElementById('authPassword').value;
+    const errEl = document.getElementById('authError');
+    const btn = document.getElementById('authLoginBtn');
+    errEl.textContent = '';
+    if (!email || !password) { errEl.textContent = t('اكتب البريد الإلكتروني وكلمة المرور.', 'Enter email and password.'); return; }
+    btn.disabled = true;
+    try {
+        const { data, error } = await supabaseClient.auth.signInWithPassword({ email, password });
+        if (error) throw error;
+        authUser = data.user;
+
+        // ✅ نتحقق من العضوية
+        let member = null;
+        // 1- بحث في employees
+        try {
+            const { data: empData } = await supabaseClient
+                .from('employees')
+                .select('*')
+                .eq('business_id', business.id)
+                .eq('email', authUser.email || '')
+                .maybeSingle();
+            if (empData) {
+                member = {
+                    business_id: business.id,
+                    user_id: authUser.id,
+                    role: 'employee',
+                    display_name: empData.name || authUser.email,
+                    active: true,
+                    permissions: empData.permissions || {}
+                };
+            }
+        } catch (e) { /* ignore */ }
+
+        // 2- إذا لم يكن موظفاً، نطلب PIN المالك
+        if (!member) {
+            const claimPin = document.getElementById('authLoginOwnerPin')?.value.trim();
+            if (claimPin && claimPin === business.owner_pin) {
+                member = {
+                    business_id: business.id,
+                    user_id: authUser.id,
+                    role: 'owner',
+                    display_name: authUser.user_metadata?.full_name || authUser.email || 'المالك',
+                    active: true,
+                    permissions: { stations: true, inventory: true, shift: true, settings: true }
+                };
+            } else {
+                throw new Error('NO_BUSINESS_MEMBERSHIP');
+            }
+        }
+
+        authMemberships = [member];
+        await enterAuthenticatedApp(member);
+    } catch (e) {
+        console.error('Auth login error:', e);
+        errEl.textContent = authFriendlyError(e);
+    } finally { btn.disabled = false; }
+}
+
+async function handleAuthSignup() {
+    const email = document.getElementById('authSignupEmail').value.trim().toLowerCase();
+    const password = document.getElementById('authSignupPassword').value;
+    const confirm = document.getElementById('authSignupPasswordConfirm').value;
+    const pin = document.getElementById('authOwnerPin').value.trim();
+    const name = document.getElementById('authOwnerName').value.trim();
+    const errEl = document.getElementById('authError');
+    const btn = document.getElementById('authSignupBtn');
+    errEl.textContent = '';
+    if (!email || !password || !confirm || !pin) { errEl.textContent = t('اكمل كل البيانات.', 'Complete all fields.'); return; }
+    if (password.length < 6) { errEl.textContent = t('كلمة المرور لازم تكون 6 أحرف على الأقل.', 'Password must be at least 6 characters.'); return; }
+    if (password !== confirm) { errEl.textContent = t('كلمتا المرور غير متطابقتين.', 'Passwords do not match.'); return; }
+    if (pin !== business.owner_pin) { errEl.textContent = t('PIN المالك غير صحيح.', 'Owner PIN is incorrect.'); return; }
+    btn.disabled = true;
+    try {
+        const { data, error } = await supabaseClient.auth.signUp({
+            email,
+            password,
+            options: {
+                data: { full_name: name || null }
+            }
+        });
+        if (error) throw error;
+        authUser = data.user;
+
+        if (!data.session) {
+            // الحساب أنشئ ولكن يحتاج تأكيد البريد الإلكتروني
+            errEl.textContent = t('تم إنشاء الحساب. تأكد من بريدك الإلكتروني (تحقق من Spam)، ثم سجل الدخول باستخدام البريد وكلمة المرور.', 'Account created. Check your email (and Spam folder), then sign in with your email and password.');
+            return;
+        }
+
+        // ✅ نجح التسجيل والدخول التلقائي - ننشئ عضوية محلية
+        const member = {
+            business_id: business.id,
+            user_id: authUser.id,
+            role: 'owner',
+            display_name: name || authUser.email || 'المالك',
+            active: true,
+            permissions: { stations: true, inventory: true, shift: true, settings: true }
+        };
+        authMemberships = [member];
+        await enterAuthenticatedApp(member);
+    } catch (e) {
+        console.error('Auth signup error:', e);
+        errEl.textContent = authFriendlyError(e);
+    } finally { btn.disabled = false; }
+}
+
+async function enterAuthenticatedApp(member) {
+    if (!business || !member) throw new Error('Missing business membership');
+    const role = member.role || 'employee';
+    const permissions = role === 'owner' 
+        ? { stations: true, inventory: true, shift: true, settings: true } 
+        : (member.permissions || {});
+    currentUser = {
+        type: role === 'owner' || role === 'admin' ? role : 'employee',
+        name: member.display_name || authUser?.email || t('المستخدم', 'User'),
+        email: authUser?.email || '',
+        user_id: authUser?.id || null,
+        role,
+        permissions
+    };
+    localStorage.setItem('psr_business_code', business.code);
+    showToast(t('تم تسجيل الدخول بنجاح', 'Signed in successfully'), 'success');
+    await enterMainApp();
+}
+
+async function handleAuthSignOut() {
+    try { await supabaseClient.auth.signOut(); } catch (e) { console.warn('signOut error', e); }
+    stopRealtimeAndTimers();
+    authUser = null;
+    authMemberships = [];
+    currentUser = null;
+    business = null;
+    deviceRecord = null;
+    localStorage.removeItem('psr_business_code');
+    document.getElementById('authEmail').value = '';
+    document.getElementById('authPassword').value = '';
+    showScreen('setupScreen');
+}
+
+function switchBusiness() {
+    handleAuthSignOut();
+}
+
+async function tryAutoResume() {
+    const code = localStorage.getItem('psr_business_code');
+    if (!code) return;
+    try {
+        const { data: biz } = await supabaseClient.from('businesses').select('*').eq('code', code).single();
+        if (!biz) return;
+        business = biz;
+        const memberships = await dorakAuthBootstrapForBusiness();
+        if (memberships && memberships.length > 0) {
+            await enterAuthenticatedApp(memberships[0]);
+        } else {
+            showAuthScreen('login');
+        }
+    } catch (e) { console.warn('auth auto-resume failed', e); }
 }
 
 async function handleActivateDevice() {
@@ -268,10 +492,13 @@ async function handleActivateDevice() {
         await supabaseClient.from('activation_codes').update({ used: true, used_at: new Date().toISOString() }).eq('id', actCode.id);
         deviceRecord = newDev;
         showToast(t('تم تفعيل الجهاز بنجاح', 'Device activated successfully'), 'success');
-        proceedToLock();
+        showAuthScreen();
     } catch (e) { console.error(e); errEl.textContent = t('حصل خطأ، حاول تاني.', 'Error, try again.'); }
 }
 
+// ============================================================
+// LOCK SCREEN (Legacy PIN support)
+// ============================================================
 function proceedToLock() {
     document.getElementById('lockBizCode').textContent = business.code;
     document.getElementById('lockBizName').textContent = business.name;
@@ -347,58 +574,26 @@ async function handleUnlock() {
     errEl.textContent = t('PIN غير صحيح.', 'Incorrect PIN.');
 }
 
-function lockApp() {
-    stopRealtimeAndTimers();
-    currentUser = null;
-    document.getElementById('lockPinInput').value = '';
-    proceedToLock();
-}
-
-function switchBusiness() {
-    stopRealtimeAndTimers();
-    localStorage.removeItem('psr_business_code');
-    business = null; deviceRecord = null; currentUser = null;
-    document.getElementById('setupBusinessCode').value = '';
-    showScreen('setupScreen');
-}
-
-async function tryAutoResume() {
-    const code = localStorage.getItem('psr_business_code');
-    if (!code) return;
-    try {
-        const { data: biz } = await supabaseClient.from('businesses').select('*').eq('code', code).single();
-        if (!biz) return;
-        business = biz;
-        const { data: dev } = await supabaseClient.from('devices').select('*').eq('business_id', biz.id).eq('device_id', getDeviceId()).maybeSingle();
-        if (!dev) return;
-        deviceRecord = dev;
-        proceedToLock();
-    } catch (e) { console.warn('auto-resume failed', e); }
+async function lockApp() {
+    await handleAuthSignOut();
 }
 
 // ============================================================
 // AUTO-ACTIVATE FROM URL (?biz=CODE&code=ACTIVATION)
-// Used by the "start free trial" button on the marketing/dashboard
-// site, which creates a business + trial activation code and sends
-// the device straight here. Only runs for a device with no existing
-// saved session, so it never hijacks an already-installed device.
 // ============================================================
 async function tryAutoActivateFromURL() {
-    if (localStorage.getItem('psr_business_code')) return; // existing device — don't interfere
+    if (localStorage.getItem('psr_business_code')) return;
     const params = new URLSearchParams(window.location.search);
     const bizCode = params.get('biz');
     const actCodeParam = params.get('code');
     if (!bizCode) return;
 
-    // Clean the URL so a refresh/share doesn't re-trigger this.
     window.history.replaceState({}, document.title, window.location.pathname);
 
     const setupInput = document.getElementById('setupBusinessCode');
     if (setupInput) setupInput.value = bizCode;
     await handleSetupContinue();
 
-    // If handleSetupContinue routed us to the activation screen (new device)
-    // and we have an activation code, fill it in and submit automatically.
     const activationScreen = document.getElementById('activationScreen');
     if (actCodeParam && activationScreen && activationScreen.classList.contains('active')) {
         const actInput = document.getElementById('activationCodeInput');
@@ -408,8 +603,31 @@ async function tryAutoActivateFromURL() {
 }
 
 window.addEventListener('DOMContentLoaded', async () => {
-    await tryAutoActivateFromURL();
-    tryAutoResume();
+    try {
+        await tryAutoActivateFromURL();
+        await tryAutoResume();
+    } catch (e) {
+        console.error('DORAK bootstrap error:', e);
+        showScreen('setupScreen');
+    }
+    supabaseClient.auth.onAuthStateChange(async (event, session) => {
+        authUser = session?.user || null;
+        if (event === 'SIGNED_OUT') {
+            authMemberships = [];
+            currentUser = null;
+        }
+        if (event === 'SIGNED_IN' && session?.user) {
+            authUser = session.user;
+            try {
+                const memberships = await dorakAuthBootstrapForBusiness();
+                if (memberships && memberships.length > 0) {
+                    await enterAuthenticatedApp(memberships[0]);
+                }
+            } catch (e) {
+                console.warn('Auto-link after sign in failed', e);
+            }
+        }
+    });
 });
 
 // ============================================================
@@ -425,22 +643,21 @@ async function enterMainApp() {
     document.querySelectorAll('.nav-btn').forEach(b => b.classList.toggle('active', b.dataset.view === 'view-dashboard'));
     
     populateYearSelect();
-    // مبنعملهاش await عشان ملف الشبكة بتاعها (حتى لو بطيء) ميأخرش فتح
-    // التطبيق؛ بمجرد ما تخلص في الخلفية، بتحدّث الأرقام المعروضة تلقائيًا
-    syncServerClock().then(() => { renderStationsGrid(); });
+    await syncServerClock();
     await loadAllData();
     subscribeRealtime();
     startTicker();
     updateTexts();
     await recoverActiveSession();
-    // إعادة مزامنة الساعة كل 5 دقايق عشان نلحق أي انزياح لساعة الجهاز أثناء الاستخدام
+    
+    if (typeof startCountdownAlerts === 'function') {
+        startCountdownAlerts();
+    }
+    
     setInterval(syncServerClock, 5 * 60 * 1000);
 }
 
 async function loadAllData() {
-    // Load each area independently. A problem in one table (for example,
-    // duplicate open shifts in an older database) must not prevent the
-    // stations and the rest of the app from rendering.
     const results = await Promise.allSettled([
         loadStations(),
         loadMenuItems(),
@@ -487,7 +704,7 @@ async function loadStations() {
 }
 
 // ============================================================
-// MENU ITEMS - with localStorage fallback
+// MENU ITEMS
 // ============================================================
 async function loadMenuItems() {
     try {
@@ -589,9 +806,6 @@ async function loadPaymentMethods() {
 async function loadOrOpenShift() {
     assertBusinessContext();
 
-    // Do not use maybeSingle() here. The current database contains multiple
-    // open shifts for this business (the console reports 19 rows), so
-    // maybeSingle() throws PGRST116 and used to stop the whole app from rendering.
     const { data: openShifts, error } = await supabaseClient
         .from('shifts')
         .select('*')
@@ -602,10 +816,7 @@ async function loadOrOpenShift() {
     if (error) throw error;
 
     if (openShifts && openShifts.length > 0) {
-        // Use the newest open shift for now. Do NOT automatically delete or
-        // close the other financial records; they need manual review.
         currentShift = openShifts[0];
-
         if (openShifts.length > 1) {
             console.warn(
                 `PS Rental: ${openShifts.length} open shifts found for business ${business.id}. ` +
@@ -624,6 +835,48 @@ async function loadOrOpenShift() {
         'Opening shift'
     );
     currentShift = createdResult.data;
+}
+
+// ============================================================
+// CLOCK SYNC
+// ============================================================
+let serverClockOffsetMs = 0;
+
+async function fetchWithTimeout(url, ms) {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), ms);
+    try {
+        return await fetch(url, { signal: controller.signal });
+    } finally {
+        clearTimeout(timeoutId);
+    }
+}
+
+async function syncServerClock() {
+    try {
+        const res = await fetchWithTimeout('https://worldtimeapi.org/api/timezone/Etc/UTC', 4000);
+        const data = await res.json();
+        if (data && data.unixtime) {
+            serverClockOffsetMs = (data.unixtime * 1000) - Date.now();
+            return;
+        }
+    } catch (e) {
+        console.warn('worldtimeapi failed, trying fallback:', e);
+    }
+    try {
+        const res = await fetchWithTimeout('https://timeapi.io/api/Time/current/zone?timeZone=UTC', 4000);
+        const data = await res.json();
+        if (data && data.dateTime) {
+            const serverTime = new Date(data.dateTime + 'Z').getTime();
+            if (!isNaN(serverTime)) serverClockOffsetMs = serverTime - Date.now();
+        }
+    } catch (e) {
+        console.warn('Error syncing server clock (both sources failed):', e);
+    }
+}
+
+function nowCorrected() {
+    return Date.now() + serverClockOffsetMs;
 }
 
 // ============================================================
@@ -707,60 +960,6 @@ async function getActiveSegment(sessionId) {
 
 function getActiveSegmentFast(sessionId) {
     return activeSegmentCache[sessionId] || null;
-}
-
-// ============================================================
-// ✅ CLOCK SYNC — تصحيح فرق ساعة الجهاز عن وقت السيرفر
-// المشكلة: كل جهاز (لابتوب/موبايل) بيحسب "الوقت المنقضي" بالمقارنة
-// بساعته المحلية هو. لو ساعة الموبايل متأخرة عن اللحظة اللي اتسجل
-// فيها started_at (اللي جت من جهاز تاني)، الفرق بيبقى سالب فيتقفل
-// على 00:00 ويفضل واقف. الحل: نجيب وقت حقيقي مرجعي مرة عند الدخول
-// ونحسب فرق ثابت (offset) ونستخدمه بدل ما نعتمد على ساعة الجهاز لوحدها.
-//
-// ملحوظة: بنجيب الوقت من محتوى الرد (JSON body) مش من الـ response
-// header، لإن المتصفح بيمنع قراءة هيدر Date في الطلبات cross-origin
-// إلا لو السيرفر يسمح بيه صراحة (Supabase مش بيسمح) — فالاعتماد على
-// الـ header كان بيرجع فاضي دايمًا والتصحيح مكانش بيشتغل فعليًا.
-// ============================================================
-let serverClockOffsetMs = 0;
-
-async function fetchWithTimeout(url, ms) {
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), ms);
-    try {
-        return await fetch(url, { signal: controller.signal });
-    } finally {
-        clearTimeout(timeoutId);
-    }
-}
-
-async function syncServerClock() {
-    // المصدر الأول
-    try {
-        const res = await fetchWithTimeout('https://worldtimeapi.org/api/timezone/Etc/UTC', 4000);
-        const data = await res.json();
-        if (data && data.unixtime) {
-            serverClockOffsetMs = (data.unixtime * 1000) - Date.now();
-            return;
-        }
-    } catch (e) {
-        console.warn('worldtimeapi failed, trying fallback:', e);
-    }
-    // مصدر احتياطي لو الأول فشل أو بطيء
-    try {
-        const res = await fetchWithTimeout('https://timeapi.io/api/Time/current/zone?timeZone=UTC', 4000);
-        const data = await res.json();
-        if (data && data.dateTime) {
-            const serverTime = new Date(data.dateTime + 'Z').getTime();
-            if (!isNaN(serverTime)) serverClockOffsetMs = serverTime - Date.now();
-        }
-    } catch (e) {
-        console.warn('Error syncing server clock (both sources failed):', e);
-    }
-}
-
-function nowCorrected() {
-    return Date.now() + serverClockOffsetMs;
 }
 
 async function preloadActiveSegments(sessionIds) {
@@ -858,17 +1057,6 @@ function getCurrentSegmentEstimateFast(sessionId) {
     return { amount, hours, segment: activeSeg };
 }
 
-// قيمة الجزء الحالي المكتسبة فعليًا (على أساس الوقت المنقضي دايمًا، سواء تصاعدي أو تنازلي)
-// نفس المعادلة المستخدمة عند إغلاق الجزء فعليًا في calculateSegmentAmountFromTimes
-function getCurrentSegmentEarnedAmount(sessionId) {
-    const activeSeg = getActiveSegmentFast(sessionId);
-    if (!activeSeg) return 0;
-    const start = new Date(activeSeg.started_at);
-    const now = new Date(nowCorrected());
-    const hours = Math.max(0, (now - start) / 3600000);
-    return Math.round((hours * Number(activeSeg.rate)) * 100) / 100;
-}
-
 function getRemainingSeconds(segment) {
     if (!segment || segment.timer_type !== 'countdown' || !segment.duration_seconds) return 0;
     const start = new Date(segment.started_at);
@@ -901,6 +1089,9 @@ function subscribeRealtime() {
 function stopRealtimeAndTimers() {
     if (realtimeChannel) { supabaseClient.removeChannel(realtimeChannel); realtimeChannel = null; }
     if (tickInterval) { clearInterval(tickInterval); tickInterval = null; }
+    if (typeof stopCountdownAlerts === 'function') {
+        stopCountdownAlerts();
+    }
     Object.keys(countdownTimers).forEach(key => {
         if (countdownTimers[key]) clearInterval(countdownTimers[key]);
         delete countdownTimers[key];
@@ -1025,13 +1216,15 @@ function startTicker() {
             }
         }
 
-        const overallTotalEl = document.getElementById('overallTotalAmount');
-        if (overallTotalEl && activeStationId) {
+        const totalEl = document.getElementById('overallTotalAmount');
+        if (totalEl && activeStationId) {
             const session = sessions[activeStationId];
             if (session) {
-                const baseTotal = Number(overallTotalEl.dataset.baseTotal || 0);
-                const earnedNow = getCurrentSegmentEarnedAmount(session.id);
-                overallTotalEl.textContent = moneyDec(Math.round((baseTotal + earnedNow) * 100) / 100);
+                calculateTotalAmounts(session.id).then(totals => {
+                    const currentEstimate = getCurrentSegmentEstimateFast(session.id);
+                    const grandTotal = Math.round((totals.grandTotal - totals.ordersTotal + currentEstimate.amount + totals.ordersTotal) * 100) / 100;
+                    totalEl.textContent = moneyDec(grandTotal);
+                }).catch(() => {});
             }
         }
     }, 1000);
@@ -1509,14 +1702,6 @@ async function addOrderItem(sessionId, menuItemId) {
 
             if (error) throw error;
         } else {
-            // IMPORTANT:
-            // Do NOT use .select().single() here.
-            // If INSERT is allowed by RLS but SELECT is not,
-            // .insert().select().single() reports a false failure.
-            //
-            // We also send business_id when the column exists in the
-            // current V2 schema. If an older database does not have it,
-            // retry once without business_id.
             let insertPayload = {
                 business_id: business.id,
                 session_id: sessionId,
@@ -1545,7 +1730,6 @@ async function addOrderItem(sessionId, menuItemId) {
             if (error) throw error;
         }
 
-        // Reload from DB so the UI has the real row/id.
         const { data: refreshedOrders, error: reloadError } = await supabaseClient
             .from('session_orders')
             .select('*')
@@ -1553,8 +1737,6 @@ async function addOrderItem(sessionId, menuItemId) {
             .order('created_at');
 
         if (reloadError) {
-            // The insert succeeded, but the current RLS SELECT policy
-            // may prevent reading the row back. Do not claim INSERT failed.
             console.error('Order was inserted, but reload failed:', reloadError);
             showToast(
                 t('تم حفظ الطلب، لكن صلاحية قراءة الطلبات تحتاج مراجعة في Supabase.', 'Order was saved, but the SELECT permission for orders needs review in Supabase.'),
@@ -2245,7 +2427,7 @@ async function startSessionWithMode(stationId) {
 }
 
 // ============================================================
-// END SESSION WITH PAYMENT - من الملف الشغال
+// END SESSION WITH PAYMENT
 // ============================================================
 function showEndSessionPayment(stationId) {
     endSessionStationId = stationId;
@@ -2382,9 +2564,8 @@ function showEndSessionPayment(stationId) {
     })();
 }
 
-
 // ============================================================
-// SELECT PAYMENT METHOD - من الملف الشغال
+// SELECT PAYMENT METHOD
 // ============================================================
 function selectPaymentMethod(pmId) {
     selectedPaymentMethod = pmId;
@@ -2411,8 +2592,12 @@ function selectPaymentMethod(pmId) {
 }
 
 // ============================================================
-// ✅ حساب الخصم والباقي أثناء الدفع
+// UPDATE PAYMENT CALCULATION
 // ============================================================
+let currentEndSessionTotals = null;
+let endSessionDiscount = 0;
+let endSessionAmountPaid = null;
+
 function updatePaymentCalculation() {
     if (!currentEndSessionTotals) return;
     const grandTotal = currentEndSessionTotals.grandTotal;
@@ -2454,7 +2639,7 @@ function updatePaymentCalculation() {
 }
 
 // ============================================================
-// CANCEL END SESSION (Back button) - من الملف الشغال
+// CANCEL END SESSION
 // ============================================================
 function cancelEndSession() {
     const stationId = endSessionStationId || activeStationId;
@@ -2471,7 +2656,7 @@ function cancelEndSession() {
 }
 
 // ============================================================
-// CONFIRM END SESSION WITH PAYMENT - من الملف الشغال
+// CONFIRM END SESSION WITH PAYMENT
 // ============================================================
 async function confirmEndSessionWithPayment() {
     if (!selectedPaymentMethod) {
@@ -2511,9 +2696,6 @@ async function confirmEndSessionWithPayment() {
             payment_method: selectedPaymentMethod
         };
 
-        // بنحاول نحفظ الخصم والمبلغ المدفوع كمان؛ لو الأعمدة دي لسه مش
-        // مضافة في قاعدة البيانات (discount / amount_paid)، بنرجع نحفظ
-        // بدونها عشان قفل الجلسة ميفشلش خالص.
         let { error } = await supabaseClient.from('sessions').update({
             ...basePayload,
             discount: discountAmount,
@@ -2534,7 +2716,6 @@ async function confirmEndSessionWithPayment() {
         
         const savedStationId = stationId;
         
-        // نثبّت قيمة الخصم النهائية (بعد أي clamp) عشان الإيصال يعرضها صح
         endSessionDiscount = discountAmount;
         
         delete sessions[stationId];
@@ -2902,6 +3083,7 @@ async function renderShiftView() {
         const revLabel = t('إيراد', 'Revenue');
         const expLabel = t('مصروفات', 'Expenses');
         const netLabel = t('صافي الدخل', 'Net Income');
+        const closedByName = shift.closed_by || t('غير معروف', 'Unknown');
         
         historyHtml += `
             <div class="list-row" style="flex-direction:column;align-items:stretch;padding:12px 4px;border-bottom:1px solid var(--border);cursor:pointer;" onclick="viewShiftDetails('${shift.id}')">
@@ -2920,6 +3102,10 @@ async function renderShiftView() {
                 <div style="display:flex;justify-content:space-between;width:100%;">
                     <div style="font-size:12px;color:var(--text-faint);">${netLabel}</div>
                     <div class="mono" style="font-weight:700;color:var(--amber);">${money(shiftTotals.profit)} ${t('ج', 'EGP')}</div>
+                </div>
+                <div style="display:flex;justify-content:space-between;width:100%;margin-top:4px;font-size:11px;color:var(--text-dim);border-top:1px solid var(--border);padding-top:4px;">
+                    <span>${t('أغلق بواسطة', 'Closed by')}</span>
+                    <span style="font-weight:600;color:var(--text);">${escapeHtml(closedByName)}</span>
                 </div>
             </div>
         `;
@@ -3031,9 +3217,11 @@ async function viewShiftDetails(shiftId) {
     const totals = await getShiftTotals(shift);
     const openedStr = new Date(shift.opened_at).toLocaleString(currentLang === 'ar' ? 'ar-EG' : 'en-US');
     const closedStr = shift.closed_at ? new Date(shift.closed_at).toLocaleString(currentLang === 'ar' ? 'ar-EG' : 'en-US') : '—';
+    const closedByName = shift.closed_by || t('غير معروف', 'Unknown');
     const extraRows = `
         <div class="list-row"><div class="row-title">${t('وقت الفتح', 'Opened At')}</div><div class="row-value mono">${openedStr}</div></div>
-        <div class="list-row"><div class="row-title">${t('وقت الإقفال', 'Closed At')}</div><div class="row-value mono">${closedStr}</div></div>`;
+        <div class="list-row"><div class="row-title">${t('وقت الإقفال', 'Closed At')}</div><div class="row-value mono">${closedStr}</div></div>
+        <div class="list-row"><div class="row-title">${t('أغلق بواسطة', 'Closed by')}</div><div class="row-value mono">${escapeHtml(closedByName)}</div></div>`;
     document.getElementById('shiftDetailsSummary').innerHTML = buildShiftBreakdownHtml(totals, extraRows);
     openSheet('shiftDetailsOverlay');
 }
@@ -3041,7 +3229,8 @@ async function viewShiftDetails(shiftId) {
 async function confirmCloseShift() {
     if (!currentShift) return;
     const totals = await getShiftTotals(currentShift);
-    const closedAt = new Date().toISOString();
+    const closedAt = new Date(nowCorrected()).toISOString();
+    const closedByName = currentUser?.name || currentUser?.type || t('غير معروف', 'Unknown');
     
     const { data, error } = await supabaseClient
         .from('shifts')
@@ -3051,7 +3240,7 @@ async function confirmCloseShift() {
             total_revenue: totals.revenue, 
             total_expenses: totals.expenses, 
             total_profit: totals.profit, 
-            closed_by: currentUser.name || currentUser.type 
+            closed_by: closedByName
         })
         .eq('id', currentShift.id)
         .select();
@@ -3082,36 +3271,6 @@ function renderSettings() {
     document.getElementById('settingsSubscription').innerHTML = `
         <div class="list-row"><div class="row-title">${t('حالة الجهاز', 'Device Status')}</div><div class="badge ${deviceRecord.revoked ? 'badge-red' : 'badge-teal'}">${deviceRecord.revoked ? t('موقوف', 'Suspended') : t('نشط', 'Active')}</div></div>
         <div class="list-row"><div class="row-title">${t('تاريخ الانتهاء', 'Expiry Date')}</div><div class="row-value mono">${expiry ? expiry.toLocaleDateString(currentLang === 'ar' ? 'ar-EG' : 'en-US') : '—'}</div></div>`;
-
-    // ============================================================
-    // ✅ TOGGLE PIN SECTION — مبني بالكامل من الـ JS عشان يشتغل من غير
-    // ما نحتاج نضيف عناصر ثابتة في الـ HTML يدويًا.
-    // بنستخدم wrapper بـ id ثابت عشان لو renderSettings() اتنادت تاني
-    // (بعد إضافة موظف/صنف مثلاً) منكررش القسم من جديد كل مرة.
-    // ============================================================
-    const pinToggleHtml = `
-        <div class="list-row" style="cursor:pointer;" onclick="toggleSettingsPin()">
-            <div class="row-title">${t('تغيير PIN المالك', 'Change Owner PIN')}</div>
-            <i id="settingsPinChevron" class="fa-solid fa-chevron-down" style="transition:transform .2s;color:var(--text-dim);"></i>
-        </div>
-        <div id="settingsChangePin" style="display:${settingsPinExpanded ? 'block' : 'none'};padding:10px 4px 4px;">
-            <div style="margin-bottom:10px;">
-                <label style="display:block;font-size:12px;color:var(--text-dim);margin-bottom:4px;">${t('الـ PIN الحالي', 'Current PIN')}</label>
-                <input type="password" id="currentPinInput" class="mono" inputmode="numeric" maxlength="6" placeholder="••••" style="width:100%;">
-            </div>
-            <div style="margin-bottom:10px;">
-                <label style="display:block;font-size:12px;color:var(--text-dim);margin-bottom:4px;">${t('الـ PIN الجديد (4-6 أرقام)', 'New PIN (4-6 digits)')}</label>
-                <input type="password" id="newPinInput" class="mono" inputmode="numeric" maxlength="6" placeholder="••••" style="width:100%;">
-            </div>
-            <div id="changePinError" style="color:#ff6b6b;font-size:12px;margin-bottom:10px;"></div>
-            <button class="btn btn-teal btn-block" onclick="changeOwnerPin()">${t('حفظ الـ PIN الجديد', 'Save New PIN')}</button>
-        </div>`;
-    let pinToggleWrap = document.getElementById('settingsPinToggleWrap');
-    if (!pinToggleWrap) {
-        document.getElementById('settingsSubscription').insertAdjacentHTML('afterend', `<div id="settingsPinToggleWrap"></div>`);
-        pinToggleWrap = document.getElementById('settingsPinToggleWrap');
-    }
-    pinToggleWrap.innerHTML = pinToggleHtml;
 
     const groupedMenu = {};
     menuItems.forEach(item => {
@@ -3155,7 +3314,6 @@ function renderSettings() {
                 </div>
             </div>`).join('');
     
-    // ✅ تحديث حالة الـ Toggle (PIN)
     const pinSection = document.getElementById('settingsChangePin');
     const chevron = document.getElementById('settingsPinChevron');
     if (pinSection && chevron) {
@@ -3165,7 +3323,7 @@ function renderSettings() {
 }
 
 // ============================================================
-// 🔐 تغيير PIN المالك (جديد)
+// CHANGE OWNER PIN
 // ============================================================
 async function changeOwnerPin() {
     const currentPin = document.getElementById('currentPinInput').value.trim();
@@ -3178,13 +3336,11 @@ async function changeOwnerPin() {
         return; 
     }
     
-    // 🔍 التحقق من PIN الحالي
     if (currentPin !== business.owner_pin) { 
         errEl.textContent = t('❌ PIN الحالي غير صحيح.', '❌ Current PIN is incorrect.'); 
         return; 
     }
     
-    // ✅ التحقق من PIN الجديد
     if (!/^\d{4,6}$/.test(newPin)) { 
         errEl.textContent = t('❌ PIN الجديد لازم يكون 4-6 أرقام.', '❌ New PIN must be 4-6 digits.'); 
         return; 
@@ -3198,10 +3354,8 @@ async function changeOwnerPin() {
         
         if (error) throw error;
 
-        // ✅ تحديث المتغير المحلي
         business.owner_pin = newPin;
         
-        // 🧹 تنظيف الحقول
         document.getElementById('currentPinInput').value = '';
         document.getElementById('newPinInput').value = '';
         
@@ -3213,7 +3367,7 @@ async function changeOwnerPin() {
 }
 
 // ============================================================
-// 🏢 إنشاء نشاط جديد من صفحة الدخول (جديد)
+// CREATE BUSINESS FROM SETUP
 // ============================================================
 function openCreateBusinessSheetFromSetup() {
     ['newBizCodeSetup', 'newBizNameSetup', 'newBizPhoneSetup'].forEach(id => document.getElementById(id).value = '');
@@ -3227,7 +3381,7 @@ async function submitCreateBusinessFromSetup() {
     const name = document.getElementById('newBizNameSetup').value.trim();
     const phone = document.getElementById('newBizPhoneSetup').value.trim();
     const total_stations = parseInt(document.getElementById('newBizStationsSetup').value) || 4;
-    const owner_pin = '0000'; // ✅ PIN افتراضي
+    const owner_pin = '0000';
     const err = document.getElementById('createBizErrorSetup');
 
     if (!code || !name) { 
@@ -3257,7 +3411,6 @@ async function submitCreateBusinessFromSetup() {
         closeSheet('createBusinessSheetFromSetup');
         showToast(t('✅ تم إنشاء النشاط! استخدم الكود لتسجيل الدخول.', '✅ Business created! Use the code to login.'), 'success');
         
-        // 🚀 محاولة الدخول التلقائي
         document.getElementById('setupBusinessCode').value = code;
         handleSetupContinue();
     } catch (e) {
@@ -3382,26 +3535,56 @@ function openEmployeeSheet() {
     document.getElementById('employeeError').textContent = '';
     document.getElementById('permStations').checked = true;
     document.getElementById('permShift').checked = false;
+    document.getElementById('permPrices').checked = false;
+    document.getElementById('permMenu').checked = false;
     document.getElementById('permSettings').checked = false;
+    document.getElementById('permEmployees').checked = false;
     openSheet('employeeOverlay');
 }
+
 async function submitEmployee() {
     const name = document.getElementById('employeeName').value.trim();
     const pin = document.getElementById('employeePin').value.trim();
-    if (!name || !/^\d{4,6}$/.test(pin)) { document.getElementById('employeeError').textContent = t('اكتب اسم و PIN من 4 لـ 6 أرقام.', 'Enter name and 4-6 digit PIN.'); return; }
+    const errEl = document.getElementById('employeeError');
+    errEl.textContent = '';
+    
+    if (!name || !/^\d{4,6}$/.test(pin)) { 
+        errEl.textContent = t('اكتب اسم و PIN من 4 لـ 6 أرقام.', 'Enter name and 4-6 digit PIN.'); 
+        return; 
+    }
+    
     const permissions = {
         stations: document.getElementById('permStations').checked,
         shift: document.getElementById('permShift').checked,
-        settings: document.getElementById('permSettings').checked
+        prices: document.getElementById('permPrices').checked,
+        menu: document.getElementById('permMenu').checked,
+        settings: document.getElementById('permSettings').checked,
+        employees: document.getElementById('permEmployees').checked
     };
-    const { data, error } = await supabaseClient.from('employees').insert({ business_id: business.id, name, pin, permissions }).select();
-    if (error || !data || data.length === 0) {
-        document.getElementById('employeeError').textContent = t('فشل حفظ الموظف، حاول تاني.', 'Failed to save employee, try again.');
-        console.error('Error adding employee:', error);
-        return;
+    
+    try {
+        const { data, error } = await supabaseClient.from('employees').insert({ 
+            business_id: business.id, 
+            name, 
+            pin, 
+            permissions,
+            active: true 
+        }).select();
+        
+        if (error || !data || data.length === 0) {
+            errEl.textContent = t('فشل حفظ الموظف، حاول تاني.', 'Failed to save employee, try again.');
+            console.error('Error adding employee:', error);
+            return;
+        }
+        
+        closeSheet('employeeOverlay'); 
+        showToast(t('تمت إضافة الموظف', 'Employee added'), 'success');
+        await loadEmployees(); 
+        renderSettings();
+    } catch (e) {
+        console.error('Error in submitEmployee:', e);
+        errEl.textContent = t('حصل خطأ: ' + e.message, 'Error: ' + e.message);
     }
-    closeSheet('employeeOverlay'); showToast(t('تمت إضافة الموظف', 'Employee added'), 'success');
-    await loadEmployees(); renderSettings();
 }
 
 async function deleteEmployee(employeeId) {
@@ -3570,7 +3753,7 @@ async function refreshStationSheetContent(stationId) {
 }
 
 // ============================================================
-// SWITCH MODE - UPDATED (يدعم التنازلي مع مراعاة الوقت)
+// SWITCH MODE
 // ============================================================
 async function handleSwitchMode(sessionId, newMode, stationId) {
     if (pendingSwitch) return;
@@ -3611,7 +3794,7 @@ async function handleSwitchMode(sessionId, newMode, stationId) {
             return;
         }
 
-        const now = new Date().toISOString();
+        const now = new Date(nowCorrected()).toISOString();
         const start = new Date(activeSeg.started_at);
         let usedSeconds = (new Date(now) - start) / 1000;
         let hours = usedSeconds / 3600;
