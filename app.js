@@ -16,7 +16,7 @@ async function dbResult(promise, context = 'Database operation') {
     return result;
 }
 function assertBusinessContext() {
-    if (!business?.id) throw new Error('Business context is missing');
+    if (!business?.code) throw new Error('Business context is missing');
 }
 function assertPositiveNumber(value, label) {
     const n = Number(value);
@@ -131,7 +131,6 @@ let sessionSegmentsCache = {};
 let activeSegmentCache = {};
 let pendingSwitch = false;
 let transferSourceStationId = null;
-// تم حذف countdownTimers و countdownAlerts (غير مستخدمين)
 // تخزين حالة التوجل لكل تصنيف
 let categoryToggleState = {};
 
@@ -225,15 +224,31 @@ async function handleSetupContinue() {
     const btn = document.getElementById('setupContinueBtn');
     btn.disabled = true;
     try {
-        const { data: biz, error } = await supabaseClient.from('businesses').select('*').eq('code', code).single();
-        if (error || !biz) { errEl.textContent = t('مفيش نشاط بالكود ده.', 'No business found with this code.'); return; }
+        // ✅ البحث عن النشاط باستخدام code
+        const { data: biz, error } = await supabaseClient
+            .from('businesses')
+            .select('*')
+            .eq('code', code)
+            .single();
+            
+        if (error || !biz) { 
+            errEl.textContent = t('مفيش نشاط بالكود ده.', 'No business found with this code.'); 
+            return; 
+        }
         business = biz;
         localStorage.setItem('psr_business_code', code);
 
         const deviceId = getDeviceId();
-        const { data: dev } = await supabaseClient.from('devices').select('*').eq('business_id', biz.id).eq('device_id', deviceId).maybeSingle();
+        // ✅ استخدام business.code بدلاً من business.id
+        const { data: dev } = await supabaseClient
+            .from('devices')
+            .select('*')
+            .eq('business_code', biz.code)
+            .eq('device_id', deviceId)
+            .maybeSingle();
+            
         if (!dev) {
-            document.getElementById('activationBizName').textContent = biz.name;
+            document.getElementById('activationBizName').textContent = biz.name || biz.business_name;
             showScreen('activationScreen');
             return;
         }
@@ -251,34 +266,72 @@ async function handleActivateDevice() {
     errEl.textContent = '';
     if (!code) { errEl.textContent = t('اكتب كود التفعيل.', 'Enter the activation code.'); return; }
     try {
-        const { data: actCode, error } = await supabaseClient.from('activation_codes').select('*').eq('business_id', business.id).eq('code', code).eq('used', false).single();
-        if (error || !actCode) { errEl.textContent = t('الكود غير صحيح أو مستخدم قبل كده.', 'Invalid or already used code.'); return; }
+        // ✅ البحث باستخدام business_code بدلاً من business_id
+        const { data: actCode, error } = await supabaseClient
+            .from('activation_codes')
+            .select('*')
+            .eq('business_code', business.code)
+            .eq('code', code)
+            .eq('used', false)
+            .single();
+            
+        if (error || !actCode) { 
+            errEl.textContent = t('الكود غير صحيح أو مستخدم قبل كده.', 'Invalid or already used code.'); 
+            return; 
+        }
 
         const deviceId = getDeviceId();
         const isTrial = actCode.is_trial === true;
-        const expiry = new Date(); expiry.setDate(expiry.getDate() + (isTrial ? 7 : 30));
-        const { data: newDev, error: devErr } = await supabaseClient.from('devices').insert({
-            business_id: business.id, device_id: deviceId,
-            device_label: isTrial ? t('جهاز — تجربة مجانية', 'Device — Free trial') : t('جهاز بدون اسم', 'Unnamed device'),
-            is_active: true, revoked: false, expiry_date: expiry.toISOString()
-        }).select().single();
-        if (devErr) { errEl.textContent = t('فشل التفعيل، حاول تاني.', 'Activation failed, try again.'); return; }
+        const expiry = new Date(); 
+        expiry.setDate(expiry.getDate() + (isTrial ? 7 : 30));
+        
+        const { data: newDev, error: devErr } = await supabaseClient
+            .from('devices')
+            .insert({
+                business_code: business.code,
+                device_id: deviceId,
+                device_label: isTrial ? t('جهاز — تجربة مجانية', 'Device — Free trial') : t('جهاز بدون اسم', 'Unnamed device'),
+                is_active: true, 
+                revoked: false, 
+                expiry_date: expiry.toISOString()
+            })
+            .select()
+            .single();
+            
+        if (devErr) { 
+            errEl.textContent = t('فشل التفعيل، حاول تاني.', 'Activation failed, try again.'); 
+            return; 
+        }
 
-        await supabaseClient.from('activation_codes').update({ used: true, used_at: new Date().toISOString() }).eq('id', actCode.id);
+        await supabaseClient
+            .from('activation_codes')
+            .update({ used: true, used_at: new Date().toISOString() })
+            .eq('id', actCode.id);
+            
         deviceRecord = newDev;
         showToast(t('تم تفعيل الجهاز بنجاح', 'Device activated successfully'), 'success');
         proceedToLock();
-    } catch (e) { console.error(e); errEl.textContent = t('حصل خطأ، حاول تاني.', 'Error, try again.'); }
+    } catch (e) { 
+        console.error(e); 
+        errEl.textContent = t('حصل خطأ، حاول تاني.', 'Error, try again.'); 
+    }
 }
 
 function proceedToLock() {
     document.getElementById('lockBizCode').textContent = business.code;
-    document.getElementById('lockBizName').textContent = business.name;
+    document.getElementById('lockBizName').textContent = business.name || business.business_name;
     const expiry = deviceRecord.expiry_date ? new Date(deviceRecord.expiry_date) : null;
     const subLine = document.getElementById('subStatusLine');
-    if (deviceRecord.revoked || !deviceRecord.is_active) { subLine.textContent = t('الجهاز موقوف — تواصل مع الإدارة', 'Device suspended — contact admin'); }
-    else if (expiry && expiry < new Date()) { subLine.textContent = t('الاشتراك منتهي — تواصل مع الإدارة', 'Subscription expired — contact admin'); }
-    else if (expiry) { const days = Math.ceil((expiry - new Date()) / 86400000); subLine.textContent = t(`متبقي ${days} يوم على الاشتراك`, `${days} days remaining on subscription`); }
+    if (deviceRecord.revoked || !deviceRecord.is_active) { 
+        subLine.textContent = t('الجهاز موقوف — تواصل مع الإدارة', 'Device suspended — contact admin'); 
+    }
+    else if (expiry && expiry < new Date()) { 
+        subLine.textContent = t('الاشتراك منتهي — تواصل مع الإدارة', 'Subscription expired — contact admin'); 
+    }
+    else if (expiry) { 
+        const days = Math.ceil((expiry - new Date()) / 86400000); 
+        subLine.textContent = t(`متبقي ${days} يوم على الاشتراك`, `${days} days remaining on subscription`); 
+    }
     resetLockRole();
     showScreen('lockScreen');
 }
@@ -305,13 +358,37 @@ async function handleEmployeeUnlock() {
     const pin = document.getElementById('lockEmpPin').value.trim();
     const errEl = document.getElementById('lockError');
     errEl.textContent = '';
-    if (deviceRecord.revoked || !deviceRecord.is_active) { errEl.textContent = t('الجهاز موقوف.', 'Device suspended.'); return; }
-    if (deviceRecord.expiry_date && new Date(deviceRecord.expiry_date) < new Date()) { errEl.textContent = t('الاشتراك منتهي.', 'Subscription expired.'); return; }
-    if (!name || !pin) { errEl.textContent = t('اكتب الاسم والـ PIN.', 'Enter your name and PIN.'); return; }
+    if (deviceRecord.revoked || !deviceRecord.is_active) { 
+        errEl.textContent = t('الجهاز موقوف.', 'Device suspended.'); 
+        return; 
+    }
+    if (deviceRecord.expiry_date && new Date(deviceRecord.expiry_date) < new Date()) { 
+        errEl.textContent = t('الاشتراك منتهي.', 'Subscription expired.'); 
+        return; 
+    }
+    if (!name || !pin) { 
+        errEl.textContent = t('اكتب الاسم والـ PIN.', 'Enter your name and PIN.'); 
+        return; 
+    }
 
-    const { data: emps, error } = await supabaseClient.from('employees').select('*').eq('business_id', business.id).eq('active', true);
-    if (error) { errEl.textContent = t('حصل خطأ، حاول تاني.', 'Error, try again.'); console.error('Error loading employees for login:', error); return; }
-    const emp = (emps || []).find(e => e.name && e.name.trim().toLowerCase() === name.toLowerCase() && String(e.pin) === pin);
+    // ✅ استخدام business.code
+    const { data: emps, error } = await supabaseClient
+        .from('employees')
+        .select('*')
+        .eq('business_code', business.code)
+        .eq('active', true);
+        
+    if (error) { 
+        errEl.textContent = t('حصل خطأ، حاول تاني.', 'Error, try again.'); 
+        console.error('Error loading employees for login:', error); 
+        return; 
+    }
+    
+    const emp = (emps || []).find(e => 
+        e.name && e.name.trim().toLowerCase() === name.toLowerCase() && 
+        String(e.pin) === pin
+    );
+    
     if (emp) {
         currentUser = { type: 'employee', ...emp };
         document.getElementById('lockEmpName').value = '';
@@ -326,17 +403,36 @@ async function handleUnlock() {
     const pin = document.getElementById('lockPinInput').value.trim();
     const errEl = document.getElementById('lockError');
     errEl.textContent = '';
-    if (deviceRecord.revoked || !deviceRecord.is_active) { errEl.textContent = t('الجهاز موقوف.', 'Device suspended.'); return; }
-    if (deviceRecord.expiry_date && new Date(deviceRecord.expiry_date) < new Date()) { errEl.textContent = t('الاشتراك منتهي.', 'Subscription expired.'); return; }
-    if (!pin) { errEl.textContent = t('اكتب الـ PIN.', 'Enter the PIN.'); return; }
+    if (deviceRecord.revoked || !deviceRecord.is_active) { 
+        errEl.textContent = t('الجهاز موقوف.', 'Device suspended.'); 
+        return; 
+    }
+    if (deviceRecord.expiry_date && new Date(deviceRecord.expiry_date) < new Date()) { 
+        errEl.textContent = t('الاشتراك منتهي.', 'Subscription expired.'); 
+        return; 
+    }
+    if (!pin) { 
+        errEl.textContent = t('اكتب الـ PIN.', 'Enter the PIN.'); 
+        return; 
+    }
 
+    // ✅ استخدام business.code بدلاً من business.id
     if (pin === business.owner_pin) {
         currentUser = { type: 'owner', name: t('المالك', 'Owner'), permissions: { stations: true, inventory: true, shift: true, settings: true } };
         document.getElementById('lockPinInput').value = '';
         enterMainApp();
         return;
     }
-    const { data: emp } = await supabaseClient.from('employees').select('*').eq('business_id', business.id).eq('pin', pin).eq('active', true).maybeSingle();
+    
+    // ✅ البحث عن الموظف باستخدام business.code
+    const { data: emp } = await supabaseClient
+        .from('employees')
+        .select('*')
+        .eq('business_code', business.code)
+        .eq('pin', pin)
+        .eq('active', true)
+        .maybeSingle();
+        
     if (emp) {
         currentUser = { type: 'employee', ...emp };
         document.getElementById('lockPinInput').value = '';
@@ -365,10 +461,19 @@ async function tryAutoResume() {
     const code = localStorage.getItem('psr_business_code');
     if (!code) return;
     try {
-        const { data: biz } = await supabaseClient.from('businesses').select('*').eq('code', code).single();
+        const { data: biz } = await supabaseClient
+            .from('businesses')
+            .select('*')
+            .eq('code', code)
+            .single();
         if (!biz) return;
         business = biz;
-        const { data: dev } = await supabaseClient.from('devices').select('*').eq('business_id', biz.id).eq('device_id', getDeviceId()).maybeSingle();
+        const { data: dev } = await supabaseClient
+            .from('devices')
+            .select('*')
+            .eq('business_code', biz.code)
+            .eq('device_id', getDeviceId())
+            .maybeSingle();
         if (!dev) return;
         deviceRecord = dev;
         proceedToLock();
@@ -377,27 +482,20 @@ async function tryAutoResume() {
 
 // ============================================================
 // AUTO-ACTIVATE FROM URL (?biz=CODE&code=ACTIVATION)
-// Used by the "start free trial" button on the marketing/dashboard
-// site, which creates a business + trial activation code and sends
-// the device straight here. Only runs for a device with no existing
-// saved session, so it never hijacks an already-installed device.
 // ============================================================
 async function tryAutoActivateFromURL() {
-    if (localStorage.getItem('psr_business_code')) return; // existing device — don't interfere
+    if (localStorage.getItem('psr_business_code')) return;
     const params = new URLSearchParams(window.location.search);
     const bizCode = params.get('biz');
     const actCodeParam = params.get('code');
     if (!bizCode) return;
 
-    // Clean the URL so a refresh/share doesn't re-trigger this.
     window.history.replaceState({}, document.title, window.location.pathname);
 
     const setupInput = document.getElementById('setupBusinessCode');
     if (setupInput) setupInput.value = bizCode;
     await handleSetupContinue();
 
-    // If handleSetupContinue routed us to the activation screen (new device)
-    // and we have an activation code, fill it in and submit automatically.
     const activationScreen = document.getElementById('activationScreen');
     if (actCodeParam && activationScreen && activationScreen.classList.contains('active')) {
         const actInput = document.getElementById('activationCodeInput');
@@ -415,7 +513,7 @@ window.addEventListener('DOMContentLoaded', async () => {
 // MAIN APP ENTRY
 // ============================================================
 async function enterMainApp() {
-    document.getElementById('headerBizName').textContent = business.name;
+    document.getElementById('headerBizName').textContent = business.name || business.business_name;
     document.getElementById('headerBizCode').textContent = business.code;
     showScreen('mainApp');
     applyPermissions();
@@ -461,14 +559,24 @@ async function loadAllData() {
 
 async function loadStations() {
     assertBusinessContext();
-    const { data, error } = await supabaseClient.from('stations').select('*').eq('business_id', business.id).order('number');
+    // ✅ استخدام business.code بدلاً من business.id
+    const { data, error } = await supabaseClient
+        .from('stations')
+        .select('*')
+        .eq('business_code', business.code)
+        .order('number');
+        
     if (error) {
         console.error('Error loading stations:', error);
         throw error;
     }
     if (Array.isArray(data) && data.length === 0) {
         const seed = Array.from({ length: business.total_stations || 4 }, (_, i) => ({ 
-            business_id: business.id, number: i + 1, single_rate: 20, multi_rate: 30, name: `جهاز ${i + 1}`
+            business_code: business.code,
+            number: i + 1, 
+            single_rate: 20, 
+            multi_rate: 30, 
+            name: `جهاز ${i + 1}`
         }));
         const createdResult = await dbResult(supabaseClient.from('stations').insert(seed).select(), 'Seeding stations');
         stations = createdResult.data || [];
@@ -476,7 +584,7 @@ async function loadStations() {
         stations = data || [];
     }
     const activeResult = await dbResult(
-        supabaseClient.from('sessions').select('*').eq('business_id', business.id).eq('status', 'active'),
+        supabaseClient.from('sessions').select('*').eq('business_code', business.code).eq('status', 'active'),
         'Loading active sessions'
     );
     sessions = {};
@@ -488,10 +596,16 @@ async function loadStations() {
 // ============================================================
 async function loadMenuItems() {
     try {
-        const { data, error } = await supabaseClient.from('menu_items').select('*').eq('business_id', business.id).eq('active', true).order('created_at');
+        const { data, error } = await supabaseClient
+            .from('menu_items')
+            .select('*')
+            .eq('business_code', business.code)
+            .eq('active', true)
+            .order('created_at');
+            
         if (error) {
             console.warn('Error loading menu items from DB:', error);
-            const localData = localStorage.getItem('psr_menu_items_' + business.id);
+            const localData = localStorage.getItem('psr_menu_items_' + business.code);
             if (localData) {
                 menuItems = JSON.parse(localData);
                 return;
@@ -501,11 +615,11 @@ async function loadMenuItems() {
         }
         if (data) {
             menuItems = data;
-            localStorage.setItem('psr_menu_items_' + business.id, JSON.stringify(data));
+            localStorage.setItem('psr_menu_items_' + business.code, JSON.stringify(data));
         }
     } catch (e) {
         console.warn('Error loading menu items:', e);
-        const localData = localStorage.getItem('psr_menu_items_' + business.id);
+        const localData = localStorage.getItem('psr_menu_items_' + business.code);
         if (localData) {
             menuItems = JSON.parse(localData);
         } else {
@@ -516,7 +630,11 @@ async function loadMenuItems() {
 
 async function saveMenuItemToDB(item) {
     assertBusinessContext();
-    const { data, error } = await supabaseClient.from('menu_items').insert(item).select().single();
+    const { data, error } = await supabaseClient
+        .from('menu_items')
+        .insert(item)
+        .select()
+        .single();
     if (error) {
         console.error('Error saving menu item to DB:', error);
         throw error;
@@ -525,7 +643,13 @@ async function saveMenuItemToDB(item) {
 }
 
 async function updateMenuItemInDB(id, updates) {
-    const { data, error } = await supabaseClient.from('menu_items').update(updates).eq('id', id).eq('business_id', business.id).select().single();
+    const { data, error } = await supabaseClient
+        .from('menu_items')
+        .update(updates)
+        .eq('id', id)
+        .eq('business_code', business.code)
+        .select()
+        .single();
     if (error) {
         console.error('Error updating menu item in DB:', error);
         throw error;
@@ -534,7 +658,11 @@ async function updateMenuItemInDB(id, updates) {
 }
 
 async function deleteMenuItemFromDB(id) {
-    const { error } = await supabaseClient.from('menu_items').delete().eq('id', id).eq('business_id', business.id);
+    const { error } = await supabaseClient
+        .from('menu_items')
+        .delete()
+        .eq('id', id)
+        .eq('business_code', business.code);
     if (error) {
         console.error('Error deleting menu item from DB:', error);
         throw error;
@@ -543,13 +671,21 @@ async function deleteMenuItemFromDB(id) {
 }
 
 async function loadEmployees() {
-    const { data } = await supabaseClient.from('employees').select('*').eq('business_id', business.id).order('created_at');
+    const { data } = await supabaseClient
+        .from('employees')
+        .select('*')
+        .eq('business_code', business.code)
+        .order('created_at');
     employees = data || [];
 }
 
 async function loadPaymentMethods() {
     try {
-        const { data, error } = await supabaseClient.from('payment_methods').select('*').eq('business_id', business.id).order('created_at');
+        const { data, error } = await supabaseClient
+            .from('payment_methods')
+            .select('*')
+            .eq('business_code', business.code)
+            .order('created_at');
         if (error) throw error;
         if (data && data.length > 0) {
             paymentMethods = data;
@@ -560,14 +696,17 @@ async function loadPaymentMethods() {
     }
     
     const defaults = [
-        { business_id: business.id, name: 'كاش', icon: 'fa-money-bill-wave', color: 'badge-green', active: true },
-        { business_id: business.id, name: 'إنستا باي', icon: 'fa-mobile-screen-button', color: 'badge-purple', active: true },
-        { business_id: business.id, name: 'محفظة إلكترونية', icon: 'fa-wallet', color: 'badge-teal', active: true },
-        { business_id: business.id, name: 'بطاقة ائتمان', icon: 'fa-credit-card', color: 'badge-amber', active: true }
+        { business_code: business.code, name: 'كاش', icon: 'fa-money-bill-wave', color: 'badge-green', active: true },
+        { business_code: business.code, name: 'إنستا باي', icon: 'fa-mobile-screen-button', color: 'badge-purple', active: true },
+        { business_code: business.code, name: 'محفظة إلكترونية', icon: 'fa-wallet', color: 'badge-teal', active: true },
+        { business_code: business.code, name: 'بطاقة ائتمان', icon: 'fa-credit-card', color: 'badge-amber', active: true }
     ];
     
     try {
-        const { data: created, error } = await supabaseClient.from('payment_methods').insert(defaults).select();
+        const { data: created, error } = await supabaseClient
+            .from('payment_methods')
+            .insert(defaults)
+            .select();
         if (!error && created) {
             paymentMethods = created;
             return;
@@ -586,26 +725,20 @@ async function loadPaymentMethods() {
 async function loadOrOpenShift() {
     assertBusinessContext();
 
-    // Do not use maybeSingle() here. The current database contains multiple
-    // open shifts for this business (the console reports 19 rows), so
-    // maybeSingle() throws PGRST116 and used to stop the whole app from rendering.
     const { data: openShifts, error } = await supabaseClient
         .from('shifts')
         .select('*')
-        .eq('business_id', business.id)
+        .eq('business_code', business.code)
         .eq('status', 'open')
         .order('opened_at', { ascending: false });
 
     if (error) throw error;
 
     if (openShifts && openShifts.length > 0) {
-        // Use the newest open shift for now. Do NOT automatically delete or
-        // close the other financial records; they need manual review.
         currentShift = openShifts[0];
-
         if (openShifts.length > 1) {
             console.warn(
-                `PS Rental: ${openShifts.length} open shifts found for business ${business.id}. ` +
+                `PS Rental: ${openShifts.length} open shifts found for business ${business.code}. ` +
                 'Using the newest one. Review duplicate open shifts in Supabase.'
             );
         }
@@ -615,7 +748,7 @@ async function loadOrOpenShift() {
     const createdResult = await dbResult(
         supabaseClient
             .from('shifts')
-            .insert({ business_id: business.id, opened_at: new Date().toISOString(), status: 'open' })
+            .insert({ business_code: business.code, opened_at: new Date().toISOString(), status: 'open' })
             .select()
             .single(),
         'Opening shift'
@@ -658,7 +791,7 @@ async function createSegment(sessionId, mode, startedAt, rate, timerType, durati
 
     const { data, error } = await supabaseClient.from('session_segments').insert({
         session_id: sessionId,
-        business_id: business.id,
+        business_code: business.code,
         mode: mode,
         started_at: startedAt,
         rate: assertPositiveNumber(rate, 'Rate'),
@@ -707,17 +840,7 @@ function getActiveSegmentFast(sessionId) {
 }
 
 // ============================================================
-// ✅ CLOCK SYNC — تصحيح فرق ساعة الجهاز عن وقت السيرفر
-// المشكلة: كل جهاز (لابتوب/موبايل) بيحسب "الوقت المنقضي" بالمقارنة
-// بساعته المحلية هو. لو ساعة الموبايل متأخرة عن اللحظة اللي اتسجل
-// فيها started_at (اللي جت من جهاز تاني)، الفرق بيبقى سالب فيتقفل
-// على 00:00 ويفضل واقف. الحل: نجيب وقت حقيقي مرجعي مرة عند الدخول
-// ونحسب فرق ثابت (offset) ونستخدمه بدل ما نعتمد على ساعة الجهاز لوحدها.
-//
-// ملحوظة: بنجيب الوقت من محتوى الرد (JSON body) مش من الـ response
-// header، لإن المتصفح بيمنع قراءة هيدر Date في الطلبات cross-origin
-// إلا لو السيرفر يسمح بيه صراحة (Supabase مش بيسمح) — فالاعتماد على
-// الـ header كان بيرجع فاضي دايمًا والتصحيح مكانش بيشتغل فعليًا.
+// ✅ CLOCK SYNC
 // ============================================================
 let serverClockOffsetMs = 0;
 
@@ -732,7 +855,6 @@ async function fetchWithTimeout(url, ms) {
 }
 
 async function syncServerClock() {
-    // المصدر الأول
     try {
         const res = await fetchWithTimeout('https://worldtimeapi.org/api/timezone/Etc/UTC', 4000);
         const data = await res.json();
@@ -743,7 +865,6 @@ async function syncServerClock() {
     } catch (e) {
         console.warn('worldtimeapi failed, trying fallback:', e);
     }
-    // مصدر احتياطي لو الأول فشل أو بطيء
     try {
         const res = await fetchWithTimeout('https://timeapi.io/api/Time/current/zone?timeZone=UTC', 4000);
         const data = await res.json();
@@ -851,8 +972,6 @@ function getCurrentSegmentEstimateFast(sessionId) {
     return { amount, hours, segment: activeSeg };
 }
 
-// قيمة الجزء الحالي المكتسبة فعليًا (على أساس الوقت المنقضي دايمًا، سواء تصاعدي أو تنازلي)
-// نفس المعادلة المستخدمة عند إغلاق الجزء فعليًا في calculateSegmentAmountFromTimes
 function getCurrentSegmentEarnedAmount(sessionId) {
     const activeSeg = getActiveSegmentFast(sessionId);
     if (!activeSeg) return 0;
@@ -887,11 +1006,11 @@ function formatCountdown(seconds) {
 // ============================================================
 function subscribeRealtime() {
     if (realtimeChannel) supabaseClient.removeChannel(realtimeChannel);
-    realtimeChannel = supabaseClient.channel('biz-' + business.id)
-        .on('postgres_changes', { event: '*', schema: 'public', table: 'sessions', filter: 'business_id=eq.' + business.id }, handleSessionChange)
-        .on('postgres_changes', { event: '*', schema: 'public', table: 'session_orders', filter: 'business_id=eq.' + business.id }, handleOrderChange)
-        .on('postgres_changes', { event: '*', schema: 'public', table: 'stations', filter: 'business_id=eq.' + business.id }, handleStationChange)
-        .on('postgres_changes', { event: '*', schema: 'public', table: 'session_segments', filter: 'business_id=eq.' + business.id }, handleSegmentChange)
+    realtimeChannel = supabaseClient.channel('biz-' + business.code)
+        .on('postgres_changes', { event: '*', schema: 'public', table: 'sessions', filter: 'business_code=eq.' + business.code }, handleSessionChange)
+        .on('postgres_changes', { event: '*', schema: 'public', table: 'session_orders', filter: 'business_code=eq.' + business.code }, handleOrderChange)
+        .on('postgres_changes', { event: '*', schema: 'public', table: 'stations', filter: 'business_code=eq.' + business.code }, handleStationChange)
+        .on('postgres_changes', { event: '*', schema: 'public', table: 'session_segments', filter: 'business_code=eq.' + business.code }, handleSegmentChange)
         .subscribe();
 }
 
@@ -1038,11 +1157,15 @@ function formatElapsed(start) {
 async function renderDashboard() {
     if (!currentShift) {
         try {
-            const { data: created } = await supabaseClient.from('shifts').insert({ 
-                business_id: business.id,
-                opened_at: new Date().toISOString(),
-                status: 'open'
-            }).select().single();
+            const { data: created } = await supabaseClient
+                .from('shifts')
+                .insert({ 
+                    business_code: business.code,
+                    opened_at: new Date().toISOString(),
+                    status: 'open'
+                })
+                .select()
+                .single();
             if (created) {
                 currentShift = created;
                 showToast(t('تم فتح شيفت جديد تلقائياً', 'New shift opened automatically'), 'success');
@@ -1069,7 +1192,7 @@ async function renderDashboard() {
         const { data: completedSessions } = await supabaseClient
             .from('sessions')
             .select('id, amount')
-            .eq('business_id', business.id)
+            .eq('business_code', business.code)
             .eq('status', 'completed')
             .gte('ended_at', currentShift.opened_at)
             .lte('ended_at', currentShift.closed_at || new Date().toISOString());
@@ -1214,7 +1337,7 @@ async function applyBulkRate(type) {
         const { data, error } = await supabaseClient
             .from('stations')
             .update(updateData)
-            .eq('business_id', business.id)
+            .eq('business_code', business.code)
             .select();
 
         if (error) {
@@ -1310,11 +1433,17 @@ async function submitStationManagement() {
 
     try {
         if (id) {
-            const { error } = await supabaseClient.from('stations').update({ number, name, single_rate: singleRate, multi_rate: multiRate }).eq('id', id).eq('business_id', business.id);
+            const { error } = await supabaseClient
+                .from('stations')
+                .update({ number, name, single_rate: singleRate, multi_rate: multiRate })
+                .eq('id', id)
+                .eq('business_code', business.code);
             if (error) throw error;
             showToast(t('تم تحديث الجهاز', 'Device updated'), 'success');
         } else {
-            const { error } = await supabaseClient.from('stations').insert({ business_id: business.id, number, name, single_rate: singleRate, multi_rate: multiRate });
+            const { error } = await supabaseClient
+                .from('stations')
+                .insert({ business_code: business.code, number, name, single_rate: singleRate, multi_rate: multiRate });
             if (error) throw error;
             showToast(t('تم إضافة الجهاز', 'Device added'), 'success');
         }
@@ -1338,7 +1467,11 @@ async function deleteStationById(stationId) {
     }
 
     try {
-        const { error } = await supabaseClient.from('stations').delete().eq('id', stationId).eq('business_id', business.id);
+        const { error } = await supabaseClient
+            .from('stations')
+            .delete()
+            .eq('id', stationId)
+            .eq('business_code', business.code);
         if (error) throw error;
         showToast(t('تم حذف الجهاز', 'Device deleted'), 'success');
         await loadStations();
@@ -1426,10 +1559,15 @@ async function submitPaymentMethod() {
 
     try {
         if (id) {
-            await supabaseClient.from('payment_methods').update({ name, icon, color, active }).eq('id', id);
+            await supabaseClient
+                .from('payment_methods')
+                .update({ name, icon, color, active })
+                .eq('id', id);
             showToast(t('تم تحديث طريقة الدفع', 'Payment method updated'), 'success');
         } else {
-            await supabaseClient.from('payment_methods').insert({ business_id: business.id, name, icon, color, active });
+            await supabaseClient
+                .from('payment_methods')
+                .insert({ business_code: business.code, name, icon, color, active });
             showToast(t('تم إضافة طريقة الدفع', 'Payment method added'), 'success');
         }
         closeSheet('paymentMethodOverlay');
@@ -1444,7 +1582,10 @@ async function submitPaymentMethod() {
 async function deletePaymentMethodById(pmId) {
     if (!confirm(t('هل أنت متأكد من حذف طريقة الدفع هذه؟', 'Are you sure you want to delete this payment method?'))) return;
     try {
-        await supabaseClient.from('payment_methods').delete().eq('id', pmId);
+        await supabaseClient
+            .from('payment_methods')
+            .delete()
+            .eq('id', pmId);
         showToast(t('تم حذف طريقة الدفع', 'Payment method deleted'), 'success');
         await loadPaymentMethods();
         renderSettingsPaymentMethods();
@@ -1498,16 +1639,8 @@ async function addOrderItem(sessionId, menuItemId) {
 
             if (error) throw error;
         } else {
-            // IMPORTANT:
-            // Do NOT use .select().single() here.
-            // If INSERT is allowed by RLS but SELECT is not,
-            // .insert().select().single() reports a false failure.
-            //
-            // We also send business_id when the column exists in the
-            // current V2 schema. If an older database does not have it,
-            // retry once without business_id.
             let insertPayload = {
-                business_id: business.id,
+                business_code: business.code,
                 session_id: sessionId,
                 menu_item_id: item.id,
                 item_name: item.name,
@@ -1521,10 +1654,10 @@ async function addOrderItem(sessionId, menuItemId) {
 
             if (error && (
                 error.code === '42703' ||
-                /business_id/i.test(error.message || '') &&
+                /business_code/i.test(error.message || '') &&
                 /column/i.test(error.message || '')
             )) {
-                delete insertPayload.business_id;
+                delete insertPayload.business_code;
 
                 ({ error } = await supabaseClient
                     .from('session_orders')
@@ -1534,7 +1667,6 @@ async function addOrderItem(sessionId, menuItemId) {
             if (error) throw error;
         }
 
-        // Reload from DB so the UI has the real row/id.
         const { data: refreshedOrders, error: reloadError } = await supabaseClient
             .from('session_orders')
             .select('*')
@@ -1542,8 +1674,6 @@ async function addOrderItem(sessionId, menuItemId) {
             .order('created_at');
 
         if (reloadError) {
-            // The insert succeeded, but the current RLS SELECT policy
-            // may prevent reading the row back. Do not claim INSERT failed.
             console.error('Order was inserted, but reload failed:', reloadError);
             showToast(
                 t('تم حفظ الطلب، لكن صلاحية قراءة الطلبات تحتاج مراجعة في Supabase.', 'Order was saved, but the SELECT permission for orders needs review in Supabase.'),
@@ -1610,10 +1740,16 @@ async function removeOrderItem(orderId) {
     const order = activeSessionOrders.find(o => o.id === orderId);
     if (!order) return;
     if (order.quantity > 1) {
-        await supabaseClient.from('session_orders').update({ quantity: order.quantity - 1 }).eq('id', orderId);
+        await supabaseClient
+            .from('session_orders')
+            .update({ quantity: order.quantity - 1 })
+            .eq('id', orderId);
         order.quantity -= 1;
     } else {
-        await supabaseClient.from('session_orders').delete().eq('id', orderId);
+        await supabaseClient
+            .from('session_orders')
+            .delete()
+            .eq('id', orderId);
         activeSessionOrders = activeSessionOrders.filter(o => o.id !== orderId);
     }
     renderStationOrdersSection();
@@ -1719,10 +1855,11 @@ async function confirmTransfer() {
     try {
         const currentMode = sourceSession.current_mode || 'single';
         const currentRate = Number(sourceSession.rate) || (currentMode === 'multi' ? Number(targetStation.multi_rate) : Number(targetStation.single_rate));
-        const { error: updateError } = await supabaseClient.from('sessions')
+        const { error: updateError } = await supabaseClient
+            .from('sessions')
             .update({ station_id: targetStationId, rate: currentRate })
             .eq('id', sourceSession.id)
-            .eq('business_id', business.id)
+            .eq('business_code', business.code)
             .eq('status', 'active');
         if (updateError) throw updateError;
 
@@ -1794,11 +1931,20 @@ async function executeCancelSession(stationId) {
         
         if (orders && orders.length > 0) {
             const orderIds = orders.map(o => o.id);
-            await supabaseClient.from('session_orders').delete().in('id', orderIds);
+            await supabaseClient
+                .from('session_orders')
+                .delete()
+                .in('id', orderIds);
         }
         
-        await supabaseClient.from('session_segments').delete().eq('session_id', session.id);
-        await supabaseClient.from('sessions').delete().eq('id', session.id);
+        await supabaseClient
+            .from('session_segments')
+            .delete()
+            .eq('session_id', session.id);
+        await supabaseClient
+            .from('sessions')
+            .delete()
+            .eq('id', session.id);
         
         delete sessions[stationId];
         
@@ -1973,7 +2119,11 @@ async function openStationSheet(stationId) {
     const timerBadgeClass = timerType === 'countdown' ? 'badge-timer-down' : 'badge-timer-up';
     const isCountdown = timerType === 'countdown';
 
-    const { data: orders } = await supabaseClient.from('session_orders').select('*').eq('session_id', session.id).order('created_at');
+    const { data: orders } = await supabaseClient
+        .from('session_orders')
+        .select('*')
+        .eq('session_id', session.id)
+        .order('created_at');
     activeSessionOrders = orders || [];
 
     const activeSegStart = activeSeg ? activeSeg.started_at : session.started_at;
@@ -2206,15 +2356,19 @@ async function startSessionWithMode(stationId) {
     const now = new Date(nowCorrected()).toISOString();
     
     try {
-        const { data: session, error } = await supabaseClient.from('sessions').insert({
-            business_id: business.id, 
-            station_id: stationId, 
-            rate: rate,
-            started_at: now,
-            started_by_device: getDeviceId(),
-            current_mode: mode,
-            timer_type: timerType
-        }).select().single();
+        const { data: session, error } = await supabaseClient
+            .from('sessions')
+            .insert({
+                business_code: business.code, 
+                station_id: stationId, 
+                rate: rate,
+                started_at: now,
+                started_by_device: getDeviceId(),
+                current_mode: mode,
+                timer_type: timerType
+            })
+            .select()
+            .single();
         if (error) { throw error; }
         
         await createSegment(session.id, mode, now, rate, timerType, durationSeconds);
@@ -2494,18 +2648,21 @@ async function confirmEndSessionWithPayment() {
             payment_method: selectedPaymentMethod
         };
 
-        // بنحاول نحفظ الخصم والمبلغ المدفوع كمان؛ لو الأعمدة دي لسه مش
-        // مضافة في قاعدة البيانات (discount / amount_paid)، بنرجع نحفظ
-        // بدونها عشان قفل الجلسة ميفشلش خالص.
-        let { error } = await supabaseClient.from('sessions').update({
-            ...basePayload,
-            discount: discountAmount,
-            amount_paid: endSessionAmountPaid
-        }).eq('id', session.id);
+        let { error } = await supabaseClient
+            .from('sessions')
+            .update({
+                ...basePayload,
+                discount: discountAmount,
+                amount_paid: endSessionAmountPaid
+            })
+            .eq('id', session.id);
 
         if (error && /column .* does not exist/i.test(error.message || '')) {
             console.warn('discount/amount_paid columns missing — saving without them:', error.message);
-            ({ error } = await supabaseClient.from('sessions').update(basePayload).eq('id', session.id));
+            ({ error } = await supabaseClient
+                .from('sessions')
+                .update(basePayload)
+                .eq('id', session.id));
         }
         
         if (error) {
@@ -2517,7 +2674,6 @@ async function confirmEndSessionWithPayment() {
         
         const savedStationId = stationId;
         
-        // نثبّت قيمة الخصم النهائية (بعد أي clamp) عشان الإيصال يعرضها صح
         endSessionDiscount = discountAmount;
         
         delete sessions[stationId];
@@ -2590,7 +2746,7 @@ function printReceipt() {
         
         const receiptContent = `
             <div style="font-family: 'Cairo', Arial, sans-serif; padding: 20px; max-width: 300px; margin: 0 auto; direction: rtl; text-align: center; background: #fff; color: #000;">
-                <div style="font-size: 18px; font-weight: 700; margin-bottom: 4px;">${escapeHtml(business.name)}</div>
+                <div style="font-size: 18px; font-weight: 700; margin-bottom: 4px;">${escapeHtml(business.name || business.business_name)}</div>
                 <div style="font-size: 12px; color: #666; margin-bottom: 12px;">${escapeHtml(business.code)}</div>
                 <hr style="border: none; border-top: 1px dashed #ccc; margin: 10px 0;">
                 <div style="font-size: 13px; margin-bottom: 8px;">
@@ -2723,7 +2879,9 @@ async function submitExpense() {
     if (!description || !Number.isFinite(amount) || amount <= 0) { errEl.textContent = t('اكتب وصف ومبلغ صحيح.', 'Enter a valid description and amount.'); return; }
     if (!currentShift?.id) { errEl.textContent = t('مفيش شيفت مفتوح.', 'No open shift.'); return; }
     try {
-        const { error } = await supabaseClient.from('expenses').insert({ business_id: business.id, shift_id: currentShift.id, description, amount });
+        const { error } = await supabaseClient
+            .from('expenses')
+            .insert({ business_code: business.code, shift_id: currentShift.id, description, amount });
         if (error) throw error;
         closeSheet('expenseOverlay');
         showToast(t('تم تسجيل المصروف', 'Expense recorded'), 'success');
@@ -2743,7 +2901,7 @@ async function getShiftTotals(shift) {
         const { data: sessRows } = await supabaseClient
             .from('sessions')
             .select('id, amount, payment_method')
-            .eq('business_id', business.id)
+            .eq('business_code', business.code)
             .eq('status', 'completed')
             .gte('ended_at', shift.opened_at)
             .lte('ended_at', shift.closed_at || new Date().toISOString());
@@ -2829,7 +2987,7 @@ async function renderShiftView() {
     let query = supabaseClient
         .from('shifts')
         .select('*')
-        .eq('business_id', business.id)
+        .eq('business_code', business.code)
         .eq('status', 'closed')
         .order('closed_at', { ascending: false });
     
@@ -2912,11 +3070,15 @@ async function renderShiftView() {
 
 async function openNewShift() {
     try {
-        const { data: created } = await supabaseClient.from('shifts').insert({ 
-            business_id: business.id,
-            opened_at: new Date().toISOString(),
-            status: 'open'
-        }).select().single();
+        const { data: created } = await supabaseClient
+            .from('shifts')
+            .insert({ 
+                business_code: business.code,
+                opened_at: new Date().toISOString(),
+                status: 'open'
+            })
+            .select()
+            .single();
         currentShift = created;
         showToast(t('تم فتح شيفت جديد', 'New shift opened'), 'success');
         renderShiftView();
@@ -2931,7 +3093,11 @@ async function deleteShift(shiftId) {
     if (!confirm(t('هل أنت متأكد من حذف هذا الشيفت؟ سيتم حذف كل الجلسات والمصروفات المرتبطة به فقط.', 'Are you sure you want to delete this shift? Only the sessions and expenses that belong to it will be deleted.'))) return;
     
     try {
-        const { data: shift, error: shiftErr } = await supabaseClient.from('shifts').select('*').eq('id', shiftId).single();
+        const { data: shift, error: shiftErr } = await supabaseClient
+            .from('shifts')
+            .select('*')
+            .eq('id', shiftId)
+            .single();
         if (shiftErr || !shift) {
             showToast(t('تعذر إيجاد الشيفت', 'Could not find the shift'), 'error');
             console.error('Error loading shift to delete:', shiftErr);
@@ -2939,29 +3105,39 @@ async function deleteShift(shiftId) {
         }
         const rangeEnd = shift.closed_at || new Date().toISOString();
 
-        // حذف المصروفات
-        await supabaseClient.from('expenses').delete().eq('shift_id', shiftId);
+        await supabaseClient
+            .from('expenses')
+            .delete()
+            .eq('shift_id', shiftId);
         
-        // جلب الجلسات المكتملة في هذا الشيفت
         const { data: sessionsToDelete } = await supabaseClient
             .from('sessions')
             .select('id')
-            .eq('business_id', business.id)
+            .eq('business_code', business.code)
             .eq('status', 'completed')
             .gte('ended_at', shift.opened_at)
             .lte('ended_at', rangeEnd);
         
         if (sessionsToDelete && sessionsToDelete.length > 0) {
             const sessionIds = sessionsToDelete.map(s => s.id);
-            // حذف الأجزاء أولاً
-            await supabaseClient.from('session_segments').delete().in('session_id', sessionIds);
-            // حذف الطلبات
-            await supabaseClient.from('session_orders').delete().in('session_id', sessionIds);
-            // حذف الجلسات
-            await supabaseClient.from('sessions').delete().in('id', sessionIds);
+            await supabaseClient
+                .from('session_segments')
+                .delete()
+                .in('session_id', sessionIds);
+            await supabaseClient
+                .from('session_orders')
+                .delete()
+                .in('session_id', sessionIds);
+            await supabaseClient
+                .from('sessions')
+                .delete()
+                .in('id', sessionIds);
         }
         
-        await supabaseClient.from('shifts').delete().eq('id', shiftId);
+        await supabaseClient
+            .from('shifts')
+            .delete()
+            .eq('id', shiftId);
         
         showToast(t('تم حذف الشيفت', 'Shift deleted'), 'success');
         renderShiftView();
@@ -3011,7 +3187,11 @@ async function openCloseShiftSheet() {
 }
 
 async function viewShiftDetails(shiftId) {
-    const { data: shift, error } = await supabaseClient.from('shifts').select('*').eq('id', shiftId).single();
+    const { data: shift, error } = await supabaseClient
+        .from('shifts')
+        .select('*')
+        .eq('id', shiftId)
+        .single();
     if (error || !shift) {
         showToast(t('تعذر تحميل تفاصيل الشيفت', 'Could not load shift details'), 'error');
         console.error('Error loading shift details:', error);
@@ -3072,12 +3252,6 @@ function renderSettings() {
         <div class="list-row"><div class="row-title">${t('حالة الجهاز', 'Device Status')}</div><div class="badge ${deviceRecord.revoked ? 'badge-red' : 'badge-teal'}">${deviceRecord.revoked ? t('موقوف', 'Suspended') : t('نشط', 'Active')}</div></div>
         <div class="list-row"><div class="row-title">${t('تاريخ الانتهاء', 'Expiry Date')}</div><div class="row-value mono">${expiry ? expiry.toLocaleDateString(currentLang === 'ar' ? 'ar-EG' : 'en-US') : '—'}</div></div>`;
 
-    // ============================================================
-    // ✅ TOGGLE PIN SECTION — مبني بالكامل من الـ JS عشان يشتغل من غير
-    // ما نحتاج نضيف عناصر ثابتة في الـ HTML يدويًا.
-    // بنستخدم wrapper بـ id ثابت عشان لو renderSettings() اتنادت تاني
-    // (بعد إضافة موظف/صنف مثلاً) منكررش القسم من جديد كل مرة.
-    // ============================================================
     const pinToggleHtml = `
         <div class="list-row" style="cursor:pointer;" onclick="toggleSettingsPin()">
             <div class="row-title">${t('تغيير PIN المالك', 'Change Owner PIN')}</div>
@@ -3144,7 +3318,6 @@ function renderSettings() {
                 </div>
             </div>`).join('');
     
-    // ✅ تحديث حالة الـ Toggle (PIN)
     const pinSection = document.getElementById('settingsChangePin');
     const chevron = document.getElementById('settingsPinChevron');
     if (pinSection && chevron) {
@@ -3154,7 +3327,7 @@ function renderSettings() {
 }
 
 // ============================================================
-// 🔐 تغيير PIN المالك (جديد)
+// 🔐 تغيير PIN المالك
 // ============================================================
 async function changeOwnerPin() {
     const currentPin = document.getElementById('currentPinInput').value.trim();
@@ -3167,13 +3340,11 @@ async function changeOwnerPin() {
         return; 
     }
     
-    // 🔍 التحقق من PIN الحالي
     if (currentPin !== business.owner_pin) { 
         errEl.textContent = t('❌ PIN الحالي غير صحيح.', '❌ Current PIN is incorrect.'); 
         return; 
     }
     
-    // ✅ التحقق من PIN الجديد
     if (!/^\d{4,6}$/.test(newPin)) { 
         errEl.textContent = t('❌ PIN الجديد لازم يكون 4-6 أرقام.', '❌ New PIN must be 4-6 digits.'); 
         return; 
@@ -3183,14 +3354,12 @@ async function changeOwnerPin() {
         const { error } = await supabaseClient
             .from('businesses')
             .update({ owner_pin: newPin })
-            .eq('id', business.id);
+            .eq('code', business.code);
         
         if (error) throw error;
 
-        // ✅ تحديث المتغير المحلي
         business.owner_pin = newPin;
         
-        // 🧹 تنظيف الحقول
         document.getElementById('currentPinInput').value = '';
         document.getElementById('newPinInput').value = '';
         
@@ -3202,7 +3371,7 @@ async function changeOwnerPin() {
 }
 
 // ============================================================
-// 🏢 إنشاء نشاط جديد من صفحة الدخول (جديد)
+// 🏢 إنشاء نشاط جديد من صفحة الدخول
 // ============================================================
 function openCreateBusinessSheetFromSetup() {
     ['newBizCodeSetup', 'newBizNameSetup', 'newBizPhoneSetup'].forEach(id => document.getElementById(id).value = '');
@@ -3216,7 +3385,7 @@ async function submitCreateBusinessFromSetup() {
     const name = document.getElementById('newBizNameSetup').value.trim();
     const phone = document.getElementById('newBizPhoneSetup').value.trim();
     const total_stations = parseInt(document.getElementById('newBizStationsSetup').value) || 4;
-    const owner_pin = '0000'; // ✅ PIN افتراضي
+    const owner_pin = '0000';
     const err = document.getElementById('createBizErrorSetup');
 
     if (!code || !name) { 
@@ -3225,13 +3394,15 @@ async function submitCreateBusinessFromSetup() {
     }
 
     try {
-        const { error } = await supabaseClient.from('businesses').insert({ 
-            code, 
-            name, 
-            phone: phone || null, 
-            owner_pin, 
-            total_stations 
-        });
+        const { error } = await supabaseClient
+            .from('businesses')
+            .insert({ 
+                code, 
+                business_name: name,
+                phone: phone || null, 
+                owner_pin, 
+                total_stations 
+            });
         
         if (error) {
             if (error.code === '23505') {
@@ -3246,7 +3417,6 @@ async function submitCreateBusinessFromSetup() {
         closeSheet('createBusinessSheetFromSetup');
         showToast(t('✅ تم إنشاء النشاط! استخدم الكود لتسجيل الدخول.', '✅ Business created! Use the code to login.'), 'success');
         
-        // 🚀 محاولة الدخول التلقائي
         document.getElementById('setupBusinessCode').value = code;
         handleSetupContinue();
     } catch (e) {
@@ -3294,7 +3464,7 @@ async function submitMenuItem() {
     
     try {
         const newItem = {
-            business_id: business.id,
+            business_code: business.code,
             name: name,
             price: price,
             category: category,
@@ -3383,7 +3553,10 @@ async function submitEmployee() {
         shift: document.getElementById('permShift').checked,
         settings: document.getElementById('permSettings').checked
     };
-    const { data, error } = await supabaseClient.from('employees').insert({ business_id: business.id, name, pin, permissions }).select();
+    const { data, error } = await supabaseClient
+        .from('employees')
+        .insert({ business_code: business.code, name, pin, permissions })
+        .select();
     if (error || !data || data.length === 0) {
         document.getElementById('employeeError').textContent = t('فشل حفظ الموظف، حاول تاني.', 'Failed to save employee, try again.');
         console.error('Error adding employee:', error);
@@ -3396,7 +3569,11 @@ async function submitEmployee() {
 async function deleteEmployee(employeeId) {
     if (!confirm(t('هل أنت متأكد من حذف هذا الموظف؟', 'Are you sure you want to delete this employee?'))) return;
     try {
-        const { error } = await supabaseClient.from('employees').delete().eq('id', employeeId).eq('business_id', business.id);
+        const { error } = await supabaseClient
+            .from('employees')
+            .delete()
+            .eq('id', employeeId)
+            .eq('business_code', business.code);
         if (error) throw error;
         showToast(t('تم حذف الموظف', 'Employee deleted'), 'success');
         await loadEmployees();
@@ -3422,7 +3599,7 @@ async function recoverActiveSession() {
     const { data: activeSessions } = await supabaseClient
         .from('sessions')
         .select('*')
-        .eq('business_id', business.id)
+        .eq('business_code', business.code)
         .eq('status', 'active');
 
     if (activeSessions && activeSessions.length > 0) {
@@ -3471,7 +3648,11 @@ async function refreshStationSheetContent(stationId) {
     const timerBadgeClass = timerType === 'countdown' ? 'badge-timer-down' : 'badge-timer-up';
     const isCountdown = timerType === 'countdown';
 
-    const { data: orders } = await supabaseClient.from('session_orders').select('*').eq('session_id', session.id).order('created_at');
+    const { data: orders } = await supabaseClient
+        .from('session_orders')
+        .select('*')
+        .eq('session_id', session.id)
+        .order('created_at');
     activeSessionOrders = orders || [];
 
     const activeSegStart = activeSeg ? activeSeg.started_at : session.started_at;
@@ -3619,7 +3800,8 @@ async function handleSwitchMode(sessionId, newMode, stationId) {
         await closeSegment(activeSeg.id, now, amount);
         await createSegment(sessionId, newMode, now, newRate, timerType, durationSeconds);
 
-        await supabaseClient.from('sessions')
+        await supabaseClient
+            .from('sessions')
             .update({ current_mode: newMode, rate: newRate })
             .eq('id', sessionId);
 
