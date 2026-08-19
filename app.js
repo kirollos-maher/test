@@ -116,7 +116,6 @@ let paymentMethods = [];
 let currentShift = null;
 let currentUser = null;
 let realtimeChannel = null;
-let qrOrders = {}; // station_id -> array of pending/seen qr_orders rows
 let tickInterval = null;
 let activeStationId = null;
 let activeSessionOrders = [];
@@ -124,7 +123,12 @@ let currentOrderSessionId = null;
 let selectedPaymentMethod = null;
 let endSessionStationId = null;
 let endingSessionInProgress = false;
-let activeSessionBaseTotal = 0;
+// ✅ حالة الخصم/المبلغ المدفوع لشاشة إنهاء الجلسة
+let currentEndSessionTotals = null;
+let endSessionDiscount = 0;
+let endSessionAmountPaid = null;
+// ✅ المبلغ اللي العميل دفعه مقدماً عند بدء الجلسة (بيتخصم من الحساب عند الإنهاء)
+let endSessionPrepaidAmount = 0;
 let sessionSegmentsCache = {};
 let activeSegmentCache = {};
 let pendingSwitch = false;
@@ -174,7 +178,7 @@ function showScreen(id) {
 function navigateTo(viewId) {
     if (currentUser && currentUser.type !== 'owner') {
         const perms = currentUser.permissions || {};
-        if (viewId === 'view-settings' && !canSeeSettingsTab()) viewId = 'view-dashboard';
+        if (viewId === 'view-settings' && !perms.settings) viewId = 'view-dashboard';
         if (viewId === 'view-shift' && !perms.shift) viewId = 'view-dashboard';
         if (viewId === 'view-stations' && !perms.stations) viewId = 'view-dashboard';
     }
@@ -200,28 +204,6 @@ function closeSheet(id) {
 }
 function t(ar, en) { return currentLang === 'ar' ? ar : en; }
 
-// ============================================================
-// PERMISSIONS
-// ============================================================
-// All permission keys an employee can be granted. Owners implicitly have all of them.
-const PERMISSION_KEYS = ['stations', 'shift', 'settings', 'prices', 'menu', 'employees', 'cancel_session', 'transfer_session', 'expenses', 'reports', 'delete_shift'];
-
-function hasPerm(key) {
-    if (!currentUser) return false;
-    if (currentUser.type === 'owner') return true;
-    const perms = currentUser.permissions || {};
-    return !!perms[key];
-}
-
-// Any one of these being true is enough to let the employee open the Settings tab;
-// the individual sections inside are then shown/hidden per specific permission.
-function canSeeSettingsTab() {
-    if (!currentUser) return false;
-    if (currentUser.type === 'owner') return true;
-    const perms = currentUser.permissions || {};
-    return !!(perms.settings || perms.prices || perms.menu || perms.employees);
-}
-
 function applyPermissions() {
     const isOwner = currentUser.type === 'owner';
     const perms = currentUser.permissions || {};
@@ -229,33 +211,10 @@ function applyPermissions() {
     const navShift = document.querySelector('.bottom-nav .nav-btn[data-view="view-shift"]');
     const navStations = document.querySelector('.bottom-nav .nav-btn[data-view="view-stations"]');
     const fab = document.getElementById('fabAddExpense');
-    const dashRevenueCard = document.getElementById('dashRevenueCard');
-    const dashExpensesCard = document.getElementById('dashExpensesCard');
-    if (navSettings) navSettings.style.display = canSeeSettingsTab() ? 'flex' : 'none';
+    if (navSettings) navSettings.style.display = (isOwner || perms.settings) ? 'flex' : 'none';
     if (navShift) navShift.style.display = (isOwner || perms.shift) ? 'flex' : 'none';
     if (navStations) navStations.style.display = (isOwner || perms.stations) ? 'flex' : 'none';
-    if (fab) fab.style.display = (isOwner || perms.shift || perms.expenses) ? 'flex' : 'none';
-    if (dashRevenueCard) dashRevenueCard.style.display = (isOwner || perms.reports) ? '' : 'none';
-    if (dashExpensesCard) dashExpensesCard.style.display = (isOwner || perms.reports) ? '' : 'none';
-    applySettingsSectionVisibility();
-}
-
-// Shows/hides each block inside the Settings view depending on the granular
-// permission that controls it. Owners always see everything.
-function applySettingsSectionVisibility() {
-    const sections = {
-        settingsSectionDevices: 'prices',
-        settingsSectionPayments: 'settings',
-        settingsSectionSubscription: 'settings',
-        settingsSectionMenu: 'menu',
-        settingsSectionEmployees: 'employees',
-        settingsSectionQr: 'settings',
-        settingsSectionBusiness: 'settings'
-    };
-    Object.entries(sections).forEach(([id, key]) => {
-        const el = document.getElementById(id);
-        if (el) el.style.display = hasPerm(key) ? '' : 'none';
-    });
+    if (fab) fab.style.display = (isOwner || perms.shift) ? 'flex' : 'none';
 }
 
 // ============================================================
@@ -375,7 +334,7 @@ async function handleUnlock() {
     if (!pin) { errEl.textContent = t('اكتب الـ PIN.', 'Enter the PIN.'); return; }
 
     if (pin === business.owner_pin) {
-        currentUser = { type: 'owner', name: t('المالك', 'Owner'), permissions: { stations: true, inventory: true, shift: true, settings: true, prices: true, menu: true, employees: true } };
+        currentUser = { type: 'owner', name: t('المالك', 'Owner'), permissions: { stations: true, inventory: true, shift: true, settings: true } };
         document.getElementById('lockPinInput').value = '';
         enterMainApp();
         return;
@@ -468,11 +427,16 @@ async function enterMainApp() {
     document.querySelectorAll('.nav-btn').forEach(b => b.classList.toggle('active', b.dataset.view === 'view-dashboard'));
     
     populateYearSelect();
+    // مبنعملهاش await عشان ملف الشبكة بتاعها (حتى لو بطيء) ميأخرش فتح
+    // التطبيق؛ بمجرد ما تخلص في الخلفية، بتحدّث الأرقام المعروضة تلقائيًا
+    syncServerClock().then(() => { renderStationsGrid(); });
     await loadAllData();
     subscribeRealtime();
     startTicker();
     updateTexts();
     await recoverActiveSession();
+    // إعادة مزامنة الساعة كل 5 دقايق عشان نلحق أي انزياح لساعة الجهاز أثناء الاستخدام
+    setInterval(syncServerClock, 5 * 60 * 1000);
 }
 
 async function loadAllData() {
@@ -484,13 +448,12 @@ async function loadAllData() {
         loadMenuItems(),
         loadEmployees(),
         loadPaymentMethods(),
-        loadOrOpenShift(),
-        loadQrOrders()
+        loadOrOpenShift()
     ]);
 
     results.forEach((result, index) => {
         if (result.status === 'rejected') {
-            const names = ['stations', 'menu_items', 'employees', 'payment_methods', 'shift', 'qr_orders'];
+            const names = ['stations', 'menu_items', 'employees', 'payment_methods', 'shift'];
             console.error(`Failed to load ${names[index]}:`, result.reason);
         }
     });
@@ -657,219 +620,12 @@ async function loadOrOpenShift() {
     const createdResult = await dbResult(
         supabaseClient
             .from('shifts')
-            .insert({ business_id: business.id, opened_at: new Date().toISOString(), status: 'open', opened_by: currentUser ? (currentUser.name || currentUser.type) : null })
+            .insert({ business_id: business.id, opened_at: new Date().toISOString(), status: 'open' })
             .select()
             .single(),
         'Opening shift'
     );
     currentShift = createdResult.data;
-}
-
-// ============================================================
-// QR CUSTOMER ORDERS
-// ============================================================
-async function loadQrOrders() {
-    assertBusinessContext();
-    qrOrders = {};
-    const { data, error } = await supabaseClient
-        .from('qr_orders')
-        .select('*')
-        .eq('business_id', business.id)
-        .neq('status', 'done')
-        .order('created_at', { ascending: true });
-    if (error) {
-        // Table may not exist yet if the SQL migration hasn't been run — fail quietly.
-        console.warn('Could not load qr_orders (has the QR ordering SQL migration been run?):', error);
-        return;
-    }
-    (data || []).forEach(o => {
-        if (!qrOrders[o.station_id]) qrOrders[o.station_id] = [];
-        qrOrders[o.station_id].push(o);
-    });
-    updateHeaderBellBadge();
-}
-
-function totalPendingQrOrders() {
-    return Object.values(qrOrders).reduce((sum, arr) => sum + arr.length, 0);
-}
-
-function updateHeaderBellBadge() {
-    const badge = document.getElementById('headerBellBadge');
-    const bell = document.getElementById('headerBell');
-    const count = totalPendingQrOrders();
-    if (badge) {
-        badge.textContent = count > 9 ? '9+' : String(count);
-        badge.style.display = count > 0 ? 'flex' : 'none';
-    }
-    if (bell) bell.classList.toggle('bell-ringing', count > 0);
-}
-
-function qrOrderItemsLineHtml(items) {
-    return (items || []).map(it =>
-        `<div><span>${escapeHtml(it.name)} × ${it.qty}</span><span class="mono">${money(Number(it.price) * Number(it.qty))}</span></div>`
-    ).join('');
-}
-
-function handleQrOrderChange(payload) {
-    const row = payload.new && Object.keys(payload.new).length ? payload.new : payload.old;
-    if (!row) return;
-
-    // Remove any existing copy of this row first.
-    Object.keys(qrOrders).forEach(stId => {
-        qrOrders[stId] = (qrOrders[stId] || []).filter(o => o.id !== row.id);
-        if (qrOrders[stId].length === 0) delete qrOrders[stId];
-    });
-
-    if (payload.eventType !== 'DELETE' && payload.new && payload.new.status !== 'done') {
-        const stId = payload.new.station_id;
-        if (!qrOrders[stId]) qrOrders[stId] = [];
-        qrOrders[stId].push(payload.new);
-
-        if (payload.eventType === 'INSERT') {
-            const station = stations.find(s => s.id === stId);
-            const deviceName = station ? (station.name || t('جهاز', 'Device') + ' ' + station.number) : t('جهاز', 'Device');
-            const itemsSummary = (payload.new.items || []).map(it => `${it.name} ×${it.qty}`).join('، ');
-            if (typeof showRingNotification === 'function') {
-                showRingNotification(
-                    t('🛎️ طلب جديد من العميل', '🛎️ New customer order'),
-                    t(`${deviceName}: ${itemsSummary}`, `${deviceName}: ${itemsSummary}`),
-                    'warning'
-                );
-            } else if (typeof showToast === 'function') {
-                showToast(t(`🛎️ طلب جديد من ${deviceName}: ${itemsSummary}`, `🛎️ New order from ${deviceName}: ${itemsSummary}`), 'warning');
-            }
-        }
-    }
-
-    updateHeaderBellBadge();
-    renderStationsGrid();
-    if (document.getElementById('qrOrdersOverlay').classList.contains('show')) renderQrOrdersBody();
-}
-
-function openQrOrdersSheet(stationFilter) {
-    openQrOrdersSheet._filter = stationFilter || null;
-    renderQrOrdersBody();
-    openSheet('qrOrdersOverlay');
-}
-
-function renderQrOrdersBody() {
-    const body = document.getElementById('qrOrdersBody');
-    const filter = openQrOrdersSheet._filter;
-    let list = [];
-    Object.entries(qrOrders).forEach(([stId, orders]) => {
-        if (filter && stId !== filter) return;
-        orders.forEach(o => list.push(o));
-    });
-    list.sort((a, b) => new Date(a.created_at) - new Date(b.created_at));
-
-    if (list.length === 0) {
-        body.innerHTML = `<div class="empty"><i class="fa-solid fa-bell-slash"></i>${t('مفيش طلبات عملاء دلوقتي', 'No customer orders right now')}</div>`;
-        return;
-    }
-
-    body.innerHTML = list.map(o => {
-        const station = stations.find(s => s.id === o.station_id);
-        const deviceName = station ? (station.name || t('جهاز', 'Device') + ' ' + station.number) : t('جهاز محذوف', 'Deleted device');
-        const timeStr = new Date(o.created_at).toLocaleTimeString(currentLang === 'ar' ? 'ar-EG' : 'en-US', { hour: '2-digit', minute: '2-digit' });
-        const total = (o.items || []).reduce((s, it) => s + Number(it.price) * Number(it.qty), 0);
-        return `<div class="qr-order-item">
-            <div class="qr-order-head">
-                <span class="qr-order-station"><i class="fa-solid fa-gamepad"></i> ${escapeHtml(deviceName)}</span>
-                <span class="qr-order-time">${timeStr}</span>
-            </div>
-            <div class="qr-order-lines">${qrOrderItemsLineHtml(o.items)}</div>
-            ${o.note ? `<div class="qr-order-note"><i class="fa-solid fa-note-sticky"></i> ${escapeHtml(o.note)}</div>` : ''}
-            <div class="row-value mono" style="text-align:end;margin-bottom:8px;font-weight:700;">${t('الإجمالي', 'Total')}: ${money(total)} ${t('ج', 'EGP')}</div>
-            <div class="qr-order-actions">
-                <button class="btn btn-amber" onclick="addQrOrderToBill('${o.id}')"><i class="fa-solid fa-plus"></i> ${t('أضف للفاتورة', 'Add to bill')}</button>
-                <button class="btn btn-ghost" onclick="dismissQrOrder('${o.id}')"><i class="fa-solid fa-check"></i> ${t('تم الاستلام', 'Acknowledge')}</button>
-            </div>
-        </div>`;
-    }).join('');
-}
-
-async function addQrOrderToBill(orderId) {
-    let order = null;
-    Object.values(qrOrders).forEach(arr => { const f = arr.find(o => o.id === orderId); if (f) order = f; });
-    if (!order) return;
-
-    const session = sessions[order.station_id];
-    if (!session) {
-        showToast(t('لازم تبدأ جلسة على الجهاز الأول عشان تضيف الطلب للفاتورة', 'Start a session on this device first to add the order to its bill'), 'error');
-        return;
-    }
-
-    for (const it of (order.items || [])) {
-        const qty = Math.max(1, parseInt(it.qty) || 1);
-        for (let i = 0; i < qty; i++) {
-            await addOrderItem(session.id, it.id);
-        }
-    }
-    await dismissQrOrder(orderId, /*silent*/ true);
-    showToast(t('تمت إضافة طلب العميل للفاتورة', "Customer's order added to the bill"), 'success');
-}
-
-async function dismissQrOrder(orderId, silent) {
-    try {
-        await supabaseClient.from('qr_orders').update({ status: 'done', done_at: new Date().toISOString() }).eq('id', orderId);
-    } catch (e) {
-        console.error('Error dismissing qr order:', e);
-    }
-    Object.keys(qrOrders).forEach(stId => {
-        qrOrders[stId] = (qrOrders[stId] || []).filter(o => o.id !== orderId);
-        if (qrOrders[stId].length === 0) delete qrOrders[stId];
-    });
-    updateHeaderBellBadge();
-    renderStationsGrid();
-    renderQrOrdersBody();
-    if (!silent) showToast(t('تم استلام الطلب', 'Order acknowledged'), 'success');
-}
-
-function getOrderPageUrl(station) {
-    return new URL('order.html?t=' + encodeURIComponent(station.qr_token), window.location.href).href;
-}
-
-function openStationQrSheet(stationId) {
-    const st = stations.find(s => s.id === stationId);
-    if (!st) return;
-    if (!st.qr_token) {
-        showToast(t('الجهاز ده لسه معملوش QR token — شغّل ملف SQL migration الأول.', "This device doesn't have a QR token yet — run the SQL migration first."), 'error');
-        return;
-    }
-    const displayName = st.name ? st.name : t('جهاز', 'Device') + ' ' + st.number;
-    document.getElementById('stationQrTitle').textContent = displayName;
-    const url = getOrderPageUrl(st);
-    const qrImg = 'https://api.qrserver.com/v1/create-qr-code/?size=300x300&margin=8&data=' + encodeURIComponent(url);
-    const disabledNote = business.qr_ordering_enabled ? '' :
-        `<div class="empty" style="margin-bottom:10px;color:var(--red);"><i class="fa-solid fa-triangle-exclamation"></i>${t('خدمة الطلب عبر QR متوقفة حاليًا — فعّلها من الإعدادات.', 'QR ordering is currently disabled — enable it from Settings.')}</div>`;
-    document.getElementById('stationQrBody').innerHTML = `
-        ${disabledNote}
-        <div class="qr-code-box"><img src="${qrImg}" alt="QR"></div>
-        <div class="qr-link-box">${escapeHtml(url)}</div>
-        <div style="display:flex;gap:8px;margin-top:12px;">
-            <button class="btn btn-ghost btn-block" onclick="navigator.clipboard.writeText('${url}').then(()=>showToast(t('تم نسخ الرابط','Link copied'),'success'))"><i class="fa-solid fa-copy"></i> ${t('نسخ الرابط', 'Copy link')}</button>
-            <button class="btn btn-teal btn-block" onclick="window.open('${url}','_blank')"><i class="fa-solid fa-up-right-from-square"></i> ${t('فتح الصفحة', 'Open page')}</button>
-        </div>
-    `;
-    openSheet('stationQrOverlay');
-}
-
-async function toggleQrOrdering(enabled) {
-    if (!hasPerm('settings')) {
-        showToast(t('مفيش صلاحية لتغيير إعدادات النشاط', 'No permission to change business settings'), 'error');
-        document.getElementById('qrOrderingToggle').checked = !!business.qr_ordering_enabled;
-        return;
-    }
-    try {
-        const { error } = await supabaseClient.from('businesses').update({ qr_ordering_enabled: enabled }).eq('id', business.id);
-        if (error) throw error;
-        business.qr_ordering_enabled = enabled;
-        showToast(enabled ? t('تم تفعيل الطلب عبر QR', 'QR ordering enabled') : t('تم تعطيل الطلب عبر QR', 'QR ordering disabled'), 'success');
-    } catch (e) {
-        console.error('Error toggling qr ordering:', e);
-        document.getElementById('qrOrderingToggle').checked = !enabled;
-        showToast(t('فشل تغيير الإعداد، حاول تاني', 'Failed to change the setting, try again'), 'error');
-    }
 }
 
 // ============================================================
@@ -955,6 +711,60 @@ function getActiveSegmentFast(sessionId) {
     return activeSegmentCache[sessionId] || null;
 }
 
+// ============================================================
+// ✅ CLOCK SYNC — تصحيح فرق ساعة الجهاز عن وقت السيرفر
+// المشكلة: كل جهاز (لابتوب/موبايل) بيحسب "الوقت المنقضي" بالمقارنة
+// بساعته المحلية هو. لو ساعة الموبايل متأخرة عن اللحظة اللي اتسجل
+// فيها started_at (اللي جت من جهاز تاني)، الفرق بيبقى سالب فيتقفل
+// على 00:00 ويفضل واقف. الحل: نجيب وقت حقيقي مرجعي مرة عند الدخول
+// ونحسب فرق ثابت (offset) ونستخدمه بدل ما نعتمد على ساعة الجهاز لوحدها.
+//
+// ملحوظة: بنجيب الوقت من محتوى الرد (JSON body) مش من الـ response
+// header، لإن المتصفح بيمنع قراءة هيدر Date في الطلبات cross-origin
+// إلا لو السيرفر يسمح بيه صراحة (Supabase مش بيسمح) — فالاعتماد على
+// الـ header كان بيرجع فاضي دايمًا والتصحيح مكانش بيشتغل فعليًا.
+// ============================================================
+let serverClockOffsetMs = 0;
+
+async function fetchWithTimeout(url, ms) {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), ms);
+    try {
+        return await fetch(url, { signal: controller.signal });
+    } finally {
+        clearTimeout(timeoutId);
+    }
+}
+
+async function syncServerClock() {
+    // المصدر الأول
+    try {
+        const res = await fetchWithTimeout('https://worldtimeapi.org/api/timezone/Etc/UTC', 4000);
+        const data = await res.json();
+        if (data && data.unixtime) {
+            serverClockOffsetMs = (data.unixtime * 1000) - Date.now();
+            return;
+        }
+    } catch (e) {
+        console.warn('worldtimeapi failed, trying fallback:', e);
+    }
+    // مصدر احتياطي لو الأول فشل أو بطيء
+    try {
+        const res = await fetchWithTimeout('https://timeapi.io/api/Time/current/zone?timeZone=UTC', 4000);
+        const data = await res.json();
+        if (data && data.dateTime) {
+            const serverTime = new Date(data.dateTime + 'Z').getTime();
+            if (!isNaN(serverTime)) serverClockOffsetMs = serverTime - Date.now();
+        }
+    } catch (e) {
+        console.warn('Error syncing server clock (both sources failed):', e);
+    }
+}
+
+function nowCorrected() {
+    return Date.now() + serverClockOffsetMs;
+}
+
 async function preloadActiveSegments(sessionIds) {
     if (!sessionIds || sessionIds.length === 0) return;
     try {
@@ -1017,7 +827,7 @@ async function getCurrentSegmentEstimate(sessionId) {
     if (!activeSeg) return { amount: 0, hours: 0, segment: null };
     
     const start = new Date(activeSeg.started_at);
-    const now = new Date();
+    const now = new Date(nowCorrected());
     let hours = Math.max(0, (now - start) / 3600000);
     let amount = Math.round((hours * Number(activeSeg.rate)) * 100) / 100;
     
@@ -1036,7 +846,7 @@ function getCurrentSegmentEstimateFast(sessionId) {
     if (!activeSeg) return { amount: 0, hours: 0, segment: null };
 
     const start = new Date(activeSeg.started_at);
-    const now = new Date();
+    const now = new Date(nowCorrected());
     let hours = Math.max(0, (now - start) / 3600000);
     let amount = Math.round((hours * Number(activeSeg.rate)) * 100) / 100;
 
@@ -1050,10 +860,21 @@ function getCurrentSegmentEstimateFast(sessionId) {
     return { amount, hours, segment: activeSeg };
 }
 
+// قيمة الجزء الحالي المكتسبة فعليًا (على أساس الوقت المنقضي دايمًا، سواء تصاعدي أو تنازلي)
+// نفس المعادلة المستخدمة عند إغلاق الجزء فعليًا في calculateSegmentAmountFromTimes
+function getCurrentSegmentEarnedAmount(sessionId) {
+    const activeSeg = getActiveSegmentFast(sessionId);
+    if (!activeSeg) return 0;
+    const start = new Date(activeSeg.started_at);
+    const now = new Date(nowCorrected());
+    const hours = Math.max(0, (now - start) / 3600000);
+    return Math.round((hours * Number(activeSeg.rate)) * 100) / 100;
+}
+
 function getRemainingSeconds(segment) {
     if (!segment || segment.timer_type !== 'countdown' || !segment.duration_seconds) return 0;
     const start = new Date(segment.started_at);
-    const now = new Date();
+    const now = new Date(nowCorrected());
     const elapsed = (now - start) / 1000;
     return Math.max(0, segment.duration_seconds - elapsed);
 }
@@ -1076,7 +897,6 @@ function subscribeRealtime() {
         .on('postgres_changes', { event: '*', schema: 'public', table: 'session_orders', filter: 'business_id=eq.' + business.id }, handleOrderChange)
         .on('postgres_changes', { event: '*', schema: 'public', table: 'stations', filter: 'business_id=eq.' + business.id }, handleStationChange)
         .on('postgres_changes', { event: '*', schema: 'public', table: 'session_segments', filter: 'business_id=eq.' + business.id }, handleSegmentChange)
-        .on('postgres_changes', { event: '*', schema: 'public', table: 'qr_orders', filter: 'business_id=eq.' + business.id }, handleQrOrderChange)
         .subscribe();
 }
 
@@ -1113,17 +933,7 @@ function handleSessionChange(payload) {
 
 function handleOrderChange(payload) {
     const row = payload.new && Object.keys(payload.new).length ? payload.new : payload.old;
-    if (activeStationId && row && row.session_id === (sessions[activeStationId] || {}).id) {
-        renderStationOrdersSection();
-        calculateTotalAmounts(row.session_id).then(totals => {
-            activeSessionBaseTotal = totals.grandTotal;
-            const totalEl = document.getElementById('overallTotalAmount');
-            if (totalEl) {
-                const { amount } = getCurrentSegmentEstimateFast(row.session_id);
-                totalEl.textContent = moneyDec(Math.round((totals.grandTotal + amount) * 100) / 100);
-            }
-        });
-    }
+    if (activeStationId && row && row.session_id === (sessions[activeStationId] || {}).id) renderStationOrdersSection();
 }
 
 function handleStationChange() {
@@ -1209,20 +1019,28 @@ function startTicker() {
         }
 
         const amountEl = document.getElementById('currentSegAmount');
-        const totalEl = document.getElementById('overallTotalAmount');
-        if ((amountEl || totalEl) && activeStationId) {
+        if (amountEl && activeStationId) {
             const session = sessions[activeStationId];
             if (session) {
                 const { amount } = getCurrentSegmentEstimateFast(session.id);
-                if (amountEl) amountEl.textContent = moneyDec(amount);
-                if (totalEl) totalEl.textContent = moneyDec(Math.round((activeSessionBaseTotal + amount) * 100) / 100);
+                amountEl.textContent = moneyDec(amount);
+            }
+        }
+
+        const overallTotalEl = document.getElementById('overallTotalAmount');
+        if (overallTotalEl && activeStationId) {
+            const session = sessions[activeStationId];
+            if (session) {
+                const baseTotal = Number(overallTotalEl.dataset.baseTotal || 0);
+                const earnedNow = getCurrentSegmentEarnedAmount(session.id);
+                overallTotalEl.textContent = moneyDec(Math.round((baseTotal + earnedNow) * 100) / 100);
             }
         }
     }, 1000);
 }
 
 function formatElapsed(start) {
-    const secs = Math.max(0, Math.floor((Date.now() - start.getTime()) / 1000));
+    const secs = Math.max(0, Math.floor((nowCorrected() - start.getTime()) / 1000));
     const h = Math.floor(secs / 3600), m = Math.floor((secs % 3600) / 60), s = secs % 60;
     return (h > 0 ? String(h).padStart(2, '0') + ':' : '') + String(m).padStart(2, '0') + ':' + String(s).padStart(2, '0');
 }
@@ -1236,8 +1054,7 @@ async function renderDashboard() {
             const { data: created } = await supabaseClient.from('shifts').insert({ 
                 business_id: business.id,
                 opened_at: new Date().toISOString(),
-                status: 'open',
-                opened_by: currentUser ? (currentUser.name || currentUser.type) : null
+                status: 'open'
             }).select().single();
             if (created) {
                 currentShift = created;
@@ -1352,13 +1169,7 @@ function renderStationsGrid() {
             timerDisplay = `<div class="station-rate">${t('Single', 'Single')} ${money(st.single_rate || 20)} / ${t('Multi', 'Multi')} ${money(st.multi_rate || 30)} ${t('ج/ساعة', 'EGP/hr')}</div>`;
         }
         
-        const hasQrOrder = !!(qrOrders[st.id] && qrOrders[st.id].length);
-        const qrBadge = hasQrOrder
-            ? `<div class="qr-order-badge" onclick="event.stopPropagation(); openQrOrdersSheet('${st.id}')" title="${t('طلب من العميل', 'Customer order')}"><i class="fa-solid fa-exclamation"></i></div>`
-            : '';
-
-        return `<div class="station-card ${occupied ? 'occupied' : ''} ${hasQrOrder ? 'has-qr-order' : ''}" onclick="openStationSheet('${st.id}')">
-            ${qrBadge}
+        return `<div class="station-card ${occupied ? 'occupied' : ''}" onclick="openStationSheet('${st.id}')">
             <div><div class="station-num">${displayName}</div><div class="station-status">${statusText} ${modeBadge} ${timerBadge}</div></div>
             ${timerDisplay}
         </div>`;
@@ -1380,7 +1191,6 @@ function toggleSettingsStations() {
 // BULK RATE
 // ============================================================
 async function applyBulkRate(type) {
-    if (!hasPerm('prices')) { showToast(t('مفيش صلاحية لتعديل الأسعار', 'No permission to edit prices'), 'error'); return; }
     const singleInput = document.getElementById('bulkSingleRateInput');
     const multiInput = document.getElementById('bulkMultiRateInput');
     
@@ -1460,7 +1270,6 @@ function renderSettingsStations() {
         return `<div class="list-row">
             <div><div class="row-title">${escapeHtml(displayName)}</div><div class="row-sub">${t('رقم', 'No.')} ${st.number} — ${t('Single', 'Single')} ${money(st.single_rate || 20)} / ${t('Multi', 'Multi')} ${money(st.multi_rate || 30)} ${t('ج/ساعة', 'EGP/hr')}</div></div>
             <div class="row-actions">
-                <button class="btn btn-teal btn-sm" onclick="openStationQrSheet('${st.id}')" title="${t('كود QR للطلب', 'Order QR code')}"><i class="fa-solid fa-qrcode"></i></button>
                 <button class="btn btn-ghost btn-sm" onclick="editStation('${st.id}')"><i class="fa-solid fa-pen"></i></button>
                 <button class="btn btn-danger-sm" onclick="deleteStationById('${st.id}')"><i class="fa-solid fa-trash"></i></button>
             </div>
@@ -1469,7 +1278,6 @@ function renderSettingsStations() {
 }
 
 function openStationManagementSheet() {
-    if (!hasPerm('prices')) { showToast(t('مفيش صلاحية لإدارة الأجهزة والأسعار', 'No permission to manage devices & prices'), 'error'); return; }
     document.getElementById('stationManageId').value = '';
     document.getElementById('stationManageNumber').value = stations.length + 1;
     document.getElementById('stationManageName').value = '';
@@ -1482,7 +1290,6 @@ function openStationManagementSheet() {
 }
 
 function editStation(stationId) {
-    if (!hasPerm('prices')) { showToast(t('مفيش صلاحية لتعديل الأجهزة والأسعار', 'No permission to edit devices & prices'), 'error'); return; }
     const st = stations.find(s => s.id === stationId);
     if (!st) return;
     document.getElementById('stationManageId').value = st.id;
@@ -1497,7 +1304,6 @@ function editStation(stationId) {
 }
 
 async function submitStationManagement() {
-    if (!hasPerm('prices')) { showToast(t('مفيش صلاحية لتعديل الأجهزة والأسعار', 'No permission to edit devices & prices'), 'error'); return; }
     const id = document.getElementById('stationManageId').value;
     const number = parseInt(document.getElementById('stationManageNumber').value);
     const name = document.getElementById('stationManageName').value.trim();
@@ -1537,7 +1343,6 @@ async function submitStationManagement() {
 }
 
 async function deleteStationById(stationId) {
-    if (!hasPerm('prices')) { showToast(t('مفيش صلاحية لحذف الأجهزة', 'No permission to delete devices'), 'error'); return; }
     if (!confirm(t('هل أنت متأكد من حذف هذا الجهاز؟', 'Are you sure you want to delete this device?'))) return;
 
     if (sessions[stationId]) {
@@ -1764,11 +1569,9 @@ async function addOrderItem(sessionId, menuItemId) {
         renderStationOrdersSection();
 
         const totals = await calculateTotalAmounts(sessionId);
-        activeSessionBaseTotal = totals.grandTotal;
         const totalEl = document.getElementById('overallTotalAmount');
         if (totalEl) {
-            const { amount } = getCurrentSegmentEstimateFast(sessionId);
-            totalEl.textContent = moneyDec(Math.round((totals.grandTotal + amount) * 100) / 100);
+            totalEl.textContent = moneyDec(totals.grandTotal);
         }
 
         if (!reloadError) {
@@ -1819,7 +1622,6 @@ async function addOrderItem(sessionId, menuItemId) {
 async function removeOrderItem(orderId) {
     const order = activeSessionOrders.find(o => o.id === orderId);
     if (!order) return;
-    const sessionId = order.session_id;
     if (order.quantity > 1) {
         await supabaseClient.from('session_orders').update({ quantity: order.quantity - 1 }).eq('id', orderId);
         order.quantity -= 1;
@@ -1828,16 +1630,6 @@ async function removeOrderItem(orderId) {
         activeSessionOrders = activeSessionOrders.filter(o => o.id !== orderId);
     }
     renderStationOrdersSection();
-
-    if (sessionId) {
-        const totals = await calculateTotalAmounts(sessionId);
-        activeSessionBaseTotal = totals.grandTotal;
-        const totalEl = document.getElementById('overallTotalAmount');
-        if (totalEl) {
-            const { amount } = getCurrentSegmentEstimateFast(sessionId);
-            totalEl.textContent = moneyDec(Math.round((totals.grandTotal + amount) * 100) / 100);
-        }
-    }
 }
 
 // ============================================================
@@ -1904,7 +1696,6 @@ function selectTransferTarget(stationId) {
 }
 
 async function confirmTransfer() {
-    if (!hasPerm('transfer_session')) { showToast(t('مفيش صلاحية لنقل الجلسات', 'No permission to transfer sessions'), 'error'); return; }
     const targetStationId = document.getElementById('selectedTransferTarget').value;
     const sourceStationId = transferSourceStationId;
     const errEl = document.getElementById('transferError');
@@ -1994,7 +1785,6 @@ function confirmCancelSession(stationId) {
 }
 
 async function executeCancelSession(stationId) {
-    if (!hasPerm('cancel_session')) { showToast(t('مفيش صلاحية لإلغاء الجلسات', 'No permission to cancel sessions'), 'error'); return; }
     const session = sessions[stationId];
     if (!session) {
         showToast(t('الجلسة غير موجودة', 'Session not found'), 'error');
@@ -2146,7 +1936,13 @@ async function openStationSheet(stationId) {
                 </div>
             </div>
             <input type="hidden" id="selectedDuration" value="3600">
-            
+
+            <div class="section-title">${t('دفع مقدماً (اختياري)', 'Advance Payment (optional)')}</div>
+            <div class="field">
+                <label data-ar="لو العميل دفع مبلغ مقدماً، اكتبه هنا وهيتخصم من حسابه عند إنهاء الجلسة" data-en="If the customer paid in advance, enter it here — it will be deducted from their bill when the session ends">${t('المبلغ المدفوع مقدماً (جنيه)', 'Amount Paid in Advance (EGP)')}</label>
+                <input type="number" id="prepaidAmountInput" class="mono" min="0" step="0.5" value="0" placeholder="0">
+            </div>
+
             <button class="btn btn-amber btn-block" onclick="startSessionWithMode('${stationId}')">
                 <i class="fa-solid fa-play"></i> ${t('بدء الجلسة', 'Start Session')}
             </button>
@@ -2182,8 +1978,6 @@ async function openStationSheet(stationId) {
 
     const totals = await calculateTotalAmounts(session.id);
     const currentEstimate = await getCurrentSegmentEstimate(session.id);
-    const liveGrandTotal = Math.round((totals.grandTotal + currentEstimate.amount) * 100) / 100;
-    activeSessionBaseTotal = totals.grandTotal;
     
     const currentMode = activeSeg ? activeSeg.mode : (session.current_mode || 'single');
     const currentRate = activeSeg ? activeSeg.rate : (st.single_rate || 20);
@@ -2202,6 +1996,8 @@ async function openStationSheet(stationId) {
     activeSessionOrders = orders || [];
 
     const activeSegStart = activeSeg ? activeSeg.started_at : session.started_at;
+    const liveEarnedNow = activeSeg ? Math.round((Math.max(0, (nowCorrected() - new Date(activeSeg.started_at)) / 3600000) * Number(activeSeg.rate)) * 100) / 100 : 0;
+    const liveGrandTotal = Math.round((totals.grandTotal + liveEarnedNow) * 100) / 100;
 
     body.innerHTML = `
         <div style="text-align:center;margin-bottom:12px;">
@@ -2228,7 +2024,7 @@ async function openStationSheet(stationId) {
             </div>
             <div style="background:var(--bg-sunken);border-radius:var(--radius-sm);padding:8px;text-align:center;">
                 <div style="font-size:10px;color:var(--text-dim);">${t('الإجمالي الكلي', 'Grand Total')}</div>
-                <div class="mono" style="font-size:18px;font-weight:700;color:var(--amber);" id="overallTotalAmount">${moneyDec(liveGrandTotal)}</div>
+                <div class="mono" style="font-size:18px;font-weight:700;color:var(--amber);" id="overallTotalAmount" data-base-total="${totals.grandTotal}">${moneyDec(liveGrandTotal)}</div>
             </div>
         </div>
         
@@ -2250,7 +2046,7 @@ async function openStationSheet(stationId) {
             <div class="segment-row"><span class="seg-label">${t('إجمالي Single', 'Single Total')}</span><span class="seg-value seg-mode-single">${moneyDec(totals.singleTotal)}</span></div>
             <div class="segment-row"><span class="seg-label">${t('إجمالي Multi', 'Multi Total')}</span><span class="seg-value seg-mode-multi">${moneyDec(totals.multiTotal)}</span></div>
             <div class="segment-row"><span class="seg-label">${t('الطلبات', 'Orders')}</span><span class="seg-value">${moneyDec(totals.ordersTotal)}</span></div>
-            <div class="segment-row segment-total"><span class="seg-label">${t('الإجمالي الكلي', 'Grand Total')}</span><span class="seg-value" style="color:var(--amber);">${moneyDec(liveGrandTotal)}</span></div>
+            <div class="segment-row segment-total"><span class="seg-label">${t('الإجمالي الكلي', 'Grand Total')}</span><span class="seg-value" style="color:var(--amber);">${moneyDec(totals.grandTotal)}</span></div>
         </div>
         ` : ''}
         
@@ -2426,10 +2222,13 @@ async function startSessionWithMode(stationId) {
         return;
     }
     
-    const now = new Date().toISOString();
-    
+    const now = new Date(nowCorrected()).toISOString();
+
+    const prepaidInput = document.getElementById('prepaidAmountInput');
+    const prepaidAmount = Math.max(0, parseFloat(prepaidInput && prepaidInput.value) || 0);
+
     try {
-        const { data: session, error } = await supabaseClient.from('sessions').insert({
+        const sessionPayload = {
             business_id: business.id, 
             station_id: stationId, 
             rate: rate,
@@ -2437,7 +2236,22 @@ async function startSessionWithMode(stationId) {
             started_by_device: getDeviceId(),
             current_mode: mode,
             timer_type: timerType
+        };
+
+        let { data: session, error } = await supabaseClient.from('sessions').insert({
+            ...sessionPayload,
+            prepaid_amount: prepaidAmount
         }).select().single();
+
+        // لو عمود prepaid_amount لسه مش مضاف في قاعدة البيانات، نحاول تاني من غيره
+        // عشان بدء الجلسة ميفشلش، وبنسجل تحذير في الكونسول.
+        if (error && /column .* does not exist/i.test(error.message || '')) {
+            console.warn('prepaid_amount column missing — starting session without it:', error.message);
+            ({ data: session, error } = await supabaseClient.from('sessions').insert(sessionPayload).select().single());
+            if (!error && prepaidAmount > 0) {
+                session.prepaid_amount = prepaidAmount; // نحتفظ بالقيمة محلياً على الأقل لهذه الجلسة
+            }
+        }
         if (error) { throw error; }
         
         await createSegment(session.id, mode, now, rate, timerType, durationSeconds);
@@ -2469,7 +2283,7 @@ function showEndSessionPayment(stationId) {
     (async () => {
         const activeSeg = await getActiveSegment(session.id);
         if (activeSeg && !activeSeg.ended_at) {
-            const now = new Date().toISOString();
+            const now = new Date(nowCorrected()).toISOString();
             const start = new Date(activeSeg.started_at);
             let hours = Math.max(0, (new Date(now) - start) / 3600000);
             let amount = Math.round((hours * Number(activeSeg.rate)) * 100) / 100;
@@ -2514,6 +2328,16 @@ function showEndSessionPayment(stationId) {
         }
         
         const activeMethods = paymentMethods.filter(pm => pm.active !== false);
+        currentEndSessionTotals = totals;
+        endSessionDiscount = 0;
+        endSessionAmountPaid = null;
+        endSessionPrepaidAmount = Math.max(0, Number(session.prepaid_amount) || 0);
+
+        const prepaidHtml = endSessionPrepaidAmount > 0 ? `
+            <div style="display:flex;justify-content:space-between;align-items:center;padding:6px 0;font-size:13px;color:var(--teal);">
+                <span>${t('مدفوع مقدماً', 'Paid in Advance')}</span>
+                <span class="mono" style="font-weight:700;">- ${moneyDec(endSessionPrepaidAmount)} ${t('ج', 'EGP')}</span>
+            </div>` : '';
         
         let paymentHtml = `
             <div style="text-align:center;margin:12px 0;">
@@ -2526,6 +2350,30 @@ function showEndSessionPayment(stationId) {
                 <div class="segment-row"><span class="seg-label">${t('الطلبات', 'Orders')}</span><span class="seg-value">${moneyDec(totals.ordersTotal)}</span></div>
             </div>
             ${ordersHtml}
+            <div class="section-title">${t('الخصم والدفع', 'Discount & Payment')}</div>
+            <div style="background:var(--bg-sunken);border-radius:var(--radius-sm);padding:10px;margin-bottom:10px;">
+                <div style="margin-bottom:10px;">
+                    <label style="display:block;font-size:12px;color:var(--text-dim);margin-bottom:4px;">${t('خصم (جنيه)', 'Discount (EGP)')}</label>
+                    <input type="number" id="discountInput" class="mono" min="0" step="0.5" value="0" placeholder="0" oninput="updatePaymentCalculation()" style="width:100%;">
+                </div>
+                ${prepaidHtml}
+                <div style="display:flex;justify-content:space-between;align-items:center;padding:8px 0;font-weight:700;border-top:1px solid var(--border);border-bottom:1px solid var(--border);margin-bottom:10px;">
+                    <span>${t('المتبقي المطلوب دفعه', 'Remaining Due Now')}</span>
+                    <span class="mono" id="finalTotalDisplay" style="color:var(--amber);font-size:16px;">${moneyDec(Math.max(0, totals.grandTotal - endSessionPrepaidAmount))}</span>
+                </div>
+                <div id="prepaidCreditRow" style="display:none;justify-content:space-between;align-items:center;padding:0 0 10px;font-weight:700;color:var(--teal);">
+                    <span>${t('باقي للعميل من المقدم', 'Remaining Credit for Customer')}</span>
+                    <span class="mono" id="prepaidCreditAmount" style="font-size:16px;"></span>
+                </div>
+                <div style="margin-bottom:8px;">
+                    <label style="display:block;font-size:12px;color:var(--text-dim);margin-bottom:4px;">${t('العميل دفع كام دلوقتي', 'Amount Paid by Customer Now')}</label>
+                    <input type="number" id="amountPaidInput" class="mono" min="0" step="0.5" placeholder="${moneyDec(Math.max(0, totals.grandTotal - endSessionPrepaidAmount))}" oninput="updatePaymentCalculation()" style="width:100%;">
+                </div>
+                <div id="changeDueRow" style="display:none;justify-content:space-between;align-items:center;padding:8px 0 2px;font-weight:700;">
+                    <span id="changeDueLabel"></span>
+                    <span class="mono" id="changeDueAmount" style="font-size:16px;"></span>
+                </div>
+            </div>
             <div class="section-title">${t('اختر طريقة الدفع', 'Select Payment Method')}</div>`;
         
         if (activeMethods.length === 0) {
@@ -2601,6 +2449,65 @@ function selectPaymentMethod(pmId) {
 }
 
 // ============================================================
+// ✅ حساب الخصم والباقي أثناء الدفع
+// ============================================================
+function updatePaymentCalculation() {
+    if (!currentEndSessionTotals) return;
+    const grandTotal = currentEndSessionTotals.grandTotal;
+
+    const discountInput = document.getElementById('discountInput');
+    let discount = Math.max(0, parseFloat(discountInput.value) || 0);
+    if (discount > grandTotal) {
+        discount = grandTotal;
+        discountInput.value = discount;
+    }
+    const totalAfterDiscount = Math.round((grandTotal - discount) * 100) / 100;
+
+    // ✅ نخصم المبلغ المدفوع مقدماً من الإجمالي المطلوب تحصيله الآن
+    const prepaid = endSessionPrepaidAmount || 0;
+    const dueNow = Math.round((totalAfterDiscount - prepaid) * 100) / 100;
+    const finalTotal = Math.max(0, dueNow);
+
+    const finalTotalEl = document.getElementById('finalTotalDisplay');
+    if (finalTotalEl) finalTotalEl.textContent = moneyDec(finalTotal);
+
+    // لو المقدم غطّى الحساب بالكامل أو زاد عنه، نعرض الباقي للعميل فوراً
+    const prepaidCreditRow = document.getElementById('prepaidCreditRow');
+    const prepaidCreditAmount = document.getElementById('prepaidCreditAmount');
+    if (dueNow < 0) {
+        if (prepaidCreditRow) prepaidCreditRow.style.display = 'flex';
+        if (prepaidCreditAmount) prepaidCreditAmount.textContent = moneyDec(Math.abs(dueNow)) + ' ' + t('ج', 'EGP');
+    } else {
+        if (prepaidCreditRow) prepaidCreditRow.style.display = 'none';
+    }
+
+    const paidInput = document.getElementById('amountPaidInput');
+    const paidVal = paidInput ? paidInput.value.trim() : '';
+    const changeRow = document.getElementById('changeDueRow');
+    const changeLabel = document.getElementById('changeDueLabel');
+    const changeAmount = document.getElementById('changeDueAmount');
+
+    if (paidVal === '') {
+        if (changeRow) changeRow.style.display = 'none';
+        endSessionAmountPaid = null;
+    } else {
+        const paid = Math.max(0, parseFloat(paidVal) || 0);
+        const diff = Math.round((paid - finalTotal) * 100) / 100;
+        if (changeRow) changeRow.style.display = 'flex';
+        if (diff >= 0) {
+            if (changeLabel) changeLabel.textContent = t('الباقي للعميل', 'Change Due to Customer');
+            if (changeAmount) { changeAmount.textContent = moneyDec(diff); changeAmount.style.color = 'var(--teal)'; }
+        } else {
+            if (changeLabel) changeLabel.textContent = t('باقي على العميل', 'Remaining Owed by Customer');
+            if (changeAmount) { changeAmount.textContent = moneyDec(Math.abs(diff)); changeAmount.style.color = '#ff6b6b'; }
+        }
+        endSessionAmountPaid = paid;
+    }
+
+    endSessionDiscount = discount;
+}
+
+// ============================================================
 // CANCEL END SESSION (Back button) - من الملف الشغال
 // ============================================================
 function cancelEndSession() {
@@ -2632,7 +2539,7 @@ async function confirmEndSessionWithPayment() {
     try {
         const activeSeg = await getActiveSegment(session.id);
         if (activeSeg && !activeSeg.ended_at) {
-            const now = new Date().toISOString();
+            const now = new Date(nowCorrected()).toISOString();
             const start = new Date(activeSeg.started_at);
             let hours = Math.max(0, (new Date(now) - start) / 3600000);
             let amount = Math.round((hours * Number(activeSeg.rate)) * 100) / 100;
@@ -2648,13 +2555,29 @@ async function confirmEndSessionWithPayment() {
         }
 
         const totals = await calculateTotalAmounts(session.id);
-        
-        const { error } = await supabaseClient.from('sessions').update({
+        const discountAmount = Math.min(Math.max(0, endSessionDiscount || 0), totals.grandTotal);
+        const finalTotal = Math.round((totals.grandTotal - discountAmount) * 100) / 100;
+
+        const basePayload = {
             status: 'completed',
-            ended_at: new Date().toISOString(),
-            amount: totals.grandTotal,
+            ended_at: new Date(nowCorrected()).toISOString(),
+            amount: finalTotal,
             payment_method: selectedPaymentMethod
+        };
+
+        // بنحاول نحفظ الخصم والمبلغ المدفوع كمان؛ لو الأعمدة دي لسه مش
+        // مضافة في قاعدة البيانات (discount / amount_paid)، بنرجع نحفظ
+        // بدونها عشان قفل الجلسة ميفشلش خالص.
+        let { error } = await supabaseClient.from('sessions').update({
+            ...basePayload,
+            discount: discountAmount,
+            amount_paid: endSessionAmountPaid
         }).eq('id', session.id);
+
+        if (error && /column .* does not exist/i.test(error.message || '')) {
+            console.warn('discount/amount_paid columns missing — saving without them:', error.message);
+            ({ error } = await supabaseClient.from('sessions').update(basePayload).eq('id', session.id));
+        }
         
         if (error) {
             console.error('Error ending session:', error);
@@ -2665,11 +2588,14 @@ async function confirmEndSessionWithPayment() {
         
         const savedStationId = stationId;
         
+        // نثبّت قيمة الخصم النهائية (بعد أي clamp) عشان الإيصال يعرضها صح
+        endSessionDiscount = discountAmount;
+        
         delete sessions[stationId];
         renderStationsGrid();
         closeSheet('stationOverlay');
         const pm = paymentMethods.find(p => p.id === selectedPaymentMethod);
-        showToast(`${t('اتقفلت الجلسة —', 'Session closed —')} ${moneyDec(totals.grandTotal)} ${t('ج', 'EGP')} (${pm ? pm.name : ''})`, 'success');
+        showToast(`${t('اتقفلت الجلسة —', 'Session closed —')} ${moneyDec(finalTotal)} ${t('ج', 'EGP')} (${pm ? pm.name : ''})`, 'success');
         
         await renderDashboard();
         if (document.getElementById('view-shift').classList.contains('active')) {
@@ -2769,12 +2695,66 @@ function printReceipt() {
                 </div>
                 ${ordersReceiptHtml}
                 <hr style="border: none; border-top: 1px dashed #ccc; margin: 10px 0;">
+                ${endSessionDiscount > 0 ? `
+                <div style="font-size: 13px; margin-bottom: 4px;">
+                    <div style="display:flex;justify-content:space-between;padding:2px 0;">
+                        <span>${t('الإجمالي قبل الخصم', 'Total Before Discount')}</span>
+                        <span>${moneyDec(totals.grandTotal)} ${t('ج', 'EGP')}</span>
+                    </div>
+                    <div style="display:flex;justify-content:space-between;padding:2px 0;color:#c0392b;">
+                        <span>${t('الخصم', 'Discount')}</span>
+                        <span>- ${moneyDec(endSessionDiscount)} ${t('ج', 'EGP')}</span>
+                    </div>
+                </div>
+                ` : ''}
                 <div style="font-size: 18px; font-weight: 700; color: #000; margin: 8px 0;">
                     <div style="display:flex;justify-content:space-between;">
                         <span>${t('الإجمالي', 'Total')}</span>
-                        <span>${moneyDec(totals.grandTotal)} ${t('ج', 'EGP')}</span>
+                        <span>${moneyDec(Math.max(0, Math.round((totals.grandTotal - endSessionDiscount) * 100) / 100))} ${t('ج', 'EGP')}</span>
                     </div>
                 </div>
+                ${endSessionPrepaidAmount > 0 ? `
+                <div style="font-size: 13px; margin-bottom: 4px;">
+                    <div style="display:flex;justify-content:space-between;padding:2px 0;">
+                        <span>${t('مدفوع مقدماً', 'Paid in Advance')}</span>
+                        <span>- ${moneyDec(endSessionPrepaidAmount)} ${t('ج', 'EGP')}</span>
+                    </div>
+                    <div style="display:flex;justify-content:space-between;padding:2px 0;font-weight:700;border-top:1px dashed #ccc;margin-top:2px;padding-top:4px;">
+                        <span>${t('المتبقي المطلوب', 'Remaining Due')}</span>
+                        <span>${moneyDec(Math.max(0, Math.round((totals.grandTotal - endSessionDiscount - endSessionPrepaidAmount) * 100) / 100))} ${t('ج', 'EGP')}</span>
+                    </div>
+                </div>
+                ` : ''}
+                ${(() => {
+                    const dueNow = Math.max(0, Math.round((totals.grandTotal - endSessionDiscount - endSessionPrepaidAmount) * 100) / 100);
+                    const creditFromPrepaid = Math.round((totals.grandTotal - endSessionDiscount - endSessionPrepaidAmount) * 100) / 100 < 0
+                        ? Math.abs(Math.round((totals.grandTotal - endSessionDiscount - endSessionPrepaidAmount) * 100) / 100)
+                        : 0;
+                    if (creditFromPrepaid > 0) {
+                        return `
+                <div style="font-size: 13px; margin-bottom: 8px;">
+                    <div style="display:flex;justify-content:space-between;padding:2px 0;font-weight:700;color:#1a8a6b;">
+                        <span>${t('باقي للعميل من المقدم', 'Remaining Credit for Customer')}</span>
+                        <span>${moneyDec(creditFromPrepaid)} ${t('ج', 'EGP')}</span>
+                    </div>
+                </div>`;
+                    }
+                    if (endSessionAmountPaid !== null && endSessionAmountPaid !== undefined) {
+                        const diff = Math.round((endSessionAmountPaid - dueNow) * 100) / 100;
+                        return `
+                <div style="font-size: 13px; margin-bottom: 8px;">
+                    <div style="display:flex;justify-content:space-between;padding:2px 0;">
+                        <span>${t('دفع العميل دلوقتي', 'Amount Paid Now')}</span>
+                        <span>${moneyDec(endSessionAmountPaid)} ${t('ج', 'EGP')}</span>
+                    </div>
+                    <div style="display:flex;justify-content:space-between;padding:2px 0;font-weight:700;">
+                        <span>${diff >= 0 ? t('الباقي للعميل', 'Change Due') : t('باقي على العميل', 'Remaining Owed')}</span>
+                        <span>${moneyDec(Math.abs(diff))} ${t('ج', 'EGP')}</span>
+                    </div>
+                </div>`;
+                    }
+                    return '';
+                })()}
                 <div style="font-size: 13px; margin: 8px 0;">
                     <div style="display:flex;justify-content:space-between;padding:2px 0;">
                         <span>${t('طريقة الدفع', 'Payment Method')}</span>
@@ -2837,7 +2817,6 @@ function printReceipt() {
 // ============================================================
 function openExpenseSheet() { document.getElementById('expenseDesc').value = ''; document.getElementById('expenseAmount').value = ''; document.getElementById('expenseError').textContent = ''; openSheet('expenseOverlay'); }
 async function submitExpense() {
-    if (!hasPerm('expenses')) { showToast(t('مفيش صلاحية لتسجيل المصروفات', 'No permission to record expenses'), 'error'); return; }
     const description = document.getElementById('expenseDesc').value.trim();
     const amount = parseFloat(document.getElementById('expenseAmount').value);
     const errEl = document.getElementById('expenseError');
@@ -3013,27 +2992,19 @@ async function renderShiftView() {
                 <div style="display:flex;justify-content:space-between;width:100%;margin-bottom:6px;">
                     <div class="row-title">${dateStr} - ${timeStr}</div>
                     <div style="display:flex;gap:8px;align-items:center;">
-                        ${hasPerm('reports') ? `<div style="display:flex;gap:12px;font-size:12px;color:var(--text-dim);">
+                        <div style="display:flex;gap:12px;font-size:12px;color:var(--text-dim);">
                             <span>${revLabel} <span class="mono" style="color:var(--text);">${money(shiftTotals.revenue)}</span></span>
                             <span>${expLabel} <span class="mono" style="color:var(--text);">${money(shiftTotals.expenses)}</span></span>
-                        </div>` : ''}
-                        ${hasPerm('delete_shift') ? `<button class="btn btn-danger-sm" onclick="event.stopPropagation(); deleteShift('${shift.id}')" title="${t('حذف الشيفت', 'Delete shift')}" style="padding:4px 8px;font-size:11px;">
+                        </div>
+                        <button class="btn btn-danger-sm" onclick="event.stopPropagation(); deleteShift('${shift.id}')" title="${t('حذف الشيفت', 'Delete shift')}" style="padding:4px 8px;font-size:11px;">
                             <i class="fa-solid fa-xmark"></i>
-                        </button>` : ''}
+                        </button>
                     </div>
                 </div>
-                <div style="display:flex;justify-content:space-between;width:100%;margin-bottom:2px;">
-                    <div style="font-size:11.5px;color:var(--text-faint);"><i class="fa-solid fa-door-open" style="margin-inline-end:4px;"></i>${t('اللي فتح الشيفت', 'Opened by')}</div>
-                    <div style="font-size:12px;color:var(--text);font-weight:600;">${escapeHtml(shift.opened_by || t('غير معروف', 'Unknown'))}</div>
-                </div>
-                <div style="display:flex;justify-content:space-between;width:100%;margin-bottom:4px;">
-                    <div style="font-size:11.5px;color:var(--text-faint);"><i class="fa-solid fa-user" style="margin-inline-end:4px;"></i>${t('اللي قفل الشيفت', 'Closed by')}</div>
-                    <div style="font-size:12px;color:var(--text);font-weight:600;">${escapeHtml(shift.closed_by || t('غير معروف', 'Unknown'))}</div>
-                </div>
-                ${hasPerm('reports') ? `<div style="display:flex;justify-content:space-between;width:100%;">
+                <div style="display:flex;justify-content:space-between;width:100%;">
                     <div style="font-size:12px;color:var(--text-faint);">${netLabel}</div>
                     <div class="mono" style="font-weight:700;color:var(--amber);">${money(shiftTotals.profit)} ${t('ج', 'EGP')}</div>
-                </div>` : ''}
+                </div>
             </div>
         `;
     }
@@ -3045,8 +3016,7 @@ async function openNewShift() {
         const { data: created } = await supabaseClient.from('shifts').insert({ 
             business_id: business.id,
             opened_at: new Date().toISOString(),
-            status: 'open',
-            opened_by: currentUser ? (currentUser.name || currentUser.type) : null
+            status: 'open'
         }).select().single();
         currentShift = created;
         showToast(t('تم فتح شيفت جديد', 'New shift opened'), 'success');
@@ -3059,7 +3029,6 @@ async function openNewShift() {
 }
 
 async function deleteShift(shiftId) {
-    if (!hasPerm('delete_shift')) { showToast(t('مفيش صلاحية لحذف الشيفتات', 'No permission to delete shifts'), 'error'); return; }
     if (!confirm(t('هل أنت متأكد من حذف هذا الشيفت؟ سيتم حذف كل الجلسات والمصروفات المرتبطة به فقط.', 'Are you sure you want to delete this shift? Only the sessions and expenses that belong to it will be deleted.'))) return;
     
     try {
@@ -3148,12 +3117,8 @@ async function viewShiftDetails(shiftId) {
     const closedStr = shift.closed_at ? new Date(shift.closed_at).toLocaleString(currentLang === 'ar' ? 'ar-EG' : 'en-US') : '—';
     const extraRows = `
         <div class="list-row"><div class="row-title">${t('وقت الفتح', 'Opened At')}</div><div class="row-value mono">${openedStr}</div></div>
-        <div class="list-row"><div class="row-title">${t('اللي فتح الشيفت', 'Opened By')}</div><div class="row-value" style="font-weight:600;">${escapeHtml(shift.opened_by || t('غير معروف', 'Unknown'))}</div></div>
-        <div class="list-row"><div class="row-title">${t('وقت الإقفال', 'Closed At')}</div><div class="row-value mono">${closedStr}</div></div>
-        <div class="list-row"><div class="row-title">${t('اللي قفل الشيفت', 'Closed By')}</div><div class="row-value" style="font-weight:600;">${escapeHtml(shift.closed_by || t('غير معروف', 'Unknown'))}</div></div>`;
-    document.getElementById('shiftDetailsSummary').innerHTML = hasPerm('reports')
-        ? buildShiftBreakdownHtml(totals, extraRows)
-        : extraRows + `<div class="empty" style="padding:16px 0;"><i class="fa-solid fa-lock"></i>${t('مفيش صلاحية لعرض التفاصيل المالية', 'No permission to view financial details')}</div>`;
+        <div class="list-row"><div class="row-title">${t('وقت الإقفال', 'Closed At')}</div><div class="row-value mono">${closedStr}</div></div>`;
+    document.getElementById('shiftDetailsSummary').innerHTML = buildShiftBreakdownHtml(totals, extraRows);
     openSheet('shiftDetailsOverlay');
 }
 
@@ -3197,13 +3162,40 @@ async function confirmCloseShift() {
 // SETTINGS
 // ============================================================
 function renderSettings() {
-    const qrToggle = document.getElementById('qrOrderingToggle');
-    if (qrToggle) qrToggle.checked = !!business.qr_ordering_enabled;
-
     const expiry = deviceRecord.expiry_date ? new Date(deviceRecord.expiry_date) : null;
     document.getElementById('settingsSubscription').innerHTML = `
         <div class="list-row"><div class="row-title">${t('حالة الجهاز', 'Device Status')}</div><div class="badge ${deviceRecord.revoked ? 'badge-red' : 'badge-teal'}">${deviceRecord.revoked ? t('موقوف', 'Suspended') : t('نشط', 'Active')}</div></div>
         <div class="list-row"><div class="row-title">${t('تاريخ الانتهاء', 'Expiry Date')}</div><div class="row-value mono">${expiry ? expiry.toLocaleDateString(currentLang === 'ar' ? 'ar-EG' : 'en-US') : '—'}</div></div>`;
+
+    // ============================================================
+    // ✅ TOGGLE PIN SECTION — مبني بالكامل من الـ JS عشان يشتغل من غير
+    // ما نحتاج نضيف عناصر ثابتة في الـ HTML يدويًا.
+    // بنستخدم wrapper بـ id ثابت عشان لو renderSettings() اتنادت تاني
+    // (بعد إضافة موظف/صنف مثلاً) منكررش القسم من جديد كل مرة.
+    // ============================================================
+    const pinToggleHtml = `
+        <div class="list-row" style="cursor:pointer;" onclick="toggleSettingsPin()">
+            <div class="row-title">${t('تغيير PIN المالك', 'Change Owner PIN')}</div>
+            <i id="settingsPinChevron" class="fa-solid fa-chevron-down" style="transition:transform .2s;color:var(--text-dim);"></i>
+        </div>
+        <div id="settingsChangePin" style="display:${settingsPinExpanded ? 'block' : 'none'};padding:10px 4px 4px;">
+            <div style="margin-bottom:10px;">
+                <label style="display:block;font-size:12px;color:var(--text-dim);margin-bottom:4px;">${t('الـ PIN الحالي', 'Current PIN')}</label>
+                <input type="password" id="currentPinInput" class="mono" inputmode="numeric" maxlength="6" placeholder="••••" style="width:100%;">
+            </div>
+            <div style="margin-bottom:10px;">
+                <label style="display:block;font-size:12px;color:var(--text-dim);margin-bottom:4px;">${t('الـ PIN الجديد (4-6 أرقام)', 'New PIN (4-6 digits)')}</label>
+                <input type="password" id="newPinInput" class="mono" inputmode="numeric" maxlength="6" placeholder="••••" style="width:100%;">
+            </div>
+            <div id="changePinError" style="color:#ff6b6b;font-size:12px;margin-bottom:10px;"></div>
+            <button class="btn btn-teal btn-block" onclick="changeOwnerPin()">${t('حفظ الـ PIN الجديد', 'Save New PIN')}</button>
+        </div>`;
+    let pinToggleWrap = document.getElementById('settingsPinToggleWrap');
+    if (!pinToggleWrap) {
+        document.getElementById('settingsSubscription').insertAdjacentHTML('afterend', `<div id="settingsPinToggleWrap"></div>`);
+        pinToggleWrap = document.getElementById('settingsPinToggleWrap');
+    }
+    pinToggleWrap.innerHTML = pinToggleHtml;
 
     const groupedMenu = {};
     menuItems.forEach(item => {
@@ -3241,16 +3233,11 @@ function renderSettings() {
                 <div class="row-title">${escapeHtml(e.name)}</div>
                 <div class="row-actions">
                     <div class="badge ${e.active ? 'badge-teal' : 'badge-red'}">${e.active ? t('نشط', 'Active') : t('موقوف', 'Inactive')}</div>
-                    <button class="btn btn-ghost btn-sm" onclick="editEmployee('${e.id}')" title="${t('تعديل الصلاحيات', 'Edit permissions')}">
-                        <i class="fa-solid fa-pen"></i>
-                    </button>
                     <button class="btn btn-danger-sm" onclick="deleteEmployee('${e.id}')" title="${t('حذف الموظف', 'Delete employee')}">
                         <i class="fa-solid fa-trash"></i>
                     </button>
                 </div>
             </div>`).join('');
-
-    applySettingsSectionVisibility();
     
     // ✅ تحديث حالة الـ Toggle (PIN)
     const pinSection = document.getElementById('settingsChangePin');
@@ -3364,7 +3351,6 @@ async function submitCreateBusinessFromSetup() {
 }
 
 function openMenuItemSheet() {
-    if (!hasPerm('menu')) { showToast(t('مفيش صلاحية لإدارة قائمة الأكل والمشروبات', 'No permission to manage the menu'), 'error'); return; }
     document.getElementById('menuItemId').value = '';
     document.getElementById('menuItemName').value = '';
     document.getElementById('menuItemPrice').value = '';
@@ -3376,7 +3362,6 @@ function openMenuItemSheet() {
 }
 
 function editMenuItem(itemId) {
-    if (!hasPerm('menu')) { showToast(t('مفيش صلاحية لتعديل قائمة الأكل والمشروبات', 'No permission to edit the menu'), 'error'); return; }
     const item = menuItems.find(m => m.id === itemId);
     if (!item) return;
     document.getElementById('menuItemId').value = item.id;
@@ -3390,7 +3375,6 @@ function editMenuItem(itemId) {
 }
 
 async function submitMenuItem() {
-    if (!hasPerm('menu')) { showToast(t('مفيش صلاحية لتعديل قائمة الأكل والمشروبات', 'No permission to edit the menu'), 'error'); return; }
     const id = document.getElementById('menuItemId').value;
     const name = document.getElementById('menuItemName').value.trim();
     const price = parseFloat(document.getElementById('menuItemPrice').value);
@@ -3451,7 +3435,6 @@ async function submitMenuItem() {
 }
 
 async function deleteMenuItemById(itemId) {
-    if (!hasPerm('menu')) { showToast(t('مفيش صلاحية لحذف أصناف القائمة', 'No permission to delete menu items'), 'error'); return; }
     if (!confirm(t('هل أنت متأكد من حذف هذا الصنف؟', 'Are you sure you want to delete this item?'))) return;
     try {
         const success = await deleteMenuItemFromDB(itemId);
@@ -3478,101 +3461,34 @@ async function deleteMenuItem() {
 }
 
 function openEmployeeSheet() {
-    if (!hasPerm('employees')) { showToast(t('مفيش صلاحية لإدارة الموظفين', 'No permission to manage employees'), 'error'); return; }
-    document.getElementById('employeeId').value = '';
     document.getElementById('employeeName').value = '';
     document.getElementById('employeePin').value = '';
     document.getElementById('employeeError').textContent = '';
     document.getElementById('permStations').checked = true;
     document.getElementById('permShift').checked = false;
     document.getElementById('permSettings').checked = false;
-    document.getElementById('permPrices').checked = false;
-    document.getElementById('permMenu').checked = false;
-    document.getElementById('permEmployees').checked = false;
-    document.getElementById('permCancelSession').checked = false;
-    document.getElementById('permTransferSession').checked = true;
-    document.getElementById('permExpenses').checked = false;
-    document.getElementById('permReports').checked = false;
-    document.getElementById('permDeleteShift').checked = false;
-    document.getElementById('employeeDeleteBtn').style.display = 'none';
-    document.getElementById('employeeSheetTitle').textContent = t('إضافة موظف', 'Add Employee');
     openSheet('employeeOverlay');
 }
-
-function editEmployee(employeeId) {
-    if (!hasPerm('employees')) { showToast(t('مفيش صلاحية لإدارة الموظفين', 'No permission to manage employees'), 'error'); return; }
-    const emp = employees.find(e => e.id === employeeId);
-    if (!emp) return;
-    const perms = emp.permissions || {};
-    document.getElementById('employeeId').value = emp.id;
-    document.getElementById('employeeName').value = emp.name || '';
-    document.getElementById('employeePin').value = emp.pin || '';
-    document.getElementById('employeeError').textContent = '';
-    document.getElementById('permStations').checked = !!perms.stations;
-    document.getElementById('permShift').checked = !!perms.shift;
-    document.getElementById('permSettings').checked = !!perms.settings;
-    document.getElementById('permPrices').checked = !!perms.prices;
-    document.getElementById('permMenu').checked = !!perms.menu;
-    document.getElementById('permEmployees').checked = !!perms.employees;
-    document.getElementById('permCancelSession').checked = !!perms.cancel_session;
-    document.getElementById('permTransferSession').checked = !!perms.transfer_session;
-    document.getElementById('permExpenses').checked = !!perms.expenses;
-    document.getElementById('permReports').checked = !!perms.reports;
-    document.getElementById('permDeleteShift').checked = !!perms.delete_shift;
-    document.getElementById('employeeDeleteBtn').style.display = 'flex';
-    document.getElementById('employeeSheetTitle').textContent = t('تعديل موظف', 'Edit Employee');
-    openSheet('employeeOverlay');
-}
-
 async function submitEmployee() {
-    if (!hasPerm('employees')) { showToast(t('مفيش صلاحية لإدارة الموظفين', 'No permission to manage employees'), 'error'); return; }
-    const id = document.getElementById('employeeId').value;
     const name = document.getElementById('employeeName').value.trim();
     const pin = document.getElementById('employeePin').value.trim();
     if (!name || !/^\d{4,6}$/.test(pin)) { document.getElementById('employeeError').textContent = t('اكتب اسم و PIN من 4 لـ 6 أرقام.', 'Enter name and 4-6 digit PIN.'); return; }
     const permissions = {
         stations: document.getElementById('permStations').checked,
         shift: document.getElementById('permShift').checked,
-        settings: document.getElementById('permSettings').checked,
-        prices: document.getElementById('permPrices').checked,
-        menu: document.getElementById('permMenu').checked,
-        employees: document.getElementById('permEmployees').checked,
-        cancel_session: document.getElementById('permCancelSession').checked,
-        transfer_session: document.getElementById('permTransferSession').checked,
-        expenses: document.getElementById('permExpenses').checked,
-        reports: document.getElementById('permReports').checked,
-        delete_shift: document.getElementById('permDeleteShift').checked
+        settings: document.getElementById('permSettings').checked
     };
-
-    if (id) {
-        const { data, error } = await supabaseClient.from('employees').update({ name, pin, permissions }).eq('id', id).eq('business_id', business.id).select();
-        if (error || !data || data.length === 0) {
-            document.getElementById('employeeError').textContent = t('فشل تحديث الموظف، حاول تاني.', 'Failed to update employee, try again.');
-            console.error('Error updating employee:', error);
-            return;
-        }
-        closeSheet('employeeOverlay'); showToast(t('تم تحديث الموظف', 'Employee updated'), 'success');
-    } else {
-        const { data, error } = await supabaseClient.from('employees').insert({ business_id: business.id, name, pin, permissions }).select();
-        if (error || !data || data.length === 0) {
-            document.getElementById('employeeError').textContent = t('فشل حفظ الموظف، حاول تاني.', 'Failed to save employee, try again.');
-            console.error('Error adding employee:', error);
-            return;
-        }
-        closeSheet('employeeOverlay'); showToast(t('تمت إضافة الموظف', 'Employee added'), 'success');
+    const { data, error } = await supabaseClient.from('employees').insert({ business_id: business.id, name, pin, permissions }).select();
+    if (error || !data || data.length === 0) {
+        document.getElementById('employeeError').textContent = t('فشل حفظ الموظف، حاول تاني.', 'Failed to save employee, try again.');
+        console.error('Error adding employee:', error);
+        return;
     }
+    closeSheet('employeeOverlay'); showToast(t('تمت إضافة الموظف', 'Employee added'), 'success');
     await loadEmployees(); renderSettings();
 }
 
-async function deleteEmployeeFromSheet() {
-    const id = document.getElementById('employeeId').value;
-    if (!id) return;
-    closeSheet('employeeOverlay');
-    await deleteEmployee(id);
-}
-
 async function deleteEmployee(employeeId) {
-    if (!hasPerm('employees')) { showToast(t('مفيش صلاحية لحذف الموظفين', 'No permission to delete employees'), 'error'); return; }
     if (!confirm(t('هل أنت متأكد من حذف هذا الموظف؟', 'Are you sure you want to delete this employee?'))) return;
     try {
         const { error } = await supabaseClient.from('employees').delete().eq('id', employeeId).eq('business_id', business.id);
@@ -3636,8 +3552,6 @@ async function refreshStationSheetContent(stationId) {
     const activeSeg = segments.find(s => !s.ended_at);
     const totals = await calculateTotalAmounts(session.id);
     const currentEstimate = await getCurrentSegmentEstimate(session.id);
-    const liveGrandTotal = Math.round((totals.grandTotal + currentEstimate.amount) * 100) / 100;
-    activeSessionBaseTotal = totals.grandTotal;
     
     const currentMode = activeSeg ? activeSeg.mode : (session.current_mode || 'single');
     const currentRate = activeSeg ? activeSeg.rate : (st.single_rate || 20);
@@ -3656,6 +3570,8 @@ async function refreshStationSheetContent(stationId) {
     activeSessionOrders = orders || [];
 
     const activeSegStart = activeSeg ? activeSeg.started_at : session.started_at;
+    const liveEarnedNow = activeSeg ? Math.round((Math.max(0, (nowCorrected() - new Date(activeSeg.started_at)) / 3600000) * Number(activeSeg.rate)) * 100) / 100 : 0;
+    const liveGrandTotal = Math.round((totals.grandTotal + liveEarnedNow) * 100) / 100;
     
     body.innerHTML = `
         <div style="text-align:center;margin-bottom:12px;">
@@ -3682,7 +3598,7 @@ async function refreshStationSheetContent(stationId) {
             </div>
             <div style="background:var(--bg-sunken);border-radius:var(--radius-sm);padding:8px;text-align:center;">
                 <div style="font-size:10px;color:var(--text-dim);">${t('الإجمالي الكلي', 'Grand Total')}</div>
-                <div class="mono" style="font-size:18px;font-weight:700;color:var(--amber);" id="overallTotalAmount">${moneyDec(liveGrandTotal)}</div>
+                <div class="mono" style="font-size:18px;font-weight:700;color:var(--amber);" id="overallTotalAmount" data-base-total="${totals.grandTotal}">${moneyDec(liveGrandTotal)}</div>
             </div>
         </div>
         
@@ -3704,7 +3620,7 @@ async function refreshStationSheetContent(stationId) {
             <div class="segment-row"><span class="seg-label">${t('إجمالي Single', 'Single Total')}</span><span class="seg-value seg-mode-single">${moneyDec(totals.singleTotal)}</span></div>
             <div class="segment-row"><span class="seg-label">${t('إجمالي Multi', 'Multi Total')}</span><span class="seg-value seg-mode-multi">${moneyDec(totals.multiTotal)}</span></div>
             <div class="segment-row"><span class="seg-label">${t('الطلبات', 'Orders')}</span><span class="seg-value">${moneyDec(totals.ordersTotal)}</span></div>
-            <div class="segment-row segment-total"><span class="seg-label">${t('الإجمالي الكلي', 'Grand Total')}</span><span class="seg-value" style="color:var(--amber);">${moneyDec(liveGrandTotal)}</span></div>
+            <div class="segment-row segment-total"><span class="seg-label">${t('الإجمالي الكلي', 'Grand Total')}</span><span class="seg-value" style="color:var(--amber);">${moneyDec(totals.grandTotal)}</span></div>
         </div>
         ` : ''}
         
