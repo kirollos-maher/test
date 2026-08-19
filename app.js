@@ -47,6 +47,7 @@ function updateTexts() {
         el.textContent = currentLang === 'ar' ? el.dataset.ar : el.dataset.en;
     });
     
+    // تحديث أسماء الأشهر
     updateMonthNames();
     
     renderStationsGrid();
@@ -134,6 +135,7 @@ let countdownTimers = {};
 let countdownAlerts = {};
 let categoryToggleState = {};
 let qrOrders = {};
+let qrOrderingEnabled = false;
 
 // ============================================================
 // PIN TOGGLE
@@ -222,6 +224,7 @@ async function handleSetupContinue() {
         if (error || !biz) { errEl.textContent = t('مفيش نشاط بالكود ده.', 'No business found with this code.'); return; }
         business = biz;
         localStorage.setItem('psr_business_code', code);
+        qrOrderingEnabled = !!business.qr_ordering_enabled;
 
         const deviceId = getDeviceId();
         let dev = null;
@@ -376,6 +379,7 @@ async function tryAutoResume() {
         const { data: biz } = await supabaseClient.from('businesses').select('*').eq('code', code).single();
         if (!biz) return;
         business = biz;
+        qrOrderingEnabled = !!business.qr_ordering_enabled;
         const savedDevice = localStorage.getItem('psr_device_record');
         let dev = null;
         if (savedDevice) {
@@ -441,6 +445,7 @@ async function enterMainApp() {
     await recoverActiveSession();
     setInterval(syncServerClock, 5 * 60 * 1000);
 
+    // QR pending orders reminder every minute
     setInterval(() => {
         const pendingCount = totalPendingQrOrders();
         if (pendingCount > 0) {
@@ -666,6 +671,7 @@ function handleQrOrderChange(payload) {
     const row = payload.new && Object.keys(payload.new).length ? payload.new : payload.old;
     if (!row) return;
 
+    // Remove existing copy
     Object.keys(qrOrders).forEach(stId => {
         qrOrders[stId] = (qrOrders[stId] || []).filter(o => o.id !== row.id);
         if (qrOrders[stId].length === 0) delete qrOrders[stId];
@@ -676,6 +682,7 @@ function handleQrOrderChange(payload) {
         if (!qrOrders[stId]) qrOrders[stId] = [];
         qrOrders[stId].push(payload.new);
 
+        // Trigger notification
         if (payload.eventType === 'INSERT') {
             const station = stations.find(s => s.id === stId);
             const deviceName = station ? (station.name || t('جهاز', 'Device') + ' ' + station.number) : t('جهاز', 'Device');
@@ -1711,7 +1718,7 @@ function renderSettingsStations() {
         el.innerHTML = `<div class="empty"><i class="fa-solid fa-gamepad"></i>${t('مفيش أجهزة — ضيف أول جهاز', 'No devices — add your first device')}</div>`;
         return;
     }
-    const qrEnabled = business && business.qr_ordering_enabled;
+    const qrEnabled = qrOrderingEnabled;
     el.innerHTML = stations.map(st => {
         const displayName = st.name ? st.name : t('جهاز', 'Device') + ' ' + st.number;
         return `<div class="list-row">
@@ -4017,7 +4024,7 @@ function openStationQrSheet(stationId) {
     document.getElementById('stationQrTitle').textContent = displayName;
     const url = getOrderPageUrl(st);
     const qrImg = 'https://api.qrserver.com/v1/create-qr-code/?size=300x300&margin=8&data=' + encodeURIComponent(url);
-    const disabledNote = business.qr_ordering_enabled ? '' :
+    const disabledNote = qrOrderingEnabled ? '' :
         `<div class="empty" style="margin-bottom:10px;color:var(--red);"><i class="fa-solid fa-triangle-exclamation"></i>${t('خدمة الطلب عبر QR متوقفة حاليًا — فعّلها من الإعدادات.', 'QR ordering is currently disabled — enable it from Settings.')}</div>`;
     document.getElementById('stationQrBody').innerHTML = `
         ${disabledNote}
@@ -4036,8 +4043,12 @@ async function toggleQrOrdering(enabled) {
         const { error } = await supabaseClient.from('businesses').update({ qr_ordering_enabled: enabled }).eq('id', business.id);
         if (error) throw error;
         business.qr_ordering_enabled = enabled;
+        qrOrderingEnabled = enabled;
         showToast(enabled ? t('تم تفعيل الطلب عبر QR', 'QR ordering enabled') : t('تم تعطيل الطلب عبر QR', 'QR ordering disabled'), 'success');
         renderSettingsStations(); // refresh to show/hide QR buttons
+        // Also update the toggle state in the settings UI
+        const toggle = document.getElementById('qrOrderingToggle');
+        if (toggle) toggle.checked = enabled;
     } catch (e) {
         console.error('Error toggling qr ordering:', e);
         document.getElementById('qrOrderingToggle').checked = !enabled;
