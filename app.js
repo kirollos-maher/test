@@ -47,7 +47,6 @@ function updateTexts() {
         el.textContent = currentLang === 'ar' ? el.dataset.ar : el.dataset.en;
     });
     
-    // تحديث أسماء الأشهر
     updateMonthNames();
     
     renderStationsGrid();
@@ -225,6 +224,7 @@ async function handleSetupContinue() {
         business = biz;
         localStorage.setItem('psr_business_code', code);
         qrOrderingEnabled = !!business.qr_ordering_enabled;
+        localStorage.setItem('psr_qr_ordering_enabled', JSON.stringify(qrOrderingEnabled));
 
         const deviceId = getDeviceId();
         let dev = null;
@@ -367,6 +367,7 @@ function switchBusiness() {
     stopRealtimeAndTimers();
     localStorage.removeItem('psr_business_code');
     localStorage.removeItem('psr_device_record');
+    localStorage.removeItem('psr_qr_ordering_enabled');
     business = null; deviceRecord = null; currentUser = null;
     document.getElementById('setupBusinessCode').value = '';
     showScreen('setupScreen');
@@ -380,6 +381,7 @@ async function tryAutoResume() {
         if (!biz) return;
         business = biz;
         qrOrderingEnabled = !!business.qr_ordering_enabled;
+        localStorage.setItem('psr_qr_ordering_enabled', JSON.stringify(qrOrderingEnabled));
         const savedDevice = localStorage.getItem('psr_device_record');
         let dev = null;
         if (savedDevice) {
@@ -1718,6 +1720,7 @@ function renderSettingsStations() {
         el.innerHTML = `<div class="empty"><i class="fa-solid fa-gamepad"></i>${t('مفيش أجهزة — ضيف أول جهاز', 'No devices — add your first device')}</div>`;
         return;
     }
+    // Use the saved qrOrderingEnabled state
     const qrEnabled = qrOrderingEnabled;
     el.innerHTML = stations.map(st => {
         const displayName = st.name ? st.name : t('جهاز', 'Device') + ' ' + st.number;
@@ -4044,6 +4047,7 @@ async function toggleQrOrdering(enabled) {
         if (error) throw error;
         business.qr_ordering_enabled = enabled;
         qrOrderingEnabled = enabled;
+        localStorage.setItem('psr_qr_ordering_enabled', JSON.stringify(enabled));
         showToast(enabled ? t('تم تفعيل الطلب عبر QR', 'QR ordering enabled') : t('تم تعطيل الطلب عبر QR', 'QR ordering disabled'), 'success');
         renderSettingsStations(); // refresh to show/hide QR buttons
         // Also update the toggle state in the settings UI
