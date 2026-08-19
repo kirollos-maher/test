@@ -127,8 +127,11 @@ let endingSessionInProgress = false;
 let currentEndSessionTotals = null;
 let endSessionDiscount = 0;
 let endSessionAmountPaid = null;
-// ✅ مبلغ الدفع المقدم
+// ✅ المبلغ اللي العميل دفعه مقدماً عند بدء الجلسة (بيتخصم من الحساب عند الإنهاء)
 let endSessionPrepaidAmount = 0;
+// ✅ حالة طلبات العملاء عبر QR
+let qrOrdersPendingByStation = {};
+let qrOrdersPendingTotal = 0;
 let sessionSegmentsCache = {};
 let activeSegmentCache = {};
 let pendingSwitch = false;
@@ -462,6 +465,7 @@ async function loadAllData() {
     renderStationsGrid();
     renderSettingsStations();
     renderSettingsPaymentMethods();
+    refreshQrOrdersBadge();
 }
 
 async function loadStations() {
@@ -897,6 +901,7 @@ function subscribeRealtime() {
         .on('postgres_changes', { event: '*', schema: 'public', table: 'session_orders', filter: 'business_id=eq.' + business.id }, handleOrderChange)
         .on('postgres_changes', { event: '*', schema: 'public', table: 'stations', filter: 'business_id=eq.' + business.id }, handleStationChange)
         .on('postgres_changes', { event: '*', schema: 'public', table: 'session_segments', filter: 'business_id=eq.' + business.id }, handleSegmentChange)
+        .on('postgres_changes', { event: '*', schema: 'public', table: 'qr_orders', filter: 'business_id=eq.' + business.id }, handleQrOrderChange)
         .subscribe();
 }
 
@@ -934,6 +939,27 @@ function handleSessionChange(payload) {
 function handleOrderChange(payload) {
     const row = payload.new && Object.keys(payload.new).length ? payload.new : payload.old;
     if (activeStationId && row && row.session_id === (sessions[activeStationId] || {}).id) renderStationOrdersSection();
+}
+
+// ============================================================
+// ✅ طلبات العملاء عبر QR — تغيير لحظي
+// ============================================================
+function handleQrOrderChange(payload) {
+    refreshQrOrdersBadge();
+
+    if (payload.eventType === 'INSERT' && payload.new && payload.new.status === 'pending') {
+        const st = stations.find(s => s.id === payload.new.station_id);
+        const stName = st ? (st.name || t('جهاز', 'Device') + ' ' + st.number) : t('جهاز', 'Device');
+        if (typeof playRingSound === 'function') {
+            try { playRingSound('warning'); } catch (e) {}
+        }
+        showToast(t(`🛎️ طلب جديد من ${stName}`, `🛎️ New order from ${stName}`), 'warning');
+    }
+
+    const ordersOverlay = document.getElementById('qrOrdersOverlay');
+    if (ordersOverlay && ordersOverlay.classList.contains('show')) {
+        renderQrOrdersList();
+    }
 }
 
 function handleStationChange() {
@@ -1168,12 +1194,308 @@ function renderStationsGrid() {
         } else {
             timerDisplay = `<div class="station-rate">${t('Single', 'Single')} ${money(st.single_rate || 20)} / ${t('Multi', 'Multi')} ${money(st.multi_rate || 30)} ${t('ج/ساعة', 'EGP/hr')}</div>`;
         }
+
+        const qrEnabled = !!(business && business.qr_ordering_enabled);
+        const pendingCount = qrOrdersPendingByStation[st.id] || 0;
+        const qrButtonHtml = qrEnabled ? `
+            <button class="icon-btn" style="position:absolute;top:8px;inset-inline-start:8px;z-index:2;" onclick="event.stopPropagation(); openStationQr('${st.id}')" title="${t('كود QR', 'QR Code')}">
+                <i class="fa-solid fa-qrcode"></i>
+            </button>` : '';
+        const qrBadgeHtml = pendingCount > 0 ? `<div class="qr-order-badge">${pendingCount}</div>` : '';
         
-        return `<div class="station-card ${occupied ? 'occupied' : ''}" onclick="openStationSheet('${st.id}')">
+        return `<div class="station-card ${occupied ? 'occupied' : ''} ${pendingCount > 0 ? 'has-qr-order' : ''}" onclick="openStationSheet('${st.id}')">
+            ${qrButtonHtml}
+            ${qrBadgeHtml}
             <div><div class="station-num">${displayName}</div><div class="station-status">${statusText} ${modeBadge} ${timerBadge}</div></div>
             ${timerDisplay}
         </div>`;
     }).join('');
+}
+
+// ============================================================
+// ✅ QR CUSTOMER ORDERING
+// ============================================================
+
+// تحديث حالة الزرار في الإعدادات حسب قيمة business.qr_ordering_enabled
+function initQrOrderingUI() {
+    const cb = document.getElementById('qrOrderingToggle');
+    if (cb) cb.checked = !!(business && business.qr_ordering_enabled);
+}
+
+// تفعيل / إيقاف الطلب عبر QR من الإعدادات
+async function toggleQrOrdering(checked) {
+    if (!business) return;
+    const cb = document.getElementById('qrOrderingToggle');
+    try {
+        const { error } = await supabaseClient.from('businesses').update({ qr_ordering_enabled: checked }).eq('id', business.id);
+
+        if (error && /column .* does not exist/i.test(error.message || '')) {
+            console.warn('qr_ordering_enabled column missing:', error.message);
+            showToast(t('لازم تضيف عمود qr_ordering_enabled في جدول businesses الأول', 'Add the qr_ordering_enabled column to the businesses table first'), 'error');
+            if (cb) cb.checked = !checked;
+            return;
+        }
+        if (error) throw error;
+
+        business.qr_ordering_enabled = checked;
+        showToast(checked ? t('تم تفعيل الطلب عبر QR', 'QR ordering enabled') : t('تم إيقاف الطلب عبر QR', 'QR ordering disabled'), 'success');
+        renderStationsGrid();
+    } catch (e) {
+        console.error('Error toggling QR ordering:', e);
+        showToast(t('فشل تحديث الإعداد', 'Failed to update setting'), 'error');
+        if (cb) cb.checked = !checked;
+    }
+}
+
+// توليد كود QR فريد للجهاز (لو مش موجود) وحفظه في قاعدة البيانات
+async function ensureStationQrToken(station) {
+    if (station.qr_token) return station.qr_token;
+
+    const token = (window.crypto && crypto.randomUUID)
+        ? crypto.randomUUID().replace(/-/g, '')
+        : ('qr' + Date.now().toString(36) + Math.random().toString(36).slice(2));
+
+    try {
+        const { data, error } = await supabaseClient.from('stations').update({ qr_token: token }).eq('id', station.id).select().single();
+
+        if (error && /column .* does not exist/i.test(error.message || '')) {
+            console.warn('qr_token column missing:', error.message);
+            showToast(t('لازم تضيف عمود qr_token في جدول stations الأول', 'Add the qr_token column to the stations table first'), 'error');
+            return null;
+        }
+        if (error) throw error;
+
+        station.qr_token = data.qr_token;
+        return station.qr_token;
+    } catch (e) {
+        console.error('Error creating QR token:', e);
+        showToast(t('فشل توليد كود QR', 'Failed to generate QR code'), 'error');
+        return null;
+    }
+}
+
+// رابط صفحة الطلب (order.html) بجوار index.html على نفس الاستضافة
+function getOrderPageBaseUrl() {
+    return location.origin + location.pathname.replace(/[^\/]*$/, '') + 'order.html';
+}
+
+// فتح شيت كود QR الخاص بجهاز معيّن
+async function openStationQr(stationId) {
+    const st = stations.find(s => s.id === stationId);
+    if (!st) return;
+
+    const titleEl = document.getElementById('stationQrTitle');
+    if (titleEl) titleEl.textContent = st.name || (t('جهاز', 'Device') + ' ' + st.number);
+
+    const body = document.getElementById('stationQrBody');
+    body.innerHTML = `<div style="padding:30px 0;color:var(--text-dim);"><i class="fa-solid fa-circle-notch fa-spin"></i> ${t('جاري التجهيز...', 'Preparing...')}</div>`;
+    openSheet('stationQrOverlay');
+
+    const token = await ensureStationQrToken(st);
+    if (!token) {
+        body.innerHTML = `<div class="error-text">${t('تعذر توليد كود QR', 'Could not generate QR code')}</div>`;
+        return;
+    }
+
+    const orderUrl = getOrderPageBaseUrl() + '?t=' + encodeURIComponent(token);
+    const qrImgUrl = 'https://api.qrserver.com/v1/create-qr-code/?size=220x220&data=' + encodeURIComponent(orderUrl);
+
+    body.innerHTML = `
+        <div class="qr-code-box"><img src="${qrImgUrl}" alt="QR"></div>
+        <div class="qr-link-box">${escapeHtml(orderUrl)}</div>
+        <button class="btn btn-ghost btn-block" style="margin-top:12px;" onclick="window.open('${orderUrl}', '_blank')">
+            <i class="fa-solid fa-arrow-up-right-from-square"></i> ${t('فتح صفحة الطلب', 'Open Order Page')}
+        </button>
+    `;
+}
+
+// تحديث عداد الجرس في الهيدر + خريطة الطلبات المعلّقة لكل جهاز
+async function refreshQrOrdersBadge() {
+    if (!business) return;
+    try {
+        const { data, error } = await supabaseClient
+            .from('qr_orders')
+            .select('id, station_id')
+            .eq('business_id', business.id)
+            .eq('status', 'pending');
+
+        if (error) {
+            if (/relation .* does not exist/i.test(error.message || '')) return; // جدول qr_orders لسه مش متعمل
+            throw error;
+        }
+
+        qrOrdersPendingByStation = {};
+        (data || []).forEach(o => {
+            qrOrdersPendingByStation[o.station_id] = (qrOrdersPendingByStation[o.station_id] || 0) + 1;
+        });
+        qrOrdersPendingTotal = (data || []).length;
+
+        updateQrBellBadge();
+        renderStationsGrid();
+    } catch (e) {
+        console.error('Error refreshing QR orders badge:', e);
+    }
+}
+
+function updateQrBellBadge() {
+    const badge = document.getElementById('headerBellBadge');
+    if (!badge) return;
+    if (qrOrdersPendingTotal > 0) {
+        badge.style.display = 'flex';
+        badge.textContent = qrOrdersPendingTotal > 99 ? '99+' : String(qrOrdersPendingTotal);
+    } else {
+        badge.style.display = 'none';
+    }
+}
+
+// فتح شيت طلبات العملاء (اللي جايه من الجرس)
+async function openQrOrdersSheet() {
+    openSheet('qrOrdersOverlay');
+    await renderQrOrdersList();
+}
+
+async function renderQrOrdersList() {
+    const body = document.getElementById('qrOrdersBody');
+    if (!body) return;
+    body.innerHTML = `<div style="padding:20px;text-align:center;color:var(--text-dim);"><i class="fa-solid fa-circle-notch fa-spin"></i></div>`;
+
+    try {
+        const { data, error } = await supabaseClient
+            .from('qr_orders')
+            .select('*')
+            .eq('business_id', business.id)
+            .eq('status', 'pending')
+            .order('created_at');
+
+        if (error) {
+            if (/relation .* does not exist/i.test(error.message || '')) {
+                body.innerHTML = `<div class="empty">${t('نظام طلبات QR لسه مش متعمل في قاعدة البيانات', 'QR orders system not set up in the database yet')}</div>`;
+                return;
+            }
+            throw error;
+        }
+
+        if (!data || data.length === 0) {
+            body.innerHTML = `<div class="empty"><i class="fa-solid fa-bell-slash"></i> ${t('مفيش طلبات جديدة دلوقتي', 'No new orders right now')}</div>`;
+            return;
+        }
+
+        body.innerHTML = data.map(o => {
+            const st = stations.find(s => s.id === o.station_id);
+            const stName = st ? (st.name || t('جهاز', 'Device') + ' ' + st.number) : t('جهاز محذوف', 'Deleted device');
+            const timeStr = new Date(o.created_at).toLocaleTimeString(currentLang === 'ar' ? 'ar-EG' : 'en-US', { hour: '2-digit', minute: '2-digit' });
+            const items = Array.isArray(o.items) ? o.items : [];
+            const total = items.reduce((sum, l) => sum + (Number(l.qty) || 0) * (Number(l.price) || 0), 0);
+
+            return `
+                <div class="qr-order-item">
+                    <div class="qr-order-head">
+                        <span class="qr-order-station">${escapeHtml(stName)}</span>
+                        <span class="qr-order-time">${timeStr}</span>
+                    </div>
+                    <div class="qr-order-lines">
+                        ${items.map(l => `<div><span>${escapeHtml(l.name)} × ${l.qty}</span><span class="mono">${moneyDec((Number(l.qty)||0) * (Number(l.price)||0))} ${t('ج', 'EGP')}</span></div>`).join('')}
+                        <div style="display:flex;justify-content:space-between;font-weight:700;padding-top:4px;"><span>${t('الإجمالي', 'Total')}</span><span class="mono">${moneyDec(total)} ${t('ج', 'EGP')}</span></div>
+                    </div>
+                    ${o.note ? `<div class="qr-order-note">📝 ${escapeHtml(o.note)}</div>` : ''}
+                    <div class="qr-order-actions">
+                        <button class="btn btn-amber" onclick="acceptQrOrder('${o.id}')"><i class="fa-solid fa-check"></i> ${t('قبول وإضافة للجلسة', 'Accept & Add to Session')}</button>
+                        <button class="btn btn-cancel" onclick="rejectQrOrder('${o.id}')"><i class="fa-solid fa-xmark"></i> ${t('رفض', 'Reject')}</button>
+                    </div>
+                </div>`;
+        }).join('');
+    } catch (e) {
+        console.error('Error loading QR orders:', e);
+        body.innerHTML = `<div class="error-text">${t('فشل تحميل الطلبات', 'Failed to load orders')}</div>`;
+    }
+}
+
+// قبول طلب QR: بيضيف أصنافه لجدول session_orders الخاص بالجلسة الشغالة على
+// نفس الجهاز، من غير ما يلمس activeSessionOrders أو أي حسابات تانية —
+// وبعدين بيعمل refreshStationSheetContent لو شاشة الجهاز ده مفتوحة عشان
+// يتزامن الإجمالي والطلبات تلقائيًا زي أي إضافة عادية.
+async function acceptQrOrder(qrOrderId) {
+    try {
+        const { data: order, error: fetchErr } = await supabaseClient.from('qr_orders').select('*').eq('id', qrOrderId).single();
+        if (fetchErr || !order) {
+            showToast(t('تعذر تحميل الطلب', 'Could not load the order'), 'error');
+            return;
+        }
+
+        const session = sessions[order.station_id];
+        if (!session) {
+            showToast(t('لا توجد جلسة شغالة على الجهاز ده دلوقتي', 'No active session on this device right now'), 'error');
+            return;
+        }
+
+        const items = Array.isArray(order.items) ? order.items : [];
+        if (items.length === 0) {
+            showToast(t('الطلب فاضي', 'Order is empty'), 'error');
+            return;
+        }
+
+        const { data: existingOrders } = await supabaseClient.from('session_orders').select('*').eq('session_id', session.id);
+        const existingList = existingOrders || [];
+
+        for (const line of items) {
+            const menuItem = menuItems.find(m => String(m.id) === String(line.id));
+            const itemName = menuItem ? menuItem.name : line.name;
+            const unitPrice = menuItem ? Number(menuItem.price) : (Number(line.price) || 0);
+            const qty = Math.max(1, Number(line.qty) || 1);
+
+            const existing = existingList.find(o => menuItem
+                ? String(o.menu_item_id) === String(menuItem.id)
+                : (o.item_name === itemName && Number(o.unit_price) === unitPrice));
+
+            if (existing) {
+                await supabaseClient.from('session_orders').update({ quantity: Number(existing.quantity || 0) + qty }).eq('id', existing.id);
+                existing.quantity = Number(existing.quantity || 0) + qty;
+            } else {
+                let insertPayload = {
+                    business_id: business.id,
+                    session_id: session.id,
+                    menu_item_id: menuItem ? menuItem.id : null,
+                    item_name: itemName,
+                    unit_price: unitPrice,
+                    quantity: qty
+                };
+                let { error: insErr } = await supabaseClient.from('session_orders').insert(insertPayload);
+                if (insErr && /column .* does not exist/i.test(insErr.message || '')) {
+                    delete insertPayload.business_id;
+                    ({ error: insErr } = await supabaseClient.from('session_orders').insert(insertPayload));
+                }
+                if (insErr) console.error('Error inserting session_order from QR:', insErr);
+                else existingList.push({ ...insertPayload });
+            }
+        }
+
+        await supabaseClient.from('qr_orders').update({ status: 'accepted' }).eq('id', qrOrderId);
+
+        showToast(t('تم قبول الطلب وإضافته للجلسة', 'Order accepted and added to the session'), 'success');
+
+        if (activeStationId === order.station_id) {
+            await refreshStationSheetContent(order.station_id);
+        }
+
+        await refreshQrOrdersBadge();
+        await renderQrOrdersList();
+    } catch (e) {
+        console.error('Error accepting QR order:', e);
+        showToast(t('فشل قبول الطلب', 'Failed to accept order'), 'error');
+    }
+}
+
+async function rejectQrOrder(qrOrderId) {
+    try {
+        const { error } = await supabaseClient.from('qr_orders').update({ status: 'rejected' }).eq('id', qrOrderId);
+        if (error) throw error;
+        showToast(t('تم رفض الطلب', 'Order rejected'), 'success');
+        await refreshQrOrdersBadge();
+        await renderQrOrdersList();
+    } catch (e) {
+        console.error('Error rejecting QR order:', e);
+        showToast(t('فشل رفض الطلب', 'Failed to reject order'), 'error');
+    }
 }
 
 // ============================================================
@@ -2585,12 +2907,11 @@ async function confirmEndSessionWithPayment() {
         let { error } = await supabaseClient.from('sessions').update({
             ...basePayload,
             discount: discountAmount,
-            amount_paid: endSessionAmountPaid,
-            prepaid_amount: session.prepaid_amount || 0
+            amount_paid: endSessionAmountPaid
         }).eq('id', session.id);
 
         if (error && /column .* does not exist/i.test(error.message || '')) {
-            console.warn('discount/amount_paid/prepaid_amount columns missing — saving without them:', error.message);
+            console.warn('discount/amount_paid columns missing — saving without them:', error.message);
             ({ error } = await supabaseClient.from('sessions').update(basePayload).eq('id', session.id));
         }
         
@@ -3181,6 +3502,9 @@ function renderSettings() {
     document.getElementById('settingsSubscription').innerHTML = `
         <div class="list-row"><div class="row-title">${t('حالة الجهاز', 'Device Status')}</div><div class="badge ${deviceRecord.revoked ? 'badge-red' : 'badge-teal'}">${deviceRecord.revoked ? t('موقوف', 'Suspended') : t('نشط', 'Active')}</div></div>
         <div class="list-row"><div class="row-title">${t('تاريخ الانتهاء', 'Expiry Date')}</div><div class="row-value mono">${expiry ? expiry.toLocaleDateString(currentLang === 'ar' ? 'ar-EG' : 'en-US') : '—'}</div></div>`;
+
+    // ✅ تحديث حالة زرار "تفعيل طلب العملاء عبر QR" حسب قيمة business.qr_ordering_enabled
+    initQrOrderingUI();
 
     // ============================================================
     // ✅ TOGGLE PIN SECTION — مبني بالكامل من الـ JS عشان يشتغل من غير
