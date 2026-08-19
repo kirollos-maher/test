@@ -23,35 +23,21 @@
         text-shadow: 0 0 20px rgba(255, 138, 30, 0.3);
         user-select: none;
     }
-    .dorak-brand .star {
-        color: var(--amber);
-        opacity: 0.7;
-    }
-    .app-header .dorak-brand {
-        color: var(--amber);
-    }
-    [data-theme="light"] .dorak-brand {
-        color: var(--amber-dark);
-        text-shadow: 0 0 20px rgba(255, 138, 30, 0.15);
-    }
-    #headerBell {
-        font-size: 20px;
-        color: var(--text-muted);
-        transition: all 0.3s ease;
-        cursor: default;
-    }
-    #headerBell.bell-ringing {
-        color: var(--amber);
-        animation: bellBlink 0.6s infinite alternate, bellShake 0.3s infinite;
-    }
-    @keyframes bellBlink {
-        0% { opacity: 0.4; transform: scale(0.9); }
-        100% { opacity: 1; transform: scale(1.1); }
-    }
-    @keyframes bellShake {
-        0% { transform: rotate(-15deg); }
-        100% { transform: rotate(15deg); }
-    }
+    .dorak-brand .star { color: var(--amber); opacity: 0.7; }
+    .app-header .dorak-brand { color: var(--amber); }
+    [data-theme="light"] .dorak-brand { color: var(--amber-dark); text-shadow: 0 0 20px rgba(255, 138, 30, 0.15); }
+    #headerBell { font-size: 20px; color: var(--text-muted); transition: all 0.3s ease; cursor: default; }
+    #headerBell.bell-ringing { color: var(--amber); animation: bellBlink 0.6s infinite alternate, bellShake 0.3s infinite; }
+    @keyframes bellBlink { 0% { opacity: 0.4; transform: scale(0.9); } 100% { opacity: 1; transform: scale(1.1); } }
+    @keyframes bellShake { 0% { transform: rotate(-15deg); } 100% { transform: rotate(15deg); } }
+
+    /* QR Container */
+    .qr-container { display: none; margin-top: 12px; text-align: center; background: var(--bg-card); border-radius: var(--radius-md); padding: 20px; border: 1px solid var(--border); }
+    .qr-container .qr-box { display: inline-block; background: #fff; padding: 12px; border-radius: var(--radius-sm); }
+    .qr-container .qr-box img { width: 180px; height: 180px; }
+    .qr-toggle-row { display: flex; align-items: center; justify-content: space-between; background: var(--bg-card); border-radius: var(--radius-md); padding: 12px 16px; border: 1px solid var(--border); }
+    .qr-toggle-row .qr-label { font-weight: 700; font-size: 14px; }
+    .qr-toggle-row .qr-sub { font-size: 11px; color: var(--text-muted); }
 </style>
 </head>
 <body>
@@ -323,22 +309,10 @@
             <div class="sheet-handle"></div>
             <div class="sheet-title"><span id="stationManagementTitle" data-ar="إدارة الجهاز" data-en="Manage Device">إدارة الجهاز</span><button class="close-x" onclick="closeSheet('stationManagementOverlay')"><i class="fa-solid fa-xmark"></i></button></div>
             <input type="hidden" id="stationManageId">
-            <div class="field">
-                <label data-ar="رقم الجهاز" data-en="Device Number">رقم الجهاز</label>
-                <input type="number" id="stationManageNumber" class="mono" min="1">
-            </div>
-            <div class="field">
-                <label data-ar="الاسم (اختياري)" data-en="Name (optional)">الاسم (اختياري)</label>
-                <input type="text" id="stationManageName" placeholder="مثال: بلايستيشن 5">
-            </div>
-            <div class="field">
-                <label data-ar="سعر Single (ج/ساعة)" data-en="Single Rate (EGP/hr)">سعر Single (ج/ساعة)</label>
-                <input type="number" id="stationManageSingleRate" class="mono" step="0.5" min="0">
-            </div>
-            <div class="field">
-                <label data-ar="سعر Multi (ج/ساعة)" data-en="Multi Rate (EGP/hr)">سعر Multi (ج/ساعة)</label>
-                <input type="number" id="stationManageMultiRate" class="mono" step="0.5" min="0">
-            </div>
+            <div class="field"><label data-ar="رقم الجهاز" data-en="Device Number">رقم الجهاز</label><input type="number" id="stationManageNumber" class="mono" min="1"></div>
+            <div class="field"><label data-ar="الاسم (اختياري)" data-en="Name (optional)">الاسم (اختياري)</label><input type="text" id="stationManageName" placeholder="مثال: بلايستيشن 5"></div>
+            <div class="field"><label data-ar="سعر Single (ج/ساعة)" data-en="Single Rate (EGP/hr)">سعر Single (ج/ساعة)</label><input type="number" id="stationManageSingleRate" class="mono" step="0.5" min="0"></div>
+            <div class="field"><label data-ar="سعر Multi (ج/ساعة)" data-en="Multi Rate (EGP/hr)">سعر Multi (ج/ساعة)</label><input type="number" id="stationManageMultiRate" class="mono" step="0.5" min="0"></div>
             <button class="btn btn-amber btn-block" onclick="submitStationManagement()"><span data-ar="حفظ" data-en="Save">حفظ</span></button>
             <button class="btn btn-red btn-block" style="margin-top:8px;display:none;" id="stationDeleteBtn" onclick="deleteStation()"><i class="fa-solid fa-trash"></i> <span data-ar="حذف الجهاز" data-en="Delete Device">حذف الجهاز</span></button>
             <div class="error-text" id="stationManageError"></div>
@@ -351,12 +325,8 @@
             <div class="sheet-handle"></div>
             <div class="sheet-title"><span id="paymentMethodTitle" data-ar="إضافة طريقة دفع" data-en="Add Payment Method">إضافة طريقة دفع</span><button class="close-x" onclick="closeSheet('paymentMethodOverlay')"><i class="fa-solid fa-xmark"></i></button></div>
             <input type="hidden" id="paymentMethodId">
-            <div class="field">
-                <label data-ar="اسم طريقة الدفع" data-en="Payment Method Name">اسم طريقة الدفع</label>
-                <input type="text" id="paymentMethodName" placeholder="مثال: إنستا باي">
-            </div>
-            <div class="field">
-                <label data-ar="الأيقونة" data-en="Icon">الأيقونة</label>
+            <div class="field"><label data-ar="اسم طريقة الدفع" data-en="Payment Method Name">اسم طريقة الدفع</label><input type="text" id="paymentMethodName" placeholder="مثال: إنستا باي"></div>
+            <div class="field"><label data-ar="الأيقونة" data-en="Icon">الأيقونة</label>
                 <select id="paymentMethodIcon">
                     <option value="fa-money-bill-wave">💰 كاش</option>
                     <option value="fa-mobile-screen-button">📱 محفظة إلكترونية</option>
@@ -369,8 +339,7 @@
                     <option value="fa-circle-dollar">🟡 عملة رقمية</option>
                 </select>
             </div>
-            <div class="field">
-                <label data-ar="اللون" data-en="Color">اللون</label>
+            <div class="field"><label data-ar="اللون" data-en="Color">اللون</label>
                 <select id="paymentMethodColor">
                     <option value="badge-teal">أزرق/تركواز</option>
                     <option value="badge-amber">برتقالي</option>
@@ -379,10 +348,7 @@
                     <option value="badge-red">أحمر</option>
                 </select>
             </div>
-            <div class="field" style="display:flex;align-items:center;gap:12px;">
-                <label style="margin-bottom:0;"> <span data-ar="مفعل" data-en="Active">مفعل</span></label>
-                <input type="checkbox" id="paymentMethodActive" checked style="width:auto;">
-            </div>
+            <div class="field" style="display:flex;align-items:center;gap:12px;"><label style="margin-bottom:0;"> <span data-ar="مفعل" data-en="Active">مفعل</span></label><input type="checkbox" id="paymentMethodActive" checked style="width:auto;"></div>
             <button class="btn btn-amber btn-block" onclick="submitPaymentMethod()"><span data-ar="حفظ" data-en="Save">حفظ</span></button>
             <button class="btn btn-red btn-block" style="margin-top:8px;display:none;" id="paymentDeleteBtn" onclick="deletePaymentMethod()"><i class="fa-solid fa-trash"></i> <span data-ar="حذف طريقة الدفع" data-en="Delete Payment Method">حذف طريقة الدفع</span></button>
             <div class="error-text" id="paymentMethodError"></div>
@@ -393,23 +359,10 @@
     <div class="overlay" id="expenseOverlay">
         <div class="sheet">
             <div class="sheet-handle"></div>
-            <div class="sheet-title">
-                <span data-ar="إضافة مصروف" data-en="Add Expense">إضافة مصروف</span>
-                <button class="close-x" onclick="closeSheet('expenseOverlay')">
-                    <i class="fa-solid fa-xmark"></i>
-                </button>
-            </div>
-            <div class="field">
-                <label data-ar="الوصف" data-en="Description">الوصف</label>
-                <input type="text" id="expenseDesc" placeholder="مثال: فاتورة كهرباء">
-            </div>
-            <div class="field">
-                <label data-ar="المبلغ" data-en="Amount">المبلغ</label>
-                <input type="number" id="expenseAmount" class="mono" placeholder="0">
-            </div>
-            <button class="btn btn-amber btn-block" onclick="submitExpense()">
-                <span data-ar="حفظ" data-en="Save">حفظ</span>
-            </button>
+            <div class="sheet-title"><span data-ar="إضافة مصروف" data-en="Add Expense">إضافة مصروف</span><button class="close-x" onclick="closeSheet('expenseOverlay')"><i class="fa-solid fa-xmark"></i></button></div>
+            <div class="field"><label data-ar="الوصف" data-en="Description">الوصف</label><input type="text" id="expenseDesc" placeholder="مثال: فاتورة كهرباء"></div>
+            <div class="field"><label data-ar="المبلغ" data-en="Amount">المبلغ</label><input type="number" id="expenseAmount" class="mono" placeholder="0"></div>
+            <button class="btn btn-amber btn-block" onclick="submitExpense()"><span data-ar="حفظ" data-en="Save">حفظ</span></button>
             <div class="error-text" id="expenseError"></div>
         </div>
     </div>
@@ -420,16 +373,9 @@
             <div class="sheet-handle"></div>
             <div class="sheet-title"><span id="menuItemSheetTitle" data-ar="إضافة صنف للقائمة" data-en="Add Menu Item">إضافة صنف للقائمة</span><button class="close-x" onclick="closeSheet('menuItemOverlay')"><i class="fa-solid fa-xmark"></i></button></div>
             <input type="hidden" id="menuItemId">
-            <div class="field">
-                <label data-ar="اسم الصنف" data-en="Item Name">اسم الصنف</label>
-                <input type="text" id="menuItemName">
-            </div>
-            <div class="field">
-                <label data-ar="السعر" data-en="Price">السعر</label>
-                <input type="number" id="menuItemPrice" class="mono">
-            </div>
-            <div class="field">
-                <label data-ar="التصنيف" data-en="Category">التصنيف</label>
+            <div class="field"><label data-ar="اسم الصنف" data-en="Item Name">اسم الصنف</label><input type="text" id="menuItemName"></div>
+            <div class="field"><label data-ar="السعر" data-en="Price">السعر</label><input type="number" id="menuItemPrice" class="mono"></div>
+            <div class="field"><label data-ar="التصنيف" data-en="Category">التصنيف</label>
                 <select id="menuItemCategory">
                     <option value="cold_drinks">🧊 مشروبات باردة</option>
                     <option value="hot_drinks">☕ مشروبات ساخنة</option>
