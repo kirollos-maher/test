@@ -95,53 +95,28 @@ body {
 </style>
 </head>
 <body>
-
 <div id="opToast" class="op-toast"></div>
-
 <!-- STATE: LOADING -->
 <div id="opLoading" class="op-center-screen">
-    <div>
-        <div class="icon"><i class="fa-solid fa-circle-notch fa-spin"></i></div>
-        <h2>بنجهزلك المنيو…</h2>
-    </div>
+    <div><div class="icon"><i class="fa-solid fa-circle-notch fa-spin"></i></div><h2>بنجهزلك المنيو…</h2></div>
 </div>
-
-<!-- STATE: ERROR / DISABLED -->
+<!-- STATE: ERROR -->
 <div id="opError" class="op-center-screen hidden">
-    <div>
-        <div class="icon"><i class="fa-solid fa-triangle-exclamation"></i></div>
-        <h2 id="opErrorTitle">في مشكلة</h2>
-        <p id="opErrorMsg">حصل خطأ، حاول تفتح الصفحة تاني.</p>
-    </div>
+    <div><div class="icon"><i class="fa-solid fa-triangle-exclamation"></i></div><h2 id="opErrorTitle">في مشكلة</h2><p id="opErrorMsg">حصل خطأ، حاول تفتح الصفحة تاني.</p></div>
 </div>
-
 <!-- STATE: SENT -->
 <div id="opSent" class="op-center-screen hidden">
-    <div>
-        <div class="icon" style="color:var(--green);"><i class="fa-solid fa-circle-check"></i></div>
-        <h2>تم إرسال طلبك! 🎉</h2>
-        <p>الطلب وصل للصالة وهيتم تجهيزه في أقرب وقت.</p>
-    </div>
+    <div><div class="icon" style="color:var(--green);"><i class="fa-solid fa-circle-check"></i></div><h2>تم إرسال طلبك! 🎉</h2><p>الطلب وصل للصالة وهيتم تجهيزه في أقرب وقت.</p></div>
 </div>
-
 <!-- STATE: MENU -->
 <div id="opMenuScreen" class="hidden">
-    <div class="op-header">
-        <div class="op-brand">✦ DORAK ✦</div>
-        <div class="op-station" id="opStationName">—</div>
-        <div class="op-sub">اختار اللي يعجبك وابعت طلبك من هنا</div>
-    </div>
+    <div class="op-header"><div class="op-brand">✦ DORAK ✦</div><div class="op-station" id="opStationName">—</div><div class="op-sub">اختار اللي يعجبك وابعت طلبك من هنا</div></div>
     <div class="op-content" id="opMenuContent"></div>
 </div>
-
 <div class="op-cartbar" id="opCartBar">
-    <div>
-        <div class="cart-info" id="opCartInfo">0 صنف</div>
-        <div class="cart-total mono" id="opCartTotal">0 ج</div>
-    </div>
+    <div><div class="cart-info" id="opCartInfo">0 صنف</div><div class="cart-total mono" id="opCartTotal">0 ج</div></div>
     <button onclick="openReview()"><i class="fa-solid fa-bag-shopping"></i> مراجعة الطلب</button>
 </div>
-
 <div class="op-overlay" id="opReviewOverlay">
     <div class="op-sheet">
         <div class="op-sheet-title"><span>مراجعة الطلب</span><button onclick="closeReview()"><i class="fa-solid fa-xmark"></i></button></div>
@@ -151,17 +126,12 @@ body {
         <button class="op-confirm-btn" id="opConfirmBtn" onclick="sendOrder()"><i class="fa-solid fa-paper-plane"></i> إرسال الطلب</button>
     </div>
 </div>
-
 <script>
 const SUPABASE_URL = 'https://fhjhtgbvtkuhhzitvxtx.supabase.co';
 const SUPABASE_ANON_KEY = 'sb_publishable_X0aLD3gjXGqC_no4gW78ng_TWztP5cd';
 const supabaseClient = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 
-let station = null;
-let business = null;
-let menuItems = [];
-let cart = {}; // menu_item_id -> qty
-
+let station = null, business = null, menuItems = [], cart = {};
 const CATEGORY_LABELS = { cold_drinks: '🧊 مشروبات باردة', hot_drinks: '☕ مشروبات ساخنة', food: '🍔 أكل', other: '📦 أخرى' };
 function normalizeCategory(c) {
     const v = String(c || '').trim().toLowerCase();
@@ -170,59 +140,45 @@ function normalizeCategory(c) {
         'أكل': 'food', 'اكل': 'food', 'food': 'food', 'أخرى': 'other', 'اخري': 'other', 'other': 'other' };
     return map[v] || 'other';
 }
-
 function showState(id) {
     ['opLoading', 'opError', 'opSent', 'opMenuScreen'].forEach(s => document.getElementById(s).classList.toggle('hidden', s !== id));
 }
-
 function showToastMsg(msg) {
     const el = document.getElementById('opToast');
-    el.textContent = msg;
-    el.classList.add('show');
+    el.textContent = msg; el.classList.add('show');
     setTimeout(() => el.classList.remove('show'), 2200);
 }
-
 function showError(title, msg) {
     document.getElementById('opErrorTitle').textContent = title;
     document.getElementById('opErrorMsg').textContent = msg;
     showState('opError');
 }
+function money(n) { return (Number(n) || 0).toLocaleString('ar-EG', { maximumFractionDigits: 0 }); }
+function escapeHtml(str) { const div = document.createElement('div'); div.textContent = str == null ? '' : String(str); return div.innerHTML; }
 
 async function init() {
     const params = new URLSearchParams(window.location.search);
     const token = params.get('t');
     if (!token) { showError('رابط غير صحيح', 'الرابط ده مش رابط جهاز صحيح. امسح كود الـ QR تاني من على الجهاز.'); return; }
-
     try {
         const { data: st, error: stErr } = await supabaseClient.from('stations').select('*').eq('qr_token', token).maybeSingle();
         if (stErr || !st) { showError('الجهاز غير موجود', 'مش لاقيين الجهاز ده. اتأكد إنك ماسح آخر كود QR متاح.'); return; }
         station = st;
-
         const { data: biz, error: bizErr } = await supabaseClient.from('businesses').select('*').eq('id', st.business_id).maybeSingle();
         if (bizErr || !biz) { showError('حصل خطأ', 'تعذر تحميل بيانات الصالة، حاول تاني.'); return; }
         business = biz;
-
         if (!business.qr_ordering_enabled) {
             showError('الخدمة متوقفة حاليًا', 'الطلب عبر QR مش متاح دلوقتي في الصالة دي. تقدر تنادي على الموظف مباشرة.');
             return;
         }
-
         const { data: items, error: itemsErr } = await supabaseClient.from('menu_items').select('*').eq('business_id', business.id).eq('active', true).order('created_at');
         if (itemsErr) { showError('حصل خطأ', 'تعذر تحميل المنيو، حاول تاني.'); return; }
         menuItems = items || [];
-
-        if (menuItems.length === 0) {
-            showError('المنيو فاضي حاليًا', 'مفيش أصناف متاحة للطلب دلوقتي.');
-            return;
-        }
-
+        if (menuItems.length === 0) { showError('المنيو فاضي حاليًا', 'مفيش أصناف متاحة للطلب دلوقتي.'); return; }
         document.getElementById('opStationName').textContent = station.name || ('جهاز ' + station.number);
         renderMenu();
         showState('opMenuScreen');
-    } catch (e) {
-        console.error(e);
-        showError('حصل خطأ', 'حصلت مشكلة في الاتصال، حاول تاني.');
-    }
+    } catch (e) { console.error(e); showError('حصل خطأ', 'حصلت مشكلة في الاتصال، حاول تاني.'); }
 }
 
 function renderMenu() {
@@ -232,7 +188,6 @@ function renderMenu() {
         if (!grouped[cat]) grouped[cat] = [];
         grouped[cat].push(item);
     });
-
     const order = ['food', 'cold_drinks', 'hot_drinks', 'other'];
     let html = '';
     order.forEach(cat => {
@@ -240,10 +195,7 @@ function renderMenu() {
         html += `<div class="op-category">${CATEGORY_LABELS[cat]}</div>`;
         grouped[cat].forEach(item => {
             html += `<div class="op-item">
-                <div>
-                    <div class="op-item-name">${escapeHtml(item.name)}</div>
-                    <div class="op-item-price">${money(item.price)} ج</div>
-                </div>
+                <div><div class="op-item-name">${escapeHtml(item.name)}</div><div class="op-item-price">${money(item.price)} ج</div></div>
                 <div class="op-qty" id="qty-${item.id}">
                     <button onclick="changeQty('${item.id}', -1)">−</button>
                     <span class="qty-val" id="qtyval-${item.id}">0</span>
@@ -298,7 +250,6 @@ async function sendOrder() {
     const btn = document.getElementById('opConfirmBtn');
     btn.disabled = true;
     btn.innerHTML = '<i class="fa-solid fa-circle-notch fa-spin"></i> جاري الإرسال…';
-
     const note = document.getElementById('opNote').value.trim();
     try {
         const { error } = await supabaseClient.from('qr_orders').insert({
@@ -318,13 +269,6 @@ async function sendOrder() {
         btn.innerHTML = '<i class="fa-solid fa-paper-plane"></i> إرسال الطلب';
         showToastMsg('حصل خطأ، حاول تبعت الطلب تاني.');
     }
-}
-
-function money(n) { return (Number(n) || 0).toLocaleString('ar-EG', { maximumFractionDigits: 0 }); }
-function escapeHtml(str) {
-    const div = document.createElement('div');
-    div.textContent = str == null ? '' : String(str);
-    return div.innerHTML;
 }
 
 init();
