@@ -28,7 +28,7 @@ function initAudio() {
 }
 
 // ========================
-// تشغيل صوت التنبيه (نغمة)
+// تشغيل صوت التنبيه (نغمة) + نطق "New Order"
 // ========================
 function playRingSound(type = 'warning') {
     try {
@@ -43,11 +43,9 @@ function playRingSound(type = 'warning') {
         const now = audioContext.currentTime;
 
         if (type === 'warning') {
-            // نغمة تحذيرية (نغمتين متتاليتين)
             const frequencies = [800, 1000];
             const durations = [0.2, 0.2];
             let time = now;
-
             frequencies.forEach((freq, i) => {
                 const osc = audioContext.createOscillator();
                 const gain = audioContext.createGain();
@@ -61,11 +59,9 @@ function playRingSound(type = 'warning') {
                 time += durations[i] + 0.1;
             });
         } else if (type === 'ended') {
-            // نغمة انتهاء الوقت (3 نغمات متتالية)
             const frequencies = [800, 600, 800];
             const durations = [0.25, 0.25, 0.3];
             let time = now;
-
             frequencies.forEach((freq, i) => {
                 const osc = audioContext.createOscillator();
                 const gain = audioContext.createGain();
@@ -91,16 +87,34 @@ function playRingSound(type = 'warning') {
 }
 
 // ========================
-// عرض إشعار مرئي + صوت
+// نطق "New Order" (أو تنبيه) باستخدام Speech Synthesis
+// ========================
+function speakNewOrder() {
+    try {
+        if (!window.speechSynthesis) return;
+        const utterance = new SpeechSynthesisUtterance('New Order');
+        utterance.lang = 'en-US';
+        utterance.rate = 1.2;
+        utterance.pitch = 1.2;
+        window.speechSynthesis.speak(utterance);
+    } catch (e) {
+        console.warn('Speech synthesis failed:', e);
+    }
+}
+
+// ========================
+// عرض إشعار مرئي + صوت + نطق
 // ========================
 function showRingNotification(title, message, type = 'warning') {
-    // تشغيل الصوت
+    // تشغيل الصوت والنطق
     playRingSound(type);
+    if (type === 'warning' && title.includes('طلب جديد')) {
+        speakNewOrder();
+    }
 
     // البحث عن عنصر الإشعار
     const el = document.getElementById('ringNotification');
     if (!el) {
-        // إذا لم يوجد، استخدم Toast كبديل
         if (typeof showToast === 'function') {
             showToast(`🔔 ${title}: ${message}`, type === 'ended' ? 'error' : 'warning');
         }
@@ -139,14 +153,12 @@ function checkCountdownAlerts() {
     }
 
     if (Object.keys(sessions).length === 0) {
-        // إعادة ضبط حالة التنبيهات عند عدم وجود جلسات
         for (const key in countdownAlertState) {
             delete countdownAlertState[key];
         }
         return;
     }
 
-    // التأكد من توفر الدوال المساعدة من app.js
     if (typeof getActiveSegmentFast !== 'function' || typeof getRemainingSeconds !== 'function') {
         console.warn('⚠️ Alert functions not available yet');
         return;
@@ -164,7 +176,6 @@ function checkCountdownAlerts() {
         const deviceName = station ? (station.name || t('جهاز', 'Device') + ' ' + station.number) : t('جهاز', 'Device');
 
         if (remaining <= 0) {
-            // انتهى الوقت
             if (countdownAlertState[stationId] !== 'ended') {
                 countdownAlertState[stationId] = 'ended';
                 const msg = t(`⏰ انتهى وقت جهاز ${deviceName}`, `⏰ Time's up for device ${deviceName}`);
@@ -173,13 +184,11 @@ function checkCountdownAlerts() {
                     msg,
                     'ended'
                 );
-                // استخدام Toast أيضاً للتأكيد
                 if (typeof showToast === 'function') {
                     showToast(msg, 'error');
                 }
             }
         } else if (remaining <= ALERT_THRESHOLD) {
-            // باقي وقت قليل
             if (countdownAlertState[stationId] !== 'warning') {
                 countdownAlertState[stationId] = 'warning';
                 const minutes = Math.floor(remaining / 60);
@@ -202,7 +211,6 @@ function checkCountdownAlerts() {
                 }
             }
         } else {
-            // أكثر من الحد، إعادة ضبط الحالة
             if (countdownAlertState[stationId]) {
                 delete countdownAlertState[stationId];
             }
@@ -234,24 +242,18 @@ function stopCountdownAlerts() {
 // التهيئة التلقائية عند تحميل الصفحة
 // ========================
 function initAlerts() {
-    // ننتظر حتى تتوفر البيانات الأساسية
     if (typeof business !== 'undefined' && business &&
         typeof stations !== 'undefined' && stations && stations.length > 0) {
         startCountdownAlerts();
     } else {
-        // نعيد المحاولة بعد 500 مللي ثانية
         setTimeout(initAlerts, 500);
     }
 }
 
-// بدء المراقبة بعد تحميل الصفحة
 window.addEventListener('load', initAlerts);
-
-// إيقاف المراقبة عند إغلاق الصفحة
 window.addEventListener('beforeunload', function() {
     stopCountdownAlerts();
 });
 
-// التصدير للاستخدام الخارجي (اختياري)
 window.startCountdownAlerts = startCountdownAlerts;
 window.stopCountdownAlerts = stopCountdownAlerts;
