@@ -2027,6 +2027,20 @@ async function openStationSheet(stationId) {
                 <div class="mono" style="font-size:18px;font-weight:700;color:var(--amber);" id="overallTotalAmount" data-base-total="${totals.grandTotal}">${moneyDec(liveGrandTotal)}</div>
             </div>
         </div>
+
+        <div class="section-title">${t('دفع مقدماً', 'Advance Payment')}</div>
+        <div style="background:var(--bg-sunken);border-radius:var(--radius-sm);padding:10px;margin-bottom:12px;">
+            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
+                <span style="font-size:12px;color:var(--text-dim);">${t('المدفوع مقدماً حالياً', 'Currently Paid in Advance')}</span>
+                <span class="mono" id="currentPrepaidDisplay" style="font-weight:700;color:var(--teal);">${moneyDec(Number(session.prepaid_amount) || 0)} ${t('ج', 'EGP')}</span>
+            </div>
+            <div style="display:flex;gap:8px;">
+                <input type="number" id="addPrepaidInput" class="mono" min="0" step="0.5" placeholder="${t('أضف مبلغ', 'Add amount')}" style="flex:1;">
+                <button class="btn btn-teal" style="flex-shrink:0;" onclick="addPrepaidAmount('${stationId}')">
+                    <i class="fa-solid fa-plus"></i> ${t('إضافة', 'Add')}
+                </button>
+            </div>
+        </div>
         
         ${segments.filter(s => s.ended_at).length > 0 ? `
         <div class="segment-breakdown">
@@ -3601,6 +3615,20 @@ async function refreshStationSheetContent(stationId) {
                 <div class="mono" style="font-size:18px;font-weight:700;color:var(--amber);" id="overallTotalAmount" data-base-total="${totals.grandTotal}">${moneyDec(liveGrandTotal)}</div>
             </div>
         </div>
+
+        <div class="section-title">${t('دفع مقدماً', 'Advance Payment')}</div>
+        <div style="background:var(--bg-sunken);border-radius:var(--radius-sm);padding:10px;margin-bottom:12px;">
+            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
+                <span style="font-size:12px;color:var(--text-dim);">${t('المدفوع مقدماً حالياً', 'Currently Paid in Advance')}</span>
+                <span class="mono" id="currentPrepaidDisplay" style="font-weight:700;color:var(--teal);">${moneyDec(Number(session.prepaid_amount) || 0)} ${t('ج', 'EGP')}</span>
+            </div>
+            <div style="display:flex;gap:8px;">
+                <input type="number" id="addPrepaidInput" class="mono" min="0" step="0.5" placeholder="${t('أضف مبلغ', 'Add amount')}" style="flex:1;">
+                <button class="btn btn-teal" style="flex-shrink:0;" onclick="addPrepaidAmount('${stationId}')">
+                    <i class="fa-solid fa-plus"></i> ${t('إضافة', 'Add')}
+                </button>
+            </div>
+        </div>
         
         ${segments.filter(s => s.ended_at).length > 0 ? `
         <div class="segment-breakdown">
@@ -3651,6 +3679,44 @@ async function refreshStationSheetContent(stationId) {
     
     renderMenuQuickAdd();
     renderStationOrdersSection();
+}
+
+// ============================================================
+// ✅ إضافة مبلغ مقدم أثناء الجلسة (بدون المساس بحسابات الأجزاء/الطلبات/الإجمالي)
+// ============================================================
+async function addPrepaidAmount(stationId) {
+    const session = sessions[stationId];
+    if (!session) return;
+
+    const input = document.getElementById('addPrepaidInput');
+    const addAmount = Math.max(0, parseFloat(input && input.value) || 0);
+    if (addAmount <= 0) {
+        showToast(t('اكتب مبلغ أكبر من صفر', 'Enter an amount greater than zero'), 'warning');
+        return;
+    }
+
+    const currentPrepaid = Number(session.prepaid_amount) || 0;
+    const newPrepaid = Math.round((currentPrepaid + addAmount) * 100) / 100;
+
+    try {
+        const { error } = await supabaseClient.from('sessions').update({ prepaid_amount: newPrepaid }).eq('id', session.id);
+
+        if (error && /column .* does not exist/i.test(error.message || '')) {
+            console.warn('prepaid_amount column missing — cannot save advance payment:', error.message);
+            showToast(t('عمود المبلغ المقدم غير موجود في قاعدة البيانات، ضيفه الأول', 'Advance payment column missing in database — add it first'), 'error');
+            return;
+        }
+        if (error) { throw error; }
+
+        session.prepaid_amount = newPrepaid;
+        if (input) input.value = '';
+        showToast(t(`تمت إضافة ${moneyDec(addAmount)} ج مقدماً`, `Added ${moneyDec(addAmount)} EGP in advance`), 'success');
+
+        await refreshStationSheetContent(stationId);
+    } catch (e) {
+        console.error('Error adding prepaid amount:', e);
+        showToast(t('فشلت إضافة المبلغ المقدم', 'Failed to add advance payment'), 'error');
+    }
 }
 
 // ============================================================
