@@ -2,8 +2,8 @@
 // ============================================================
 // CONFIG
 // ============================================================
-const SUPABASE_URL = 'https://fhjhtgbvtkuhhzitvxtx.supabase.co';
-const SUPABASE_ANON_KEY = 'sb_publishable_X0aLD3gjXGqC_no4gW78ng_TWztP5cd';
+const SUPABASE_URL = 'https://hdrvqgicxxgfolozxgjp.supabase.co';
+const SUPABASE_ANON_KEY = 'sb_publishable_dGNw7eTTempKBdFmAZRjYA_eaeEE2jj';
 const supabaseClient = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 
 // V2 safety helpers: never report success when Supabase rejected the operation.
@@ -127,7 +127,7 @@ let endingSessionInProgress = false;
 let currentEndSessionTotals = null;
 let endSessionDiscount = 0;
 let endSessionAmountPaid = null;
-// ✅ المبلغ اللي العميل دفعه مقدماً عند بدء الجلسة (بيتخصم من الحساب عند الإنهاء)
+// ✅ مبلغ الدفع المقدم
 let endSessionPrepaidAmount = 0;
 let sessionSegmentsCache = {};
 let activeSegmentCache = {};
@@ -2585,11 +2585,12 @@ async function confirmEndSessionWithPayment() {
         let { error } = await supabaseClient.from('sessions').update({
             ...basePayload,
             discount: discountAmount,
-            amount_paid: endSessionAmountPaid
+            amount_paid: endSessionAmountPaid,
+            prepaid_amount: session.prepaid_amount || 0
         }).eq('id', session.id);
 
         if (error && /column .* does not exist/i.test(error.message || '')) {
-            console.warn('discount/amount_paid columns missing — saving without them:', error.message);
+            console.warn('discount/amount_paid/prepaid_amount columns missing — saving without them:', error.message);
             ({ error } = await supabaseClient.from('sessions').update(basePayload).eq('id', session.id));
         }
         
