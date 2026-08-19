@@ -47,7 +47,6 @@ function updateTexts() {
         el.textContent = currentLang === 'ar' ? el.dataset.ar : el.dataset.en;
     });
     
-    // تحديث أسماء الأشهر
     updateMonthNames();
     
     renderStationsGrid();
@@ -123,11 +122,9 @@ let currentOrderSessionId = null;
 let selectedPaymentMethod = null;
 let endSessionStationId = null;
 let endingSessionInProgress = false;
-// ✅ حالة الخصم/المبلغ المدفوع لشاشة إنهاء الجلسة
 let currentEndSessionTotals = null;
 let endSessionDiscount = 0;
 let endSessionAmountPaid = null;
-// ✅ المبلغ اللي العميل دفعه مقدماً عند بدء الجلسة (بيتخصم من الحساب عند الإنهاء)
 let endSessionPrepaidAmount = 0;
 let sessionSegmentsCache = {};
 let activeSegmentCache = {};
@@ -135,14 +132,11 @@ let pendingSwitch = false;
 let transferSourceStationId = null;
 let countdownTimers = {};
 let countdownAlerts = {};
-// تخزين حالة التوجل لكل تصنيف
 let categoryToggleState = {};
-
-// ✅ QR Orders Cache (only pending orders)
 let qrOrders = {};
 
 // ============================================================
-// ✅ TOGGLE PIN SECTION (قابل للطي)
+// PIN TOGGLE
 // ============================================================
 let settingsPinExpanded = false;
 
@@ -150,13 +144,8 @@ function toggleSettingsPin() {
     settingsPinExpanded = !settingsPinExpanded;
     const pinSection = document.getElementById('settingsChangePin');
     const chevron = document.getElementById('settingsPinChevron');
-    
-    if (pinSection) {
-        pinSection.style.display = settingsPinExpanded ? 'block' : 'none';
-    }
-    if (chevron) {
-        chevron.style.transform = settingsPinExpanded ? 'rotate(180deg)' : 'rotate(0deg)';
-    }
+    if (pinSection) pinSection.style.display = settingsPinExpanded ? 'block' : 'none';
+    if (chevron) chevron.style.transform = settingsPinExpanded ? 'rotate(180deg)' : 'rotate(0deg)';
 }
 
 // ============================================================
@@ -201,9 +190,7 @@ function closeSheet(id) {
         sessionSegmentsCache = {};
         endingSessionInProgress = false;
     }
-    if (id === 'transferOverlay') {
-        transferSourceStationId = null;
-    }
+    if (id === 'transferOverlay') transferSourceStationId = null;
 }
 function t(ar, en) { return currentLang === 'ar' ? ar : en; }
 
@@ -237,7 +224,20 @@ async function handleSetupContinue() {
         localStorage.setItem('psr_business_code', code);
 
         const deviceId = getDeviceId();
-        const { data: dev } = await supabaseClient.from('devices').select('*').eq('business_id', biz.id).eq('device_id', deviceId).maybeSingle();
+        let dev = null;
+        // try to get from localStorage first
+        const savedDevice = localStorage.getItem('psr_device_record');
+        if (savedDevice) {
+            try {
+                dev = JSON.parse(savedDevice);
+                // verify it matches this business and device_id
+                if (dev.business_id !== biz.id || dev.device_id !== deviceId) dev = null;
+            } catch (e) { dev = null; }
+        }
+        if (!dev) {
+            const { data: devData } = await supabaseClient.from('devices').select('*').eq('business_id', biz.id).eq('device_id', deviceId).maybeSingle();
+            dev = devData;
+        }
         if (!dev) {
             document.getElementById('activationBizName').textContent = biz.name;
             showScreen('activationScreen');
@@ -272,6 +272,7 @@ async function handleActivateDevice() {
 
         await supabaseClient.from('activation_codes').update({ used: true, used_at: new Date().toISOString() }).eq('id', actCode.id);
         deviceRecord = newDev;
+        localStorage.setItem('psr_device_record', JSON.stringify(deviceRecord));
         showToast(t('تم تفعيل الجهاز بنجاح', 'Device activated successfully'), 'success');
         proceedToLock();
     } catch (e) { console.error(e); errEl.textContent = t('حصل خطأ، حاول تاني.', 'Error, try again.'); }
@@ -362,6 +363,7 @@ function lockApp() {
 function switchBusiness() {
     stopRealtimeAndTimers();
     localStorage.removeItem('psr_business_code');
+    localStorage.removeItem('psr_device_record');
     business = null; deviceRecord = null; currentUser = null;
     document.getElementById('setupBusinessCode').value = '';
     showScreen('setupScreen');
@@ -374,7 +376,18 @@ async function tryAutoResume() {
         const { data: biz } = await supabaseClient.from('businesses').select('*').eq('code', code).single();
         if (!biz) return;
         business = biz;
-        const { data: dev } = await supabaseClient.from('devices').select('*').eq('business_id', biz.id).eq('device_id', getDeviceId()).maybeSingle();
+        const savedDevice = localStorage.getItem('psr_device_record');
+        let dev = null;
+        if (savedDevice) {
+            try {
+                dev = JSON.parse(savedDevice);
+                if (dev.business_id !== biz.id) dev = null;
+            } catch (e) { dev = null; }
+        }
+        if (!dev) {
+            const { data: devData } = await supabaseClient.from('devices').select('*').eq('business_id', biz.id).eq('device_id', getDeviceId()).maybeSingle();
+            dev = devData;
+        }
         if (!dev) return;
         deviceRecord = dev;
         proceedToLock();
@@ -382,7 +395,7 @@ async function tryAutoResume() {
 }
 
 // ============================================================
-// AUTO-ACTIVATE FROM URL (?biz=CODE&code=ACTIVATION)
+// AUTO-ACTIVATE FROM URL
 // ============================================================
 async function tryAutoActivateFromURL() {
     if (localStorage.getItem('psr_business_code')) return;
@@ -428,7 +441,6 @@ async function enterMainApp() {
     await recoverActiveSession();
     setInterval(syncServerClock, 5 * 60 * 1000);
 
-    // ✅ QR pending orders reminder every minute
     setInterval(() => {
         const pendingCount = totalPendingQrOrders();
         if (pendingCount > 0) {
@@ -483,7 +495,7 @@ async function loadStations() {
 }
 
 // ============================================================
-// MENU ITEMS - with localStorage fallback
+// MENU ITEMS
 // ============================================================
 async function loadMenuItems() {
     try {
@@ -613,7 +625,7 @@ async function loadOrOpenShift() {
 }
 
 // ============================================================
-// QR CUSTOMER ORDERS (Enhanced with pending only and notifications)
+// QR CUSTOMER ORDERS
 // ============================================================
 async function loadQrOrders() {
     assertBusinessContext();
@@ -654,7 +666,6 @@ function handleQrOrderChange(payload) {
     const row = payload.new && Object.keys(payload.new).length ? payload.new : payload.old;
     if (!row) return;
 
-    // Remove existing copy
     Object.keys(qrOrders).forEach(stId => {
         qrOrders[stId] = (qrOrders[stId] || []).filter(o => o.id !== row.id);
         if (qrOrders[stId].length === 0) delete qrOrders[stId];
@@ -665,7 +676,6 @@ function handleQrOrderChange(payload) {
         if (!qrOrders[stId]) qrOrders[stId] = [];
         qrOrders[stId].push(payload.new);
 
-        // Trigger notification
         if (payload.eventType === 'INSERT') {
             const station = stations.find(s => s.id === stId);
             const deviceName = station ? (station.name || t('جهاز', 'Device') + ' ' + station.number) : t('جهاز', 'Device');
@@ -687,7 +697,6 @@ function handleQrOrderChange(payload) {
     if (document.getElementById('qrOrdersOverlay').classList.contains('show')) renderQrOrdersBody();
 }
 
-// Mark QR orders as seen when station sheet opens
 async function markStationQrOrdersSeen(stationId) {
     const pendingOrders = (qrOrders[stationId] || []).filter(o => o.status === 'pending');
     if (pendingOrders.length === 0) return;
@@ -697,7 +706,6 @@ async function markStationQrOrdersSeen(stationId) {
             .from('qr_orders')
             .update({ status: 'seen' })
             .in('id', ids);
-        // Update local cache
         qrOrders[stationId] = (qrOrders[stationId] || []).map(o =>
             ids.includes(o.id) ? { ...o, status: 'seen' } : o
         ).filter(o => o.status !== 'seen');
@@ -708,14 +716,12 @@ async function markStationQrOrdersSeen(stationId) {
     }
 }
 
-// Deliver QR order (mark as done)
 async function deliverQrOrder(orderId) {
     try {
         await supabaseClient
             .from('qr_orders')
             .update({ status: 'done', done_at: new Date().toISOString() })
             .eq('id', orderId);
-        // Remove from cache
         Object.keys(qrOrders).forEach(stId => {
             qrOrders[stId] = (qrOrders[stId] || []).filter(o => o.id !== orderId);
             if (qrOrders[stId].length === 0) delete qrOrders[stId];
@@ -1345,7 +1351,6 @@ function renderStationsGrid() {
             timerDisplay = `<div class="station-rate">${t('Single', 'Single')} ${money(st.single_rate || 20)} / ${t('Multi', 'Multi')} ${money(st.multi_rate || 30)} ${t('ج/ساعة', 'EGP/hr')}</div>`;
         }
         
-        // ✅ Only show QR badge if there are pending orders
         const hasQrOrder = !!(qrOrders[st.id] && qrOrders[st.id].length);
         const qrBadge = hasQrOrder
             ? `<div class="qr-order-badge" onclick="event.stopPropagation(); openQrOrdersSheet('${st.id}')" title="${t('طلب من العميل', 'Customer order')}"><i class="fa-solid fa-exclamation"></i></div>`
@@ -1360,7 +1365,7 @@ function renderStationsGrid() {
 }
 
 // ============================================================
-// STATION SHEET — with QR orders section and auto-mark-seen
+// STATION SHEET
 // ============================================================
 async function openStationSheet(stationId) {
     activeStationId = stationId;
@@ -1370,13 +1375,11 @@ async function openStationSheet(stationId) {
     document.getElementById('stationSheetTitle').textContent = displayName;
     const body = document.getElementById('stationSheetBody');
 
-    // Mark QR orders as seen (removes the red badge)
     await markStationQrOrdersSeen(stationId);
 
     body.innerHTML = '';
 
     if (!session) {
-        // ... (existing code for no session)
         currentOrderSessionId = null;
         const singleRate = st.single_rate || 20;
         const multiRate = st.multi_rate || 30;
@@ -1446,12 +1449,10 @@ async function openStationSheet(stationId) {
         }, 100);
         openSheet('stationOverlay');
 
-        // ✅ Show QR orders even when no session
         await renderQrOrdersInSheet(stationId, body);
         return;
     }
 
-    // --- Existing session code ---
     currentOrderSessionId = session.id;
 
     const segments = await getSessionSegments(session.id);
@@ -1586,13 +1587,11 @@ async function openStationSheet(stationId) {
     renderMenuQuickAdd();
     renderStationOrdersSection();
     
-    // ✅ Append QR orders section if any (pending/seen)
     await renderQrOrdersInSheet(stationId, body);
 
     openSheet('stationOverlay');
 }
 
-// Helper: render QR orders in the station sheet
 async function renderQrOrdersInSheet(stationId, bodyElement) {
     const { data: qrOrdersForStation } = await supabaseClient
         .from('qr_orders')
@@ -1619,7 +1618,6 @@ async function renderQrOrdersInSheet(stationId, bodyElement) {
                 </div>
             `;
         });
-        // Append after the existing content
         bodyElement.insertAdjacentHTML('beforeend', qrHtml);
     }
 }
@@ -1713,11 +1711,13 @@ function renderSettingsStations() {
         el.innerHTML = `<div class="empty"><i class="fa-solid fa-gamepad"></i>${t('مفيش أجهزة — ضيف أول جهاز', 'No devices — add your first device')}</div>`;
         return;
     }
+    const qrEnabled = business && business.qr_ordering_enabled;
     el.innerHTML = stations.map(st => {
         const displayName = st.name ? st.name : t('جهاز', 'Device') + ' ' + st.number;
         return `<div class="list-row">
             <div><div class="row-title">${escapeHtml(displayName)}</div><div class="row-sub">${t('رقم', 'No.')} ${st.number} — ${t('Single', 'Single')} ${money(st.single_rate || 20)} / ${t('Multi', 'Multi')} ${money(st.multi_rate || 30)} ${t('ج/ساعة', 'EGP/hr')}</div></div>
             <div class="row-actions">
+                ${qrEnabled ? `<button class="btn btn-teal btn-sm" onclick="openStationQrSheet('${st.id}')" title="${t('كود QR للطلب', 'Order QR code')}"><i class="fa-solid fa-qrcode"></i></button>` : ''}
                 <button class="btn btn-ghost btn-sm" onclick="editStation('${st.id}')"><i class="fa-solid fa-pen"></i></button>
                 <button class="btn btn-danger-sm" onclick="deleteStationById('${st.id}')"><i class="fa-solid fa-trash"></i></button>
             </div>
@@ -1978,7 +1978,6 @@ async function addOrderItem(sessionId, menuItemId) {
                 /column/i.test(error.message || '')
             )) {
                 delete insertPayload.business_id;
-
                 ({ error } = await supabaseClient
                     .from('session_orders')
                     .insert(insertPayload));
@@ -2311,7 +2310,7 @@ function updateDurationDisplay() {
 }
 
 // ============================================================
-// START SESSION WITH MODE (includes prepaid amount)
+// START SESSION WITH MODE
 // ============================================================
 async function startSessionWithMode(stationId) {
     const mode = document.getElementById('selectedStartMode').value;
@@ -2334,7 +2333,7 @@ async function startSessionWithMode(stationId) {
     const now = new Date(nowCorrected()).toISOString();
 
     const prepaidInput = document.getElementById('prepaidAmountInput');
-    const prepaidAmount = Math.max(0, parseFloat(prepaidInput && prepaidInput.value) || 0);
+    const prepaidAmount = prepaidInput ? Math.max(0, parseFloat(prepaidInput.value) || 0) : 0;
 
     try {
         const sessionPayload = {
@@ -2555,7 +2554,7 @@ function selectPaymentMethod(pmId) {
 }
 
 // ============================================================
-// UPDATE PAYMENT CALCULATION (discount & prepaid)
+// UPDATE PAYMENT CALCULATION
 // ============================================================
 function updatePaymentCalculation() {
     if (!currentEndSessionTotals) return;
@@ -3266,9 +3265,6 @@ function renderSettings() {
         <div class="list-row"><div class="row-title">${t('حالة الجهاز', 'Device Status')}</div><div class="badge ${deviceRecord.revoked ? 'badge-red' : 'badge-teal'}">${deviceRecord.revoked ? t('موقوف', 'Suspended') : t('نشط', 'Active')}</div></div>
         <div class="list-row"><div class="row-title">${t('تاريخ الانتهاء', 'Expiry Date')}</div><div class="row-value mono">${expiry ? expiry.toLocaleDateString(currentLang === 'ar' ? 'ar-EG' : 'en-US') : '—'}</div></div>`;
 
-    // ============================================================
-    // ✅ TOGGLE PIN SECTION
-    // ============================================================
     const pinToggleHtml = `
         <div class="list-row" style="cursor:pointer;" onclick="toggleSettingsPin()">
             <div class="row-title">${t('تغيير PIN المالك', 'Change Owner PIN')}</div>
@@ -3344,7 +3340,7 @@ function renderSettings() {
 }
 
 // ============================================================
-// 🔐 تغيير PIN المالك
+// CHANGE OWNER PIN
 // ============================================================
 async function changeOwnerPin() {
     const currentPin = document.getElementById('currentPinInput').value.trim();
@@ -3387,7 +3383,7 @@ async function changeOwnerPin() {
 }
 
 // ============================================================
-// 🏢 إنشاء نشاط جديد من صفحة الدخول
+// CREATE BUSINESS FROM SETUP
 // ============================================================
 function openCreateBusinessSheetFromSetup() {
     ['newBizCodeSetup', 'newBizNameSetup', 'newBizPhoneSetup'].forEach(id => document.getElementById(id).value = '');
@@ -3438,6 +3434,9 @@ async function submitCreateBusinessFromSetup() {
     }
 }
 
+// ============================================================
+// MENU ITEMS CRUD
+// ============================================================
 function openMenuItemSheet() {
     document.getElementById('menuItemId').value = '';
     document.getElementById('menuItemName').value = '';
@@ -3548,6 +3547,9 @@ async function deleteMenuItem() {
     await deleteMenuItemById(id);
 }
 
+// ============================================================
+// EMPLOYEE CRUD
+// ============================================================
 function openEmployeeSheet() {
     document.getElementById('employeeName').value = '';
     document.getElementById('employeePin').value = '';
@@ -3590,15 +3592,260 @@ async function deleteEmployee(employeeId) {
     }
 }
 
-function escapeHtml(str) { 
-    if (!str) return '';
-    const d = document.createElement('div'); 
-    d.textContent = str; 
-    return d.innerHTML; 
+// ============================================================
+// HELPERS (normalizeCategory, menuCategoryLabel, etc.)
+// ============================================================
+function normalizeMenuCategory(category) {
+    const value = String(category || '').trim().toLowerCase();
+    const map = {
+        'مشروبات باردة': 'cold_drinks',
+        'cold drinks': 'cold_drinks',
+        'cold_drinks': 'cold_drinks',
+        'مشروبات ساخنة': 'hot_drinks',
+        'hot drinks': 'hot_drinks',
+        'hot_drinks': 'hot_drinks',
+        'أكل': 'food',
+        'اكل': 'food',
+        'food': 'food',
+        'أخرى': 'other',
+        'اخري': 'other',
+        'other': 'other'
+    };
+    return map[value] || 'other';
+}
+
+function menuCategoryLabel(category) {
+    const key = normalizeMenuCategory(category);
+    const labels = {
+        cold_drinks: t('🧊 مشروبات باردة', '🧊 Cold Drinks'),
+        hot_drinks: t('☕ مشروبات ساخنة', '☕ Hot Drinks'),
+        food: t('🍔 أكل', '🍔 Food'),
+        other: t('📦 أخرى', '📦 Other')
+    };
+    return labels[key];
+}
+
+function renderMenuQuickAdd() {
+    const container = document.getElementById('menuQuickAdd');
+    if (!container) return;
+    
+    if (menuItems.length === 0) {
+        container.innerHTML = `<span style="color:var(--text-faint);font-size:13px;">${t('مفيش أصناف — ضيفها من الإعدادات', 'No items — add them from settings')}</span>`;
+        return;
+    }
+    
+    const grouped = {};
+    menuItems.forEach(item => {
+        const category = normalizeMenuCategory(item.category);
+        if (!grouped[category]) grouped[category] = [];
+        grouped[category].push(item);
+    });
+    
+    let html = '';
+    const categoryNames = Object.keys(grouped);
+    
+    for (let i = 0; i < categoryNames.length; i++) {
+        const category = categoryNames[i];
+        const items = grouped[category];
+        const isOpen = (i === 0);
+        if (categoryToggleState[category] === undefined) {
+            categoryToggleState[category] = isOpen;
+        }
+        const open = categoryToggleState[category];
+        
+        html += `<div class="menu-category-group">`;
+        html += `<div class="menu-category-toggle" onclick="toggleCategory('${escapeHtml(category)}')">`;
+        html += `<span class="cat-title">${escapeHtml(menuCategoryLabel(category))}</span>`;
+        html += `<i class="fa-solid fa-chevron-down cat-arrow ${open ? 'open' : ''}"></i>`;
+        html += `</div>`;
+        html += `<div class="menu-category-items ${open ? 'open' : ''}" data-category="${escapeHtml(category)}">`;
+        items.forEach(item => {
+            const sessionId =
+                currentOrderSessionId ||
+                (activeStationId && sessions[activeStationId] ? sessions[activeStationId].id : '') ||
+                (activeSessionOrders.length > 0 ? activeSessionOrders[0].session_id : '');
+            html += `<button class="btn btn-ghost btn-sm" onclick="addOrderItem('${sessionId}','${item.id}')">${escapeHtml(item.name)} - ${money(item.price)}</button>`;
+        });
+        html += `</div></div>`;
+    }
+    
+    container.innerHTML = html;
+}
+
+function toggleCategory(category) {
+    categoryToggleState[category] = !categoryToggleState[category];
+    const isOpen = categoryToggleState[category];
+    
+    const container = document.getElementById('menuQuickAdd');
+    if (!container) return;
+    const toggles = container.querySelectorAll('.menu-category-toggle');
+    toggles.forEach(toggle => {
+        const titleEl = toggle.querySelector('.cat-title');
+        if (titleEl && titleEl.textContent.trim() === menuCategoryLabel(category)) {
+            const arrow = toggle.querySelector('.cat-arrow');
+            if (arrow) {
+                arrow.classList.toggle('open', isOpen);
+            }
+        }
+    });
+    
+    const itemsContainer = container.querySelector(`.menu-category-items[data-category="${category}"]`);
+    if (itemsContainer) {
+        itemsContainer.classList.toggle('open', isOpen);
+    }
+}
+
+function renderStationOrdersSection() {
+    const el = document.getElementById('stationOrdersList');
+    if (!el) return;
+    el.innerHTML = activeSessionOrders.length === 0
+        ? `<div class="empty"><i class="fa-solid fa-utensils"></i>${t('مفيش طلبات على الجلسة دي', 'No orders on this session')}</div>`
+        : activeSessionOrders.map(o => `<div class="list-row">
+            <div><div class="row-title">${escapeHtml(o.item_name)}</div><div class="row-sub">${o.quantity} × ${money(o.unit_price)}</div></div>
+            <div style="display:flex;align-items:center;gap:10px;">
+                <div class="row-value">${money(o.quantity * o.unit_price)}</div>
+                <button class="btn btn-ghost btn-sm" style="padding:6px 10px;" onclick="removeOrderItem('${o.id}')" title="${t('حذف/إنقاص', 'Remove/Decrease')}"><i class="fa-solid fa-minus"></i></button>
+            </div>
+        </div>`).join('');
+}
+
+function selectStartMode(mode) {
+    document.querySelectorAll('.mode-option').forEach(el => {
+        el.classList.remove('selected-single', 'selected-multi');
+        if (el.dataset.mode === mode) {
+            el.classList.add(mode === 'single' ? 'selected-single' : 'selected-multi');
+        }
+    });
+    document.getElementById('selectedStartMode').value = mode;
 }
 
 // ============================================================
-// SESSION RECOVERY
+// ADD PREPAID AMOUNT
+// ============================================================
+async function addPrepaidAmount(stationId) {
+    const session = sessions[stationId];
+    if (!session) return;
+
+    const input = document.getElementById('addPrepaidInput');
+    const addAmount = Math.max(0, parseFloat(input && input.value) || 0);
+    if (addAmount <= 0) {
+        showToast(t('اكتب مبلغ أكبر من صفر', 'Enter an amount greater than zero'), 'warning');
+        return;
+    }
+
+    const currentPrepaid = Number(session.prepaid_amount) || 0;
+    const newPrepaid = Math.round((currentPrepaid + addAmount) * 100) / 100;
+
+    try {
+        const { error } = await supabaseClient.from('sessions').update({ prepaid_amount: newPrepaid }).eq('id', session.id);
+
+        if (error && /column .* does not exist/i.test(error.message || '')) {
+            console.warn('prepaid_amount column missing — cannot save advance payment:', error.message);
+            showToast(t('عمود المبلغ المقدم غير موجود في قاعدة البيانات، ضيفه الأول', 'Advance payment column missing in database — add it first'), 'error');
+            return;
+        }
+        if (error) { throw error; }
+
+        session.prepaid_amount = newPrepaid;
+        if (input) input.value = '';
+        showToast(t(`تمت إضافة ${moneyDec(addAmount)} ج مقدماً`, `Added ${moneyDec(addAmount)} EGP in advance`), 'success');
+
+        await refreshStationSheetContent(stationId);
+    } catch (e) {
+        console.error('Error adding prepaid amount:', e);
+        showToast(t('فشلت إضافة المبلغ المقدم', 'Failed to add advance payment'), 'error');
+    }
+}
+
+// ============================================================
+// SWITCH MODE
+// ============================================================
+async function handleSwitchMode(sessionId, newMode, stationId) {
+    if (pendingSwitch) return;
+    pendingSwitch = true;
+    const errEl = document.getElementById('stationSheetError');
+    errEl.textContent = '';
+    const btn = document.getElementById('switchModeBtn');
+    if (btn) btn.disabled = true;
+
+    try {
+        let activeSeg = await getActiveSegment(sessionId);
+
+        if (activeSeg && activeSeg.timer_type === 'countdown') {
+            const remaining = getRemainingSeconds(activeSeg);
+            if (remaining <= 0) {
+                showToast(t('لا يمكن التحويل لأن الوقت انتهى.', 'Cannot switch because time is up.'), 'error');
+                pendingSwitch = false;
+                if (btn) btn.disabled = false;
+                return;
+            }
+        }
+
+        if (!activeSeg) {
+            const session = sessions[stationId];
+            const st = stations.find(s => s.id === stationId);
+            const recoveryMode = (session && session.current_mode) || 'single';
+            const recoveryRate = (session && session.rate) || (recoveryMode === 'single' ? (st?.single_rate || 20) : (st?.multi_rate || 30));
+            const recoveryTimerType = (session && session.timer_type) || 'countup';
+            try {
+                activeSeg = await createSegment(sessionId, recoveryMode, new Date().toISOString(), recoveryRate, recoveryTimerType, 0);
+                showToast(t('تم تصحيح حالة الجلسة، جرب التحويل تاني لو محتاج', 'Session state fixed, try switching again if needed'), 'success');
+                await refreshStationSheetContent(stationId);
+            } catch (e) {
+                showToast(t('مقدرش أصلح حالة الجلسة، جرب تاني', "Couldn't fix session state, try again"), 'error');
+            }
+            pendingSwitch = false;
+            if (btn) btn.disabled = false;
+            return;
+        }
+
+        const now = new Date().toISOString();
+        const start = new Date(activeSeg.started_at);
+        let usedSeconds = (new Date(now) - start) / 1000;
+        let hours = usedSeconds / 3600;
+        let amount = Math.round((hours * Number(activeSeg.rate)) * 100) / 100;
+
+        if (activeSeg.timer_type === 'countdown' && activeSeg.duration_seconds) {
+            usedSeconds = Math.min(usedSeconds, activeSeg.duration_seconds);
+            hours = usedSeconds / 3600;
+            amount = Math.round((hours * Number(activeSeg.rate)) * 100) / 100;
+        }
+
+        const st = stations.find(s => s.id === stationId);
+        const newRate = newMode === 'single' ? (st.single_rate || 20) : (st.multi_rate || 30);
+        const timerType = activeSeg.timer_type || 'countup';
+        const durationSeconds = timerType === 'countdown'
+            ? Math.max(0, Math.round((activeSeg.duration_seconds || 0) - usedSeconds))
+            : Math.round(activeSeg.duration_seconds || 0);
+
+        await closeSegment(activeSeg.id, now, amount);
+        await createSegment(sessionId, newMode, now, newRate, timerType, durationSeconds);
+
+        await supabaseClient.from('sessions')
+            .update({ current_mode: newMode, rate: newRate })
+            .eq('id', sessionId);
+
+        if (sessions[stationId]) {
+            sessions[stationId].current_mode = newMode;
+            sessions[stationId].rate = newRate;
+        }
+
+        showToast(t('تم التحويل إلى ' + (newMode === 'single' ? 'Single' : 'Multi'), 'Switched to ' + (newMode === 'single' ? 'Single' : 'Multi')), 'success');
+        
+        await refreshStationSheetContent(stationId);
+        
+    } catch (e) {
+        console.error('Error switching mode:', e);
+        errEl.textContent = t('فشل التحويل، حاول تاني.', 'Switch failed, try again.');
+        showToast(t('فشل التحويل: ' + e.message, 'Switch failed: ' + e.message), 'error');
+    } finally {
+        pendingSwitch = false;
+        if (btn) btn.disabled = false;
+    }
+}
+
+// ============================================================
+// SESSION RECOVERY & REFRESH
 // ============================================================
 async function recoverActiveSession() {
     if (!business) return;
@@ -3625,9 +3872,6 @@ async function recoverActiveSession() {
     }
 }
 
-// ============================================================
-// REFRESH STATION SHEET CONTENT
-// ============================================================
 async function refreshStationSheetContent(stationId) {
     const st = stations.find(s => s.id === stationId);
     const session = sessions[stationId];
@@ -3756,131 +4000,62 @@ async function refreshStationSheetContent(stationId) {
 }
 
 // ============================================================
-// ✅ إضافة مبلغ مقدم أثناء الجلسة
+// QR Station Sheet (open QR for station)
 // ============================================================
-async function addPrepaidAmount(stationId) {
-    const session = sessions[stationId];
-    if (!session) return;
+function getOrderPageUrl(station) {
+    return new URL('order.html?t=' + encodeURIComponent(station.qr_token), window.location.href).href;
+}
 
-    const input = document.getElementById('addPrepaidInput');
-    const addAmount = Math.max(0, parseFloat(input && input.value) || 0);
-    if (addAmount <= 0) {
-        showToast(t('اكتب مبلغ أكبر من صفر', 'Enter an amount greater than zero'), 'warning');
+function openStationQrSheet(stationId) {
+    const st = stations.find(s => s.id === stationId);
+    if (!st) return;
+    if (!st.qr_token) {
+        showToast(t('الجهاز ده لسه معملوش QR token — شغّل ملف SQL migration الأول.', "This device doesn't have a QR token yet — run the SQL migration first."), 'error');
         return;
     }
+    const displayName = st.name ? st.name : t('جهاز', 'Device') + ' ' + st.number;
+    document.getElementById('stationQrTitle').textContent = displayName;
+    const url = getOrderPageUrl(st);
+    const qrImg = 'https://api.qrserver.com/v1/create-qr-code/?size=300x300&margin=8&data=' + encodeURIComponent(url);
+    const disabledNote = business.qr_ordering_enabled ? '' :
+        `<div class="empty" style="margin-bottom:10px;color:var(--red);"><i class="fa-solid fa-triangle-exclamation"></i>${t('خدمة الطلب عبر QR متوقفة حاليًا — فعّلها من الإعدادات.', 'QR ordering is currently disabled — enable it from Settings.')}</div>`;
+    document.getElementById('stationQrBody').innerHTML = `
+        ${disabledNote}
+        <div class="qr-code-box"><img src="${qrImg}" alt="QR"></div>
+        <div class="qr-link-box">${escapeHtml(url)}</div>
+        <div style="display:flex;gap:8px;margin-top:12px;">
+            <button class="btn btn-ghost btn-block" onclick="navigator.clipboard.writeText('${url}').then(()=>showToast(t('تم نسخ الرابط','Link copied'),'success'))"><i class="fa-solid fa-copy"></i> ${t('نسخ الرابط', 'Copy link')}</button>
+            <button class="btn btn-teal btn-block" onclick="window.open('${url}','_blank')"><i class="fa-solid fa-up-right-from-square"></i> ${t('فتح الصفحة', 'Open page')}</button>
+        </div>
+    `;
+    openSheet('stationQrOverlay');
+}
 
-    const currentPrepaid = Number(session.prepaid_amount) || 0;
-    const newPrepaid = Math.round((currentPrepaid + addAmount) * 100) / 100;
-
+async function toggleQrOrdering(enabled) {
     try {
-        const { error } = await supabaseClient.from('sessions').update({ prepaid_amount: newPrepaid }).eq('id', session.id);
-
-        if (error && /column .* does not exist/i.test(error.message || '')) {
-            console.warn('prepaid_amount column missing — cannot save advance payment:', error.message);
-            showToast(t('عمود المبلغ المقدم غير موجود في قاعدة البيانات، ضيفه الأول', 'Advance payment column missing in database — add it first'), 'error');
-            return;
-        }
-        if (error) { throw error; }
-
-        session.prepaid_amount = newPrepaid;
-        if (input) input.value = '';
-        showToast(t(`تمت إضافة ${moneyDec(addAmount)} ج مقدماً`, `Added ${moneyDec(addAmount)} EGP in advance`), 'success');
-
-        await refreshStationSheetContent(stationId);
+        const { error } = await supabaseClient.from('businesses').update({ qr_ordering_enabled: enabled }).eq('id', business.id);
+        if (error) throw error;
+        business.qr_ordering_enabled = enabled;
+        showToast(enabled ? t('تم تفعيل الطلب عبر QR', 'QR ordering enabled') : t('تم تعطيل الطلب عبر QR', 'QR ordering disabled'), 'success');
+        renderSettingsStations(); // refresh to show/hide QR buttons
     } catch (e) {
-        console.error('Error adding prepaid amount:', e);
-        showToast(t('فشلت إضافة المبلغ المقدم', 'Failed to add advance payment'), 'error');
+        console.error('Error toggling qr ordering:', e);
+        document.getElementById('qrOrderingToggle').checked = !enabled;
+        showToast(t('فشل تغيير الإعداد، حاول تاني', 'Failed to change the setting, try again'), 'error');
     }
 }
 
 // ============================================================
-// SWITCH MODE
+// ESCAPE HTML HELPER
 // ============================================================
-async function handleSwitchMode(sessionId, newMode, stationId) {
-    if (pendingSwitch) return;
-    pendingSwitch = true;
-    const errEl = document.getElementById('stationSheetError');
-    errEl.textContent = '';
-    const btn = document.getElementById('switchModeBtn');
-    if (btn) btn.disabled = true;
-
-    try {
-        let activeSeg = await getActiveSegment(sessionId);
-
-        if (activeSeg && activeSeg.timer_type === 'countdown') {
-            const remaining = getRemainingSeconds(activeSeg);
-            if (remaining <= 0) {
-                showToast(t('لا يمكن التحويل لأن الوقت انتهى.', 'Cannot switch because time is up.'), 'error');
-                pendingSwitch = false;
-                if (btn) btn.disabled = false;
-                return;
-            }
-        }
-
-        if (!activeSeg) {
-            const session = sessions[stationId];
-            const st = stations.find(s => s.id === stationId);
-            const recoveryMode = (session && session.current_mode) || 'single';
-            const recoveryRate = (session && session.rate) || (recoveryMode === 'single' ? (st?.single_rate || 20) : (st?.multi_rate || 30));
-            const recoveryTimerType = (session && session.timer_type) || 'countup';
-            try {
-                activeSeg = await createSegment(sessionId, recoveryMode, new Date().toISOString(), recoveryRate, recoveryTimerType, 0);
-                showToast(t('تم تصحيح حالة الجلسة، جرب التحويل تاني لو محتاج', 'Session state fixed, try switching again if needed'), 'success');
-                await refreshStationSheetContent(stationId);
-            } catch (e) {
-                showToast(t('مقدرش أصلح حالة الجلسة، جرب تاني', "Couldn't fix session state, try again"), 'error');
-            }
-            pendingSwitch = false;
-            if (btn) btn.disabled = false;
-            return;
-        }
-
-        const now = new Date().toISOString();
-        const start = new Date(activeSeg.started_at);
-        let usedSeconds = (new Date(now) - start) / 1000;
-        let hours = usedSeconds / 3600;
-        let amount = Math.round((hours * Number(activeSeg.rate)) * 100) / 100;
-
-        if (activeSeg.timer_type === 'countdown' && activeSeg.duration_seconds) {
-            usedSeconds = Math.min(usedSeconds, activeSeg.duration_seconds);
-            hours = usedSeconds / 3600;
-            amount = Math.round((hours * Number(activeSeg.rate)) * 100) / 100;
-        }
-
-        const st = stations.find(s => s.id === stationId);
-        const newRate = newMode === 'single' ? (st.single_rate || 20) : (st.multi_rate || 30);
-        const timerType = activeSeg.timer_type || 'countup';
-        const durationSeconds = timerType === 'countdown'
-            ? Math.max(0, Math.round((activeSeg.duration_seconds || 0) - usedSeconds))
-            : Math.round(activeSeg.duration_seconds || 0);
-
-        await closeSegment(activeSeg.id, now, amount);
-        await createSegment(sessionId, newMode, now, newRate, timerType, durationSeconds);
-
-        await supabaseClient.from('sessions')
-            .update({ current_mode: newMode, rate: newRate })
-            .eq('id', sessionId);
-
-        if (sessions[stationId]) {
-            sessions[stationId].current_mode = newMode;
-            sessions[stationId].rate = newRate;
-        }
-
-        showToast(t('تم التحويل إلى ' + (newMode === 'single' ? 'Single' : 'Multi'), 'Switched to ' + (newMode === 'single' ? 'Single' : 'Multi')), 'success');
-        
-        await refreshStationSheetContent(stationId);
-        
-    } catch (e) {
-        console.error('Error switching mode:', e);
-        errEl.textContent = t('فشل التحويل، حاول تاني.', 'Switch failed, try again.');
-        showToast(t('فشل التحويل: ' + e.message, 'Switch failed: ' + e.message), 'error');
-    } finally {
-        pendingSwitch = false;
-        if (btn) btn.disabled = false;
-    }
+function escapeHtml(str) { 
+    if (!str) return '';
+    const d = document.createElement('div'); 
+    d.textContent = str; 
+    return d.innerHTML; 
 }
 
-// Export functions needed globally
+// Export all functions that are used in onclick attributes
 window.handleSetupContinue = handleSetupContinue;
 window.handleActivateDevice = handleActivateDevice;
 window.selectLockRole = selectLockRole;
@@ -3944,6 +4119,8 @@ window.openQrOrdersSheet = openQrOrdersSheet;
 window.addQrOrderToBill = addQrOrderToBill;
 window.dismissQrOrder = dismissQrOrder;
 window.deliverQrOrder = deliverQrOrder;
+window.openStationQrSheet = openStationQrSheet;
+window.toggleQrOrdering = toggleQrOrdering;
 window.renderStationsGrid = renderStationsGrid;
 window.renderSettings = renderSettings;
 window.renderDashboard = renderDashboard;
