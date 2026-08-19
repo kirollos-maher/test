@@ -144,6 +144,32 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .station-card::before { content: ''; position: absolute; top: 0; right: 0; bottom: 0; width: 3px; background: var(--border-strong); }
 .station-card.occupied { border-color: var(--teal-dim); }
 .station-card.occupied::before { background: var(--teal); box-shadow: 0 0 12px rgba(45,212,191,0.6); }
+
+/* ---------- QR customer order alert ---------- */
+.station-card.has-qr-order { border-color: var(--red); animation: qrCardPulse 1.2s infinite; }
+@keyframes qrCardPulse { 0%,100% { box-shadow: 0 0 0 0 rgba(239,68,68,0.45); } 50% { box-shadow: 0 0 0 6px rgba(239,68,68,0); } }
+.qr-order-badge {
+    position: absolute; top: -8px; inset-inline-end: -8px; z-index: 2;
+    width: 26px; height: 26px; border-radius: 50%; background: var(--red); color: #fff;
+    display: flex; align-items: center; justify-content: center; font-weight: 800; font-size: 15px;
+    box-shadow: 0 0 0 3px var(--bg), 0 0 14px rgba(239,68,68,0.8);
+    animation: qrBadgeBounce 0.9s infinite;
+}
+@keyframes qrBadgeBounce { 0%,100% { transform: scale(1); } 50% { transform: scale(1.18); } }
+
+.qr-order-item { background: var(--bg-sunken); border: 1px solid var(--border); border-radius: var(--radius-md); padding: 12px; margin-bottom: 10px; }
+.qr-order-item .qr-order-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; }
+.qr-order-item .qr-order-station { font-weight: 800; color: var(--amber); font-size: 14px; }
+.qr-order-item .qr-order-time { font-size: 11px; color: var(--text-faint); font-family: var(--font-mono); }
+.qr-order-item .qr-order-lines { font-size: 13px; color: var(--text); margin-bottom: 8px; }
+.qr-order-item .qr-order-lines div { display: flex; justify-content: space-between; padding: 3px 0; border-bottom: 1px dashed var(--border); }
+.qr-order-item .qr-order-note { font-size: 12px; color: var(--text-dim); margin-bottom: 8px; }
+.qr-order-item .qr-order-actions { display: flex; gap: 8px; }
+.qr-order-item .qr-order-actions .btn { flex: 1; }
+
+.qr-code-box { display: inline-block; background: #fff; padding: 14px; border-radius: var(--radius-md); }
+.qr-code-box img { display: block; width: 220px; height: 220px; }
+.qr-link-box { margin-top: 14px; background: var(--bg-sunken); border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 10px; font-family: var(--font-mono); font-size: 11.5px; color: var(--text-dim); word-break: break-all; text-align: start; }
 .station-num { font-weight: 800; font-size: 15px; }
 .station-status { font-size: 11px; color: var(--text-dim); font-weight: 600; }
 .station-card.occupied .station-status { color: var(--teal); }
