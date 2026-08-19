@@ -3,7 +3,7 @@
 // CONFIG
 // ============================================================
 const SUPABASE_URL = 'https://fhjhtgbvtkuhhzitvxtx.supabase.co';
-const SUPABASE_ANON_KEY = sb_publishable_X0aLD3gjXGqC_no4gW78ng_TWztP5cd';
+const SUPABASE_ANON_KEY = 'sb_publishable_X0aLD3gjXGqC_no4gW78ng_TWztP5cd';
 const supabaseClient = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 
 // V2 safety helpers: never report success when Supabase rejected the operation.
