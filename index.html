@@ -470,6 +470,19 @@
         <div class="panel" id="shiftHistory"></div>
     </div>
 
+    <!-- ---------- ANALYTICS ---------- -->
+    <div class="view" id="view-analytics">
+        <div class="section-title" data-ar="التحليلات" data-en="Analytics">التحليلات</div>
+        <div class="shift-tabs">
+            <button class="analytics-tab" data-filter="today" onclick="setAnalyticsFilter('today')" data-ar="اليوم" data-en="Today">اليوم</button>
+            <button class="analytics-tab active" data-filter="week" onclick="setAnalyticsFilter('week')" data-ar="آخر 7 أيام" data-en="Last 7 Days">آخر 7 أيام</button>
+            <button class="analytics-tab" data-filter="month" onclick="setAnalyticsFilter('month')" data-ar="آخر 30 يوم" data-en="Last 30 Days">آخر 30 يوم</button>
+        </div>
+        <div id="analyticsBody">
+            <div class="empty"><i class="fa-solid fa-chart-pie"></i><span data-ar="جارِ التحميل..." data-en="Loading...">جارِ التحميل...</span></div>
+        </div>
+    </div>
+
     <!-- ---------- SETTINGS ---------- -->
     <div class="view" id="view-settings">
         <div class="section-title" style="cursor:pointer;display:flex;align-items:center;justify-content:space-between;" onclick="toggleSettingsStations()">
@@ -703,6 +716,7 @@
         <button class="nav-btn active" data-view="view-dashboard" onclick="navigateTo('view-dashboard')"><i class="fa-solid fa-chart-simple"></i><span data-ar="الرئيسية" data-en="Home">الرئيسية</span></button>
         <button class="nav-btn" data-view="view-stations" onclick="navigateTo('view-stations')"><i class="fa-solid fa-gamepad"></i><span data-ar="الأجهزة" data-en="Devices">الأجهزة</span></button>
         <button class="nav-btn" data-view="view-shift" onclick="navigateTo('view-shift')"><i class="fa-solid fa-clock"></i><span data-ar="الشيفت" data-en="Shift">الشيفت</span></button>
+        <button class="nav-btn" data-view="view-analytics" onclick="navigateTo('view-analytics')"><i class="fa-solid fa-chart-pie"></i><span data-ar="التحليلات" data-en="Analytics">التحليلات</span></button>
         <button class="nav-btn" data-view="view-settings" onclick="navigateTo('view-settings')"><i class="fa-solid fa-gear"></i><span data-ar="الإعدادات" data-en="Settings">الإعدادات</span></button>
     </div>
 </div>
