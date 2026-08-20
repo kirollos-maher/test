@@ -454,7 +454,9 @@ async function enterMainApp() {
 }
 
 // ============================================================
-// تذكير الطلبات اللي لسه ما اتحضّرتش (كل 3 دقايق لكل طلب)
+// شبكة أمان: اكتشاف الطلبات الجديدة + تذكير بالطلبات اللي لسه ما اتحضّرتش
+// (بتشتغل بالـ polling كل 20 ثانية بغض النظر عن حالة الـ Realtime، عشان
+// التنبيه والعلامة الحمرا يوصلوا للكاشير حتى لو حصلت مشكلة في الاشتراك اللحظي)
 // ============================================================
 function startQrOrderReminders() {
     if (qrReminderInterval) clearInterval(qrReminderInterval);
@@ -471,19 +473,45 @@ async function checkQrOrderReminders() {
     const REMINDER_MS = 3 * 60 * 1000;
     try {
         // بنجيب من قاعدة البيانات أي طلب لسه مش "تم التحضير" (pending أو seen)
-        // عشان التذكير يفضل شغال حتى لو الطلب اتفتحله شيت الجهاز وبقى seen
         const { data, error } = await supabaseClient
             .from('qr_orders')
-            .select('id, station_id, created_at')
+            .select('*')
             .eq('business_id', business.id)
             .in('status', ['pending', 'seen']);
         if (error || !data) return;
 
         const now = Date.now();
         const activeIds = new Set();
+        let gridNeedsUpdate = false;
 
         data.forEach(o => {
             activeIds.add(o.id);
+            const alreadyKnown = (qrOrders[o.station_id] || []).some(x => x.id === o.id);
+
+            // حالة 1: طلب جديد ظهر في القاعدة ومفيش عندنا خبر عنه لسه (يعني الـ Realtime
+            // ماوصلش، أو الصفحة كانت متقفلة) — بنعامله كطلب جديد فورًا: علامة تعجب + رنة
+            if (!alreadyKnown && o.status === 'pending') {
+                if (!qrOrders[o.station_id]) qrOrders[o.station_id] = [];
+                qrOrders[o.station_id].push(o);
+                gridNeedsUpdate = true;
+                qrReminderLastSent[o.id] = now;
+
+                const station = stations.find(s => s.id === o.station_id);
+                const deviceName = station ? (station.name || t('جهاز', 'Device') + ' ' + station.number) : t('جهاز', 'Device');
+                const itemsSummary = (o.items || []).map(it => `${it.name} ×${it.qty}`).join('، ');
+                if (typeof showRingNotification === 'function') {
+                    showRingNotification(
+                        t('🛎️ طلب جديد من العميل', '🛎️ New customer order'),
+                        t(`${deviceName}: ${itemsSummary}`, `${deviceName}: ${itemsSummary}`),
+                        'warning'
+                    );
+                } else if (typeof showToast === 'function') {
+                    showToast(t(`🛎️ طلب جديد من ${deviceName}: ${itemsSummary}`, `🛎️ New order from ${deviceName}: ${itemsSummary}`), 'warning');
+                }
+                return;
+            }
+
+            // حالة 2: طلب معروف بالفعل ولسه مش متحضر بعد 3 دقايق — تذكير دوري
             const createdAt = new Date(o.created_at).getTime();
             const lastSent = qrReminderLastSent[o.id] || createdAt;
             if (now - lastSent >= REMINDER_MS) {
@@ -502,6 +530,11 @@ async function checkQrOrderReminders() {
                 }
             }
         });
+
+        if (gridNeedsUpdate) {
+            updateHeaderBellBadge();
+            renderStationsGrid();
+        }
 
         // تنظيف الطلبات اللي اتحضّرت من الذاكرة عشان ميفضلش تراكم
         Object.keys(qrReminderLastSent).forEach(id => {
@@ -4474,18 +4507,25 @@ async function submitCustomerOrder() {
         
         // 2) تسجيل تنبيه للكاشير (علامة التعجب فوق الجهاز + رنة + تذكير كل 3 دقايق)
         // ده منفصل عن الفاتورة تمامًا، غرضه بس تنبيه الموظف إن فيه طلب محتاج تحضير
-        await supabaseClient.from('qr_orders').insert({
-            business_id: customerBusiness.id,
-            station_id: stationId,
-            items: customerCart.map(item => ({
-                id: item.id,
-                name: item.name,
-                price: item.price,
-                qty: item.quantity
-            })),
-            note: '📱 طلب من العميل عبر QR (اتضاف للفاتورة تلقائيًا)',
-            status: 'pending'
-        });
+        // ملحوظة: بنعمله في try/catch منفصل عشان لو فشل لأي سبب (صلاحيات مثلاً)،
+        // الطلب نفسه يكون خلاص اتضاف للفاتورة بنجاح ومتوقفش عليه
+        try {
+            const { error: qrErr } = await supabaseClient.from('qr_orders').insert({
+                business_id: customerBusiness.id,
+                station_id: stationId,
+                items: customerCart.map(item => ({
+                    id: item.id,
+                    name: item.name,
+                    price: item.price,
+                    qty: item.quantity
+                })),
+                note: '📱 طلب من العميل عبر QR (اتضاف للفاتورة تلقائيًا)',
+                status: 'pending'
+            });
+            if (qrErr) console.error('⚠️ فشل تسجيل تنبيه الطلب (qr_orders):', qrErr);
+        } catch (qrEx) {
+            console.error('⚠️ خطأ غير متوقع أثناء تسجيل تنبيه الطلب:', qrEx);
+        }
         
         // تفريغ السلة وإغلاق الشيت
         customerCart = [];
