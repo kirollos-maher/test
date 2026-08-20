@@ -12,6 +12,7 @@
 <script src="app.js"></script>
 <script src="analytics.js"></script>
 <script src="alerts.js"></script>
+<script src="whatsapp.js"></script>
 
 <style>
     /* ✅ DORAK Brand */
@@ -279,6 +280,21 @@
     .cart-summary .summary-row.total .amount {
         color: var(--amber);
     }
+
+    /* ✅ WhatsApp Settings */
+    .whatsapp-status-dot {
+        display: inline-block;
+        width: 10px;
+        height: 10px;
+        border-radius: 50%;
+        margin-right: 6px;
+    }
+    .whatsapp-status-dot.enabled {
+        background: var(--green);
+    }
+    .whatsapp-status-dot.disabled {
+        background: var(--red);
+    }
 </style>
 </head>
 <body>
@@ -532,6 +548,10 @@
         <div class="section-title" data-ar="الموظفين" data-en="Employees">الموظفين</div>
         <div class="panel" id="settingsEmployees"></div>
         <button class="btn btn-ghost btn-block" style="margin-top:8px;" onclick="openEmployeeSheet()"><i class="fa-solid fa-plus"></i> <span data-ar="إضافة موظف" data-en="Add Employee">إضافة موظف</span></button>
+
+        <!-- ============== WHATSAPP SETTINGS ============== -->
+        <div class="section-title" data-ar="تنبيهات واتساب" data-en="WhatsApp Notifications">تنبيهات واتساب</div>
+        <div id="settingsWhatsapp"></div>
 
         <div class="section-title" data-ar="النشاط" data-en="Business">النشاط</div>
         <button class="btn btn-ghost btn-block" onclick="switchBusiness()"><i class="fa-solid fa-right-left"></i> <span data-ar="تبديل النشاط" data-en="Switch Business">تبديل النشاط</span></button>
