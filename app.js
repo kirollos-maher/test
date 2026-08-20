@@ -1436,8 +1436,13 @@ function renderStationsGrid() {
             ? `<div class="qr-order-badge" onclick="event.stopPropagation(); openQrOrdersSheet('${st.id}')" title="${t('طلب من العميل', 'Customer order')}"><i class="fa-solid fa-exclamation"></i></div>`
             : '';
 
+        const qrStationBtn = qrOrderingEnabled
+            ? `<button class="qr-station-btn" onclick="event.stopPropagation(); openStationQrSheet('${st.id}')" title="${t('كود QR لطلب العميل', 'Customer order QR code')}"><i class="fa-solid fa-qrcode"></i></button>`
+            : '';
+
         return `<div class="station-card ${occupied ? 'occupied' : ''} ${hasQrOrder ? 'has-qr-order' : ''}" onclick="openStationSheet('${st.id}')">
             ${qrBadge}
+            ${qrStationBtn}
             <div><div class="station-num">${displayName}</div><div class="station-status">${statusText} ${modeBadge} ${timerBadge}</div></div>
             ${timerDisplay}
         </div>`;
@@ -4550,6 +4555,7 @@ async function toggleQrOrdering(enabled) {
         localStorage.setItem('psr_qr_ordering_enabled', JSON.stringify(enabled));
         showToast(enabled ? '✅ تم تفعيل الطلب عبر QR' : '❌ تم تعطيل الطلب عبر QR', 'success');
         renderSettingsStations(); // تحديث زر QR في الإعدادات
+        renderStationsGrid(); // تحديث زرار QR فوق كل جهاز في صفحة الأجهزة
         // تحديث الـ toggle في الواجهة
         const toggle = document.getElementById('qrOrderingToggle');
         if (toggle) toggle.checked = enabled;
