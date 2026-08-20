@@ -422,30 +422,6 @@
             <div class="stat-card"><div class="stat-label" data-ar="أجهزة شغالة" data-en="Active Devices">أجهزة شغالة</div><div class="stat-value mono" id="dashActive">0</div></div>
             <div class="stat-card"><div class="stat-label" data-ar="أجهزة متاحة" data-en="Available Devices">أجهزة متاحة</div><div class="stat-value mono" id="dashAvailable">0</div></div>
         </div>
-
-        <!-- QR Code Toggle -->
-        <div class="section-title" data-ar="طلب العميل" data-en="Customer Order">📱 طلب من العميل</div>
-        <div class="qr-toggle-row">
-            <div>
-                <div class="qr-label"><i class="fa-solid fa-qrcode"></i> QR Code الأجهزة</div>
-                <div class="qr-sub">امسح للطلب من المنيو مباشرة</div>
-            </div>
-            <button class="btn btn-amber btn-sm" onclick="toggleQRCode()">
-                <i class="fa-solid fa-qrcode"></i> <span data-ar="عرض QR" data-en="Show QR">عرض QR</span>
-            </button>
-        </div>
-
-        <div class="qr-container" id="qrContainer">
-            <div class="qr-box">
-                <img id="qrCodeImage" src="" alt="QR Code">
-            </div>
-            <div style="margin-top:10px; font-size:12px; color:var(--text-muted);">
-                <i class="fa-solid fa-info-circle"></i> <span data-ar="امسح الكود لفتح منيو العميل" data-en="Scan to open customer menu">امسح الكود لفتح منيو العميل</span>
-            </div>
-            <button class="btn btn-ghost btn-sm" onclick="downloadQR()" style="margin-top:6px;">
-                <i class="fa-solid fa-download"></i> <span data-ar="تحميل QR" data-en="Download QR">تحميل QR</span>
-            </button>
-        </div>
     </div>
 
     <!-- ---------- STATIONS ---------- -->
