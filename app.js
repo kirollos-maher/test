@@ -110,6 +110,7 @@ let deviceRecord = null;
 let stations = [];
 let sessions = {};
 let menuItems = [];
+let menuCategories = [];
 let employees = [];
 let paymentMethods = [];
 let currentShift = null;
@@ -192,6 +193,7 @@ function closeSheet(id) {
         endingSessionInProgress = false;
     }
     if (id === 'transferOverlay') transferSourceStationId = null;
+    if (id === 'customerCartOverlay') { /* do nothing special */ }
 }
 function t(ar, en) { return currentLang === 'ar' ? ar : en; }
 
@@ -228,12 +230,10 @@ async function handleSetupContinue() {
 
         const deviceId = getDeviceId();
         let dev = null;
-        // try to get from localStorage first
         const savedDevice = localStorage.getItem('psr_device_record');
         if (savedDevice) {
             try {
                 dev = JSON.parse(savedDevice);
-                // verify it matches this business and device_id
                 if (dev.business_id !== biz.id || dev.device_id !== deviceId) dev = null;
             } catch (e) { dev = null; }
         }
@@ -424,6 +424,7 @@ async function tryAutoActivateFromURL() {
 window.addEventListener('DOMContentLoaded', async () => {
     await tryAutoActivateFromURL();
     tryAutoResume();
+    initCustomerPage();
 });
 
 // ============================================================
@@ -447,7 +448,6 @@ async function enterMainApp() {
     await recoverActiveSession();
     setInterval(syncServerClock, 5 * 60 * 1000);
 
-    // QR pending orders reminder every minute
     setInterval(() => {
         const pendingCount = totalPendingQrOrders();
         if (pendingCount > 0) {
@@ -460,6 +460,7 @@ async function loadAllData() {
     const results = await Promise.allSettled([
         loadStations(),
         loadMenuItems(),
+        loadMenuCategories(),
         loadEmployees(),
         loadPaymentMethods(),
         loadOrOpenShift(),
@@ -467,7 +468,7 @@ async function loadAllData() {
     ]);
     results.forEach((result, index) => {
         if (result.status === 'rejected') {
-            const names = ['stations', 'menu_items', 'employees', 'payment_methods', 'shift', 'qr_orders'];
+            const names = ['stations', 'menu_items', 'menu_categories', 'employees', 'payment_methods', 'shift', 'qr_orders'];
             console.error(`Failed to load ${names[index]}:`, result.reason);
         }
     });
@@ -502,7 +503,7 @@ async function loadStations() {
 }
 
 // ============================================================
-// MENU ITEMS
+// MENU ITEMS & CATEGORIES
 // ============================================================
 async function loadMenuItems() {
     try {
@@ -529,6 +530,21 @@ async function loadMenuItems() {
         } else {
             menuItems = [];
         }
+    }
+}
+
+async function loadMenuCategories() {
+    try {
+        const { data, error } = await supabaseClient.from('menu_categories').select('*').eq('business_id', business.id).eq('active', true).order('sort_order');
+        if (error) {
+            console.warn('Error loading menu categories:', error);
+            menuCategories = [];
+            return;
+        }
+        menuCategories = data || [];
+    } catch (e) {
+        console.warn('Error loading menu categories:', e);
+        menuCategories = [];
     }
 }
 
@@ -673,7 +689,6 @@ function handleQrOrderChange(payload) {
     const row = payload.new && Object.keys(payload.new).length ? payload.new : payload.old;
     if (!row) return;
 
-    // Remove existing copy
     Object.keys(qrOrders).forEach(stId => {
         qrOrders[stId] = (qrOrders[stId] || []).filter(o => o.id !== row.id);
         if (qrOrders[stId].length === 0) delete qrOrders[stId];
@@ -684,7 +699,6 @@ function handleQrOrderChange(payload) {
         if (!qrOrders[stId]) qrOrders[stId] = [];
         qrOrders[stId].push(payload.new);
 
-        // Trigger notification
         if (payload.eventType === 'INSERT') {
             const station = stations.find(s => s.id === stId);
             const deviceName = station ? (station.name || t('جهاز', 'Device') + ' ' + station.number) : t('جهاز', 'Device');
@@ -1720,7 +1734,6 @@ function renderSettingsStations() {
         el.innerHTML = `<div class="empty"><i class="fa-solid fa-gamepad"></i>${t('مفيش أجهزة — ضيف أول جهاز', 'No devices — add your first device')}</div>`;
         return;
     }
-    // Use the saved qrOrderingEnabled state
     const qrEnabled = qrOrderingEnabled;
     el.innerHTML = stations.map(st => {
         const displayName = st.name ? st.name : t('جهاز', 'Device') + ' ' + st.number;
@@ -3451,7 +3464,12 @@ function openMenuItemSheet() {
     document.getElementById('menuItemId').value = '';
     document.getElementById('menuItemName').value = '';
     document.getElementById('menuItemPrice').value = '';
+    document.getElementById('menuItemDesc').value = '';
+    document.getElementById('menuItemImageInput').value = '';
+    document.getElementById('menuItemImagePreview').style.display = 'none';
+    document.getElementById('menuItemImageData').value = '';
     document.getElementById('menuItemCategory').value = 'cold_drinks';
+    document.getElementById('menuItemActive').checked = true;
     document.getElementById('menuDeleteBtn').style.display = 'none';
     document.getElementById('menuItemError').textContent = '';
     document.getElementById('menuItemSheetTitle').textContent = t('إضافة صنف للقائمة', 'Add Menu Item');
@@ -3464,7 +3482,16 @@ function editMenuItem(itemId) {
     document.getElementById('menuItemId').value = item.id;
     document.getElementById('menuItemName').value = item.name;
     document.getElementById('menuItemPrice').value = item.price;
+    document.getElementById('menuItemDesc').value = item.description || '';
+    document.getElementById('menuItemImageData').value = item.image_url || '';
+    if (item.image_url) {
+        document.getElementById('menuItemImagePreviewImg').src = item.image_url;
+        document.getElementById('menuItemImagePreview').style.display = 'block';
+    } else {
+        document.getElementById('menuItemImagePreview').style.display = 'none';
+    }
     document.getElementById('menuItemCategory').value = normalizeMenuCategory(item.category);
+    document.getElementById('menuItemActive').checked = item.active !== false;
     document.getElementById('menuDeleteBtn').style.display = 'flex';
     document.getElementById('menuItemError').textContent = '';
     document.getElementById('menuItemSheetTitle').textContent = t('تعديل صنف', 'Edit Item');
@@ -3475,7 +3502,10 @@ async function submitMenuItem() {
     const id = document.getElementById('menuItemId').value;
     const name = document.getElementById('menuItemName').value.trim();
     const price = parseFloat(document.getElementById('menuItemPrice').value);
+    const description = document.getElementById('menuItemDesc').value.trim();
+    const image_data = document.getElementById('menuItemImageData').value || null;
     const category = normalizeMenuCategory(document.getElementById('menuItemCategory').value);
+    const active = document.getElementById('menuItemActive').checked;
     const errEl = document.getElementById('menuItemError');
     errEl.textContent = '';
     
@@ -3489,18 +3519,20 @@ async function submitMenuItem() {
             business_id: business.id,
             name: name,
             price: price,
+            description: description,
+            image_url: image_data,
             category: category,
-            active: true,
+            active: active,
             created_at: new Date().toISOString()
         };
         
         let result;
         if (id) {
-            result = await updateMenuItemInDB(id, { name, price, category });
+            result = await updateMenuItemInDB(id, { name, price, description, image_url: image_data, category, active });
             if (result) {
                 const idx = menuItems.findIndex(item => item.id === id);
                 if (idx !== -1) {
-                    menuItems[idx] = { ...menuItems[idx], name, price, category };
+                    menuItems[idx] = { ...menuItems[idx], name, price, description, image_url: image_data, category, active };
                 }
                 showToast(t('تم تحديث الصنف', 'Item updated'), 'success');
             } else {
@@ -3520,6 +3552,10 @@ async function submitMenuItem() {
         renderSettings();
         renderMenuQuickAdd();
         renderStationOrdersSection();
+        // تحديث صفحة العميل (إن كانت مفتوحة)
+        if (document.getElementById('customerPage').classList.contains('active')) {
+            loadCustomerData();
+        }
     } catch (e) {
         console.error('Error in submitMenuItem:', e);
         let errorMsg = e.message || 'Unknown error';
@@ -3541,6 +3577,9 @@ async function deleteMenuItemById(itemId) {
             renderSettings();
             renderMenuQuickAdd();
             renderStationOrdersSection();
+            if (document.getElementById('customerPage').classList.contains('active')) {
+                loadCustomerData();
+            }
         } else {
             throw new Error('Delete failed');
         }
@@ -3567,25 +3606,91 @@ function openEmployeeSheet() {
     document.getElementById('permStations').checked = true;
     document.getElementById('permShift').checked = false;
     document.getElementById('permSettings').checked = false;
+    document.getElementById('permCancelSession').checked = false;
+    document.getElementById('permTransferSession').checked = true;
+    document.getElementById('permExpenses').checked = false;
+    document.getElementById('permReports').checked = false;
+    document.getElementById('permDeleteShift').checked = false;
+    document.getElementById('permMenu').checked = false;
+    document.getElementById('permEmployees').checked = false;
+    document.getElementById('permPrices').checked = false;
+    document.getElementById('employeeDeleteBtn').style.display = 'none';
+    document.getElementById('employeeSheetTitle').textContent = t('إضافة موظف', 'Add Employee');
     openSheet('employeeOverlay');
 }
+
+function editEmployee(employeeId) {
+    const emp = employees.find(e => e.id === employeeId);
+    if (!emp) return;
+    const perms = emp.permissions || {};
+    document.getElementById('employeeName').value = emp.name || '';
+    document.getElementById('employeePin').value = emp.pin || '';
+    document.getElementById('employeeError').textContent = '';
+    document.getElementById('permStations').checked = !!perms.stations;
+    document.getElementById('permShift').checked = !!perms.shift;
+    document.getElementById('permSettings').checked = !!perms.settings;
+    document.getElementById('permCancelSession').checked = !!perms.cancel_session;
+    document.getElementById('permTransferSession').checked = !!perms.transfer_session;
+    document.getElementById('permExpenses').checked = !!perms.expenses;
+    document.getElementById('permReports').checked = !!perms.reports;
+    document.getElementById('permDeleteShift').checked = !!perms.delete_shift;
+    document.getElementById('permMenu').checked = !!perms.menu;
+    document.getElementById('permEmployees').checked = !!perms.employees;
+    document.getElementById('permPrices').checked = !!perms.prices;
+    document.getElementById('employeeDeleteBtn').style.display = 'flex';
+    document.getElementById('employeeSheetTitle').textContent = t('تعديل موظف', 'Edit Employee');
+    openSheet('employeeOverlay');
+}
+
 async function submitEmployee() {
+    const id = document.getElementById('employeeId').value;
     const name = document.getElementById('employeeName').value.trim();
     const pin = document.getElementById('employeePin').value.trim();
     if (!name || !/^\d{4,6}$/.test(pin)) { document.getElementById('employeeError').textContent = t('اكتب اسم و PIN من 4 لـ 6 أرقام.', 'Enter name and 4-6 digit PIN.'); return; }
     const permissions = {
         stations: document.getElementById('permStations').checked,
         shift: document.getElementById('permShift').checked,
-        settings: document.getElementById('permSettings').checked
+        settings: document.getElementById('permSettings').checked,
+        cancel_session: document.getElementById('permCancelSession').checked,
+        transfer_session: document.getElementById('permTransferSession').checked,
+        expenses: document.getElementById('permExpenses').checked,
+        reports: document.getElementById('permReports').checked,
+        delete_shift: document.getElementById('permDeleteShift').checked,
+        menu: document.getElementById('permMenu').checked,
+        employees: document.getElementById('permEmployees').checked,
+        prices: document.getElementById('permPrices').checked
     };
-    const { data, error } = await supabaseClient.from('employees').insert({ business_id: business.id, name, pin, permissions }).select();
-    if (error || !data || data.length === 0) {
+
+    try {
+        if (id) {
+            const { data, error } = await supabaseClient.from('employees').update({ name, pin, permissions }).eq('id', id).eq('business_id', business.id).select();
+            if (error || !data || data.length === 0) {
+                document.getElementById('employeeError').textContent = t('فشل تحديث الموظف، حاول تاني.', 'Failed to update employee, try again.');
+                console.error('Error updating employee:', error);
+                return;
+            }
+            closeSheet('employeeOverlay'); showToast(t('تم تحديث الموظف', 'Employee updated'), 'success');
+        } else {
+            const { data, error } = await supabaseClient.from('employees').insert({ business_id: business.id, name, pin, permissions }).select();
+            if (error || !data || data.length === 0) {
+                document.getElementById('employeeError').textContent = t('فشل حفظ الموظف، حاول تاني.', 'Failed to save employee, try again.');
+                console.error('Error adding employee:', error);
+                return;
+            }
+            closeSheet('employeeOverlay'); showToast(t('تمت إضافة الموظف', 'Employee added'), 'success');
+        }
+        await loadEmployees(); renderSettings();
+    } catch (e) {
         document.getElementById('employeeError').textContent = t('فشل حفظ الموظف، حاول تاني.', 'Failed to save employee, try again.');
-        console.error('Error adding employee:', error);
-        return;
+        console.error('Error in submitEmployee:', e);
     }
-    closeSheet('employeeOverlay'); showToast(t('تمت إضافة الموظف', 'Employee added'), 'success');
-    await loadEmployees(); renderSettings();
+}
+
+async function deleteEmployeeFromSheet() {
+    const id = document.getElementById('employeeId').value;
+    if (!id) return;
+    closeSheet('employeeOverlay');
+    await deleteEmployee(id);
 }
 
 async function deleteEmployee(employeeId) {
@@ -3603,7 +3708,7 @@ async function deleteEmployee(employeeId) {
 }
 
 // ============================================================
-// HELPERS (normalizeCategory, menuCategoryLabel, etc.)
+// HELPERS
 // ============================================================
 function normalizeMenuCategory(category) {
     const value = String(category || '').trim().toLowerCase();
@@ -3883,163 +3988,501 @@ async function recoverActiveSession() {
 }
 
 async function refreshStationSheetContent(stationId) {
-    const st = stations.find(s => s.id === stationId);
-    const session = sessions[stationId];
-    if (!session || !st) return;
-    
-    const body = document.getElementById('stationSheetBody');
-    if (!body) return;
-    
-    const segments = await getSessionSegments(session.id);
-    const activeSeg = segments.find(s => !s.ended_at);
-    const totals = await calculateTotalAmounts(session.id);
-    const currentEstimate = await getCurrentSegmentEstimate(session.id);
-    
-    const currentMode = activeSeg ? activeSeg.mode : (session.current_mode || 'single');
-    const currentRate = activeSeg ? activeSeg.rate : (st.single_rate || 20);
-    const modeLabel = currentMode === 'single' ? t('Single', 'Single') : t('Multi', 'Multi');
-    const modeBadgeClass = currentMode === 'single' ? 'badge-mode-single' : 'badge-mode-multi';
-    const switchLabel = currentMode === 'single' ? t('تحويل إلى Multi', 'Switch to Multi') : t('تحويل إلى Single', 'Switch to Single');
-    const switchMode = currentMode === 'single' ? 'multi' : 'single';
-    const switchRate = switchMode === 'single' ? (st.single_rate || 20) : (st.multi_rate || 30);
-    
-    const timerType = activeSeg ? (activeSeg.timer_type || 'countup') : 'countup';
-    const timerLabel = timerType === 'countdown' ? t('تنازلي', 'Countdown') : t('تصاعدي', 'Count Up');
-    const timerBadgeClass = timerType === 'countdown' ? 'badge-timer-down' : 'badge-timer-up';
-    const isCountdown = timerType === 'countdown';
-
-    const { data: orders } = await supabaseClient.from('session_orders').select('*').eq('session_id', session.id).order('created_at');
-    activeSessionOrders = orders || [];
-
-    const activeSegStart = activeSeg ? activeSeg.started_at : session.started_at;
-    const liveEarnedNow = activeSeg ? Math.round((Math.max(0, (nowCorrected() - new Date(activeSeg.started_at)) / 3600000) * Number(activeSeg.rate)) * 100) / 100 : 0;
-    const liveGrandTotal = Math.round((totals.grandTotal + liveEarnedNow) * 100) / 100;
-    
-    body.innerHTML = `
-        <div style="text-align:center;margin-bottom:12px;">
-            <div style="display:flex;justify-content:center;gap:8px;align-items:center;flex-wrap:wrap;">
-                <span class="badge ${modeBadgeClass}" style="font-size:13px;padding:4px 14px;">${modeLabel}</span>
-                <span class="badge ${timerBadgeClass}" style="font-size:11px;padding:3px 10px;">${timerLabel}</span>
-                <span class="badge badge-teal" style="font-size:13px;padding:4px 14px;">${money(currentRate)} ${t('ج/ساعة', 'EGP/hr')}</span>
-            </div>
-        </div>
-        <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:12px;">
-            <div class="stat-card" style="padding:10px;">
-                <div class="stat-label" style="font-size:10px;">${isCountdown ? t('الوقت المتبقي', 'Time Remaining') : t('إجمالي الجلسة', 'Total Session')}</div>
-                <div class="station-timer mono ${isCountdown ? 'countdown' : ''}" style="font-size:22px;" id="activeSessionTimer" data-start="${session.started_at}" data-station-id="${stationId}">${isCountdown ? formatCountdown(getRemainingSeconds(activeSeg)) : formatElapsed(new Date(session.started_at))}</div>
-            </div>
-            <div class="stat-card" style="padding:10px;border-color:${currentMode === 'single' ? 'var(--amber-dim)' : 'var(--teal-dim)'};">
-                <div class="stat-label" style="font-size:10px;">${t('الجزء الحالي', 'Current Segment')}</div>
-                <div class="station-timer mono" style="font-size:22px;color:${currentMode === 'single' ? 'var(--amber)' : 'var(--teal)'};" id="currentSegTimer" data-start="${activeSegStart}">${formatElapsed(new Date(activeSegStart))}</div>
-            </div>
-        </div>
-        <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:12px;">
-            <div style="background:var(--bg-sunken);border-radius:var(--radius-sm);padding:8px;text-align:center;">
-                <div style="font-size:10px;color:var(--text-dim);">${isCountdown ? t('قيمة الوقت المتبقي', 'Remaining Value') : t('قيمة الجزء الحالي', 'Current Segment Value')}</div>
-                <div class="mono" style="font-size:18px;font-weight:700;color:${currentMode === 'single' ? 'var(--amber)' : 'var(--teal)'};" id="currentSegAmount">${moneyDec(currentEstimate.amount)}</div>
-            </div>
-            <div style="background:var(--bg-sunken);border-radius:var(--radius-sm);padding:8px;text-align:center;">
-                <div style="font-size:10px;color:var(--text-dim);">${t('الإجمالي الكلي', 'Grand Total')}</div>
-                <div class="mono" style="font-size:18px;font-weight:700;color:var(--amber);" id="overallTotalAmount" data-base-total="${totals.grandTotal}">${moneyDec(liveGrandTotal)}</div>
-            </div>
-        </div>
-
-        <div class="section-title">${t('دفع مقدماً', 'Advance Payment')}</div>
-        <div style="background:var(--bg-sunken);border-radius:var(--radius-sm);padding:10px;margin-bottom:12px;">
-            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
-                <span style="font-size:12px;color:var(--text-dim);">${t('المدفوع مقدماً حالياً', 'Currently Paid in Advance')}</span>
-                <span class="mono" id="currentPrepaidDisplay" style="font-weight:700;color:var(--teal);">${moneyDec(Number(session.prepaid_amount) || 0)} ${t('ج', 'EGP')}</span>
-            </div>
-            <div style="display:flex;gap:8px;">
-                <input type="number" id="addPrepaidInput" class="mono" min="0" step="0.5" placeholder="${t('أضف مبلغ', 'Add amount')}" style="flex:1;">
-                <button class="btn btn-teal" style="flex-shrink:0;" onclick="addPrepaidAmount('${stationId}')">
-                    <i class="fa-solid fa-plus"></i> ${t('إضافة', 'Add')}
-                </button>
-            </div>
-        </div>
-        
-        ${segments.filter(s => s.ended_at).length > 0 ? `
-        <div class="segment-breakdown">
-            <div style="font-size:11px;color:var(--text-dim);font-weight:600;margin-bottom:4px;">${t('تفصيل الأجزاء السابقة', 'Previous Segments')}</div>
-            ${segments.filter(s => s.ended_at).map(s => {
-                const start2 = new Date(s.started_at);
-                const end = new Date(s.ended_at);
-                const mins = Math.round((end - start2) / 60000);
-                const amt = (s.amount !== null && s.amount !== undefined) ? Number(s.amount) : calculateSegmentAmountFromTimes(s.started_at, s.ended_at, s.rate);
-                const modeClass = s.mode === 'single' ? 'seg-mode-single' : 'seg-mode-multi';
-                const modeLabel2 = s.mode === 'single' ? t('Single', 'Single') : t('Multi', 'Multi');
-                const segTimerType = s.timer_type || 'countup';
-                const timerLabel2 = segTimerType === 'countdown' ? '⬇️' : '⬆️';
-                return `<div class="segment-row"><span class="seg-label"><span class="${modeClass}">●</span> ${modeLabel2} ${mins}${t('د', 'min')} ${timerLabel2} @ ${money(s.rate)}</span><span class="seg-value ${modeClass}">${moneyDec(amt)}</span></div>`;
-            }).join('')}
-            <div class="segment-divider"></div>
-            <div class="segment-row"><span class="seg-label">${t('إجمالي Single', 'Single Total')}</span><span class="seg-value seg-mode-single">${moneyDec(totals.singleTotal)}</span></div>
-            <div class="segment-row"><span class="seg-label">${t('إجمالي Multi', 'Multi Total')}</span><span class="seg-value seg-mode-multi">${moneyDec(totals.multiTotal)}</span></div>
-            <div class="segment-row"><span class="seg-label">${t('الطلبات', 'Orders')}</span><span class="seg-value">${moneyDec(totals.ordersTotal)}</span></div>
-            <div class="segment-row segment-total"><span class="seg-label">${t('الإجمالي الكلي', 'Grand Total')}</span><span class="seg-value" style="color:var(--amber);">${moneyDec(totals.grandTotal)}</span></div>
-        </div>
-        ` : ''}
-        
-        <div class="section-title">${t('إضافة طلب', 'Add Order')}</div>
-        <div id="menuQuickAdd" style="margin-bottom:12px;"></div>
-        
-        <div class="section-title">${t('الطلبات', 'Orders')}</div>
-        <div class="panel" id="stationOrdersList"></div>
-        
-        <div style="margin-top:16px;display:flex;flex-direction:column;gap:8px;">
-            <button class="btn btn-amber btn-block" onclick="handleSwitchMode('${session.id}','${switchMode}','${st.id}')" id="switchModeBtn">
-                <i class="fa-solid fa-arrows-rotate"></i> ${switchLabel} (${money(switchRate)} ${t('ج/ساعة', 'EGP/hr')})
-            </button>
-            
-            <div style="display:flex;gap:8px;">
-                <button class="btn btn-transfer" style="flex:1;" onclick="openTransferSheet('${stationId}')">
-                    <i class="fa-solid fa-exchange"></i> ${t('نقل الجلسة', 'Transfer Session')}
-                </button>
-                <button class="btn btn-cancel" style="flex:1;" onclick="confirmCancelSession('${stationId}')">
-                    <i class="fa-solid fa-xmark"></i> ${t('إلغاء الجلسة', 'Cancel Session')}
-                </button>
-            </div>
-            <button class="btn btn-ghost" onclick="closeSheet('stationOverlay')">${t('رجوع', 'Back')}</button>
-            <button class="btn btn-teal btn-block" onclick="showEndSessionPayment('${stationId}')"><i class="fa-solid fa-stop"></i> ${t('إنهاء الجلسة', 'End Session')}</button>
-        </div>
-        <div class="error-text" id="stationSheetError"></div>
-    `;
-    
-    renderMenuQuickAdd();
-    renderStationOrdersSection();
+    // هذه الدالة تُستخدم لتحديث محتوى ورق الجلسة بدون إعادة فتحها
+    if (activeStationId === stationId) {
+        await openStationSheet(stationId);
+    }
 }
 
 // ============================================================
-// QR Station Sheet (open QR for station)
+// CUSTOMER PAGE FUNCTIONS - شاشة العميل (مدمجة من نظام الكافيه)
 // ============================================================
+
+// متغيرات شاشة العميل
+let customerCart = [];
+let customerBusiness = null;
+let customerMenuItems = [];
+let customerCategories = [];
+let currentCustomerFilter = 'all';
+let customerBusinessId = null;
+let customerStations = [];
+
+// تهيئة صفحة العميل عند تحميل الصفحة مع ?customer=true
+function initCustomerPage() {
+    const params = new URLSearchParams(window.location.search);
+    if (params.get('customer') === 'true') {
+        // إخفاء الشاشات الأخرى وإظهار صفحة العميل
+        document.getElementById('setupScreen').classList.remove('active');
+        document.getElementById('mainApp').classList.remove('active');
+        document.getElementById('customerPage').classList.add('active');
+        loadCustomerData();
+    }
+}
+
+// تحميل بيانات العميل (النشاط، المنيو، الأجهزة)
+async function loadCustomerData() {
+    const bizId = localStorage.getItem('platepro_business_id') || 
+                  new URLSearchParams(window.location.search).get('biz');
+    
+    if (!bizId) {
+        document.getElementById('customerBizName').textContent = '❌ رابط غير صحيح';
+        document.getElementById('customerMenuItems').innerHTML = `
+            <div class="empty" style="padding:40px 16px;">
+                <i class="fa-solid fa-triangle-exclamation" style="font-size:40px;color:var(--danger);"></i>
+                <div style="font-size:16px; font-weight:700; margin-top:8px;">رابط غير صحيح</div>
+                <div style="font-size:13px; color:var(--text-muted);">تأكد من الرابط المستخدم</div>
+            </div>
+        `;
+        return;
+    }
+    
+    customerBusinessId = bizId;
+    
+    if (!supabaseClient) {
+        document.getElementById('customerBizName').textContent = '⚠️ خطأ في الاتصال';
+        document.getElementById('customerMenuItems').innerHTML = `
+            <div class="empty" style="padding:40px 16px;">
+                <i class="fa-solid fa-wifi" style="font-size:40px;color:var(--warning);"></i>
+                <div style="font-size:16px; font-weight:700; margin-top:8px;">خطأ في الاتصال</div>
+                <div style="font-size:13px; color:var(--text-muted);">تأكد من اتصال الإنترنت</div>
+            </div>
+        `;
+        return;
+    }
+    
+    try {
+        const { data: biz, error: bizError } = await supabaseClient
+            .from('businesses')
+            .select('*')
+            .eq('id', bizId)
+            .maybeSingle();
+        
+        if (bizError || !biz) {
+            document.getElementById('customerBizName').textContent = '❌ نشاط غير موجود';
+            document.getElementById('customerMenuItems').innerHTML = `
+                <div class="empty" style="padding:40px 16px;">
+                    <i class="fa-solid fa-store-slash" style="font-size:40px;color:var(--danger);"></i>
+                    <div style="font-size:16px; font-weight:700; margin-top:8px;">النشاط غير موجود</div>
+                    <div style="font-size:13px; color:var(--text-muted);">تأكد من الكود المستخدم</div>
+                </div>
+            `;
+            return;
+        }
+        
+        customerBusiness = biz;
+        document.getElementById('customerBizName').textContent = biz.name;
+        document.title = biz.name + ' - Menu';
+        
+        // تحميل الشعار إن وجد
+        const savedLogo = localStorage.getItem('platepro_logo');
+        if (savedLogo) {
+            const logoContainer = document.getElementById('customerLogoContainer');
+            logoContainer.innerHTML = `<img src="${savedLogo}" class="logo-img" alt="Logo">`;
+        }
+        
+        // تحميل الأجهزة (stations) الخاصة بهذا النشاط
+        const { data: stationsData } = await supabaseClient
+            .from('stations')
+            .select('*')
+            .eq('business_id', bizId)
+            .order('number');
+        customerStations = stationsData || [];
+        
+        // تحميل المنيو والتصنيفات
+        const [itemsRes, catsRes] = await Promise.all([
+            supabaseClient.from('menu_items')
+                .select('*')
+                .eq('business_id', bizId)
+                .eq('active', true)
+                .order('created_at'),
+            supabaseClient.from('menu_categories')
+                .select('*')
+                .eq('business_id', bizId)
+                .eq('active', true)
+                .order('sort_order')
+        ]);
+        
+        customerMenuItems = itemsRes.data || [];
+        customerCategories = catsRes.data || [];
+        
+        // عرض الأجهزة في القائمة المنسدلة
+        renderCustomerStations();
+        
+        // عرض التصنيفات والمنيو
+        renderCustomerCategories();
+        renderCustomerItems();
+        
+        console.log('✅ Customer data loaded successfully');
+        
+    } catch (e) {
+        console.error('Error loading customer data:', e);
+        document.getElementById('customerBizName').textContent = '⚠️ خطأ في التحميل';
+        document.getElementById('customerMenuItems').innerHTML = `
+            <div class="empty" style="padding:40px 16px;">
+                <i class="fa-solid fa-circle-exclamation" style="font-size:40px;color:var(--danger);"></i>
+                <div style="font-size:16px; font-weight:700; margin-top:8px;">⚠️ حدث خطأ</div>
+                <div style="font-size:13px; color:var(--text-muted);">حاول تحديث الصفحة</div>
+            </div>
+        `;
+    }
+}
+
+// عرض الأجهزة في قائمة الاختيار
+function renderCustomerStations() {
+    const select = document.getElementById('customerStationSelect');
+    if (!select) return;
+    
+    // جلب الجهاز من الرابط إن وجد (لتحديده تلقائياً)
+    const params = new URLSearchParams(window.location.search);
+    const stationIdFromUrl = params.get('station');
+    
+    if (customerStations.length === 0) {
+        select.innerHTML = `<option value="">⚠️ مفيش أجهزة متاحة حالياً</option>`;
+        return;
+    }
+    
+    // عرض الأجهزة المتاحة فقط (اللي مش شغالة) أو كلها حسب رغبتك
+    // هنا نعرض كل الأجهزة عشان العميل يختار
+    let options = `<option value="">-- اختر جهاز --</option>`;
+    customerStations.forEach(st => {
+        // التحقق من أن الجهاز متاح (ليس مشغولاً) - يمكنك تعديل الشرط حسب رغبتك
+        const isAvailable = !sessions[st.id];
+        const disabled = isAvailable ? '' : 'disabled style="opacity:0.5;"';
+        const selected = (stationIdFromUrl && st.id === stationIdFromUrl) ? 'selected' : '';
+        const label = st.name ? st.name : `جهاز ${st.number}`;
+        const statusText = isAvailable ? '' : ' (مشغول)';
+        options += `<option value="${st.id}" ${selected} ${disabled}>${label}${statusText}</option>`;
+    });
+    select.innerHTML = options;
+}
+
+// عرض تصنيفات المنيو
+function renderCustomerCategories() {
+    const container = document.getElementById('customerCategories');
+    if (!container) return;
+    
+    let html = `<button class="btn active" onclick="filterCustomerItems('all')">🍽️ الكل</button>`;
+    customerCategories.forEach(cat => {
+        html += `<button class="btn" onclick="filterCustomerItems('${cat.id}')">
+            <i class="fa-solid ${cat.icon || 'fa-utensils'}"></i> ${escapeHtml(cat.name)}
+        </button>`;
+    });
+    container.innerHTML = html;
+}
+
+// تصفية الأصناف حسب التصنيف
+function filterCustomerItems(categoryId) {
+    currentCustomerFilter = categoryId;
+    document.querySelectorAll('#customerCategories .btn').forEach(btn => {
+        btn.classList.remove('active');
+    });
+    // تحديد الزر النشط
+    const btns = document.querySelectorAll('#customerCategories .btn');
+    const idx = categoryId === 'all' ? 0 : customerCategories.findIndex(c => c.id === categoryId) + 1;
+    if (btns[idx]) btns[idx].classList.add('active');
+    renderCustomerItems(categoryId);
+}
+
+// عرض الأصناف حسب التصنيف
+function renderCustomerItems(categoryId) {
+    const container = document.getElementById('customerMenuItems');
+    if (!container) return;
+    
+    let items = customerMenuItems;
+    if (categoryId && categoryId !== 'all') {
+        items = items.filter(item => item.category_id === categoryId);
+    }
+    
+    if (!items || items.length === 0) {
+        container.innerHTML = `
+            <div class="empty" style="padding:40px 16px;">
+                <i class="fa-solid fa-utensils" style="font-size:40px;"></i>
+                <div style="font-size:16px; font-weight:700; margin-top:8px;">مفيش أصناف</div>
+                <div style="font-size:13px; color:var(--text-muted);">جاري تحديث المنيو</div>
+            </div>
+        `;
+        return;
+    }
+    
+    container.innerHTML = items.map(item => {
+        let imageHtml = '🍽️';
+        if (item.image_url) {
+            imageHtml = `<img src="${item.image_url}" alt="${escapeHtml(item.name)}" onerror="this.style.display='none';this.parentElement.innerHTML='🍽️'">`;
+        }
+        
+        return `
+            <div class="customer-menu-card">
+                <div class="item-image">${imageHtml}</div>
+                <div class="item-info">
+                    <div class="item-name">${escapeHtml(item.name)}</div>
+                    ${item.description ? `<div class="item-desc">${escapeHtml(item.description)}</div>` : ''}
+                    <div class="item-price">${money(item.price)} ج.م</div>
+                </div>
+                <div class="item-actions">
+                    <button class="btn btn-amber btn-xs" onclick="addToCustomerCart('${item.id}')">
+                        <i class="fa-solid fa-plus"></i>
+                    </button>
+                </div>
+            </div>
+        `;
+    }).join('');
+}
+
+// ============================================================
+// 🛒 CUSTOMER CART (سلة العميل)
+// ============================================================
+
+function addToCustomerCart(itemId) {
+    const item = customerMenuItems.find(i => i.id === itemId);
+    if (!item) return;
+    
+    const existing = customerCart.find(i => i.id === itemId);
+    if (existing) {
+        existing.quantity += 1;
+    } else {
+        customerCart.push({ ...item, quantity: 1 });
+    }
+    
+    updateCustomerCartUI();
+    showCustomerToast('✅ تم إضافة ' + item.name);
+}
+
+function removeFromCustomerCart(index) {
+    customerCart.splice(index, 1);
+    updateCustomerCartUI();
+    showCustomerCart(); // لتحديث الـ Sheet
+}
+
+function updateCustomerCartUI() {
+    const cart = document.getElementById('customerCart');
+    const count = customerCart.reduce((sum, i) => sum + i.quantity, 0);
+    const total = customerCart.reduce((sum, i) => sum + (i.price * i.quantity), 0);
+    
+    document.getElementById('cartCount').textContent = count;
+    document.getElementById('cartTotal').textContent = money(total);
+    
+    if (cart) cart.style.display = count > 0 ? 'block' : 'none';
+}
+
+function showCustomerCart() {
+    const container = document.getElementById('customerCartItems');
+    if (customerCart.length === 0) {
+        container.innerHTML = `<div class="empty">السلة فارغة</div>`;
+        document.getElementById('customerCartTotal').textContent = '0';
+        openSheet('customerCartOverlay');
+        return;
+    }
+    
+    container.innerHTML = customerCart.map((item, index) => `
+        <div class="order-item">
+            <div>
+                <div class="item-name">${escapeHtml(item.name)}</div>
+                <div class="item-details">
+                    ${item.quantity} × ${money(item.price)}
+                    <button class="btn btn-xs" style="background:var(--danger);color:#fff;border:none;border-radius:4px;cursor:pointer;margin-right:8px;" onclick="removeFromCustomerCart(${index})">
+                        <i class="fa-solid fa-minus"></i>
+                    </button>
+                </div>
+            </div>
+            <div class="item-price">${money(item.price * item.quantity)}</div>
+        </div>
+    `).join('');
+    
+    const subtotal = customerCart.reduce((sum, i) => sum + (i.price * i.quantity), 0);
+    document.getElementById('cartSubtotal').textContent = money(subtotal);
+    document.getElementById('customerCartTotal').textContent = money(subtotal);
+    
+    openSheet('customerCartOverlay');
+}
+
+function showCustomerToast(msg) {
+    const el = document.getElementById('customerToast');
+    el.textContent = msg;
+    el.className = 'toast success';
+    el.style.display = 'block';
+    clearTimeout(el._t);
+    el._t = setTimeout(() => { el.style.display = 'none'; }, 2000);
+}
+
+// ============================================================
+// 📤 إرسال طلب العميل
+// ============================================================
+
+async function submitCustomerOrder() {
+    if (customerCart.length === 0) {
+        document.getElementById('customerCartError').textContent = 'أضف صنف واحد على الأقل';
+        return;
+    }
+    
+    const stationSelect = document.getElementById('customerStationSelect');
+    const stationId = stationSelect.value;
+    
+    if (!stationId) {
+        document.getElementById('customerCartError').textContent = '⚠️ اختر رقم الجهاز أولاً';
+        return;
+    }
+    
+    if (!customerBusiness) {
+        document.getElementById('customerCartError').textContent = '⚠️ بيانات النشاط غير متوفرة';
+        return;
+    }
+    
+    try {
+        // جلب بيانات الجهاز للتأكد من أنه متاح
+        const { data: stationData } = await supabaseClient
+            .from('stations')
+            .select('*')
+            .eq('id', stationId)
+            .single();
+        
+        if (!stationData) {
+            document.getElementById('customerCartError').textContent = '⚠️ الجهاز غير موجود';
+            return;
+        }
+        
+        // التحقق من أن الجهاز متاح (ليس مشغولاً)
+        if (sessions[stationId]) {
+            document.getElementById('customerCartError').textContent = '⚠️ هذا الجهاز مشغول حالياً، اختر جهاز آخر';
+            return;
+        }
+        
+        const subtotal = customerCart.reduce((sum, i) => sum + (i.price * i.quantity), 0);
+        
+        // حفظ الطلب في جدول qr_orders
+        const { data: order, error } = await supabaseClient.from('qr_orders').insert({
+            business_id: customerBusiness.id,
+            station_id: stationId,
+            items: customerCart.map(item => ({
+                id: item.id,
+                name: item.name,
+                price: item.price,
+                qty: item.quantity
+            })),
+            note: '📱 طلب من العميل عبر QR',
+            status: 'pending'
+        }).select().single();
+        
+        if (error) throw error;
+        
+        // 🔔 تشغيل رنة الطلب الجديد
+        const stationName = stationData.name || ('جهاز ' + stationData.number);
+        showRingNotification(
+            '🔔 طلب جديد من العميل!',
+            `جهاز ${stationName} - ${customerCart.length} أصناف`,
+            'warning'
+        );
+        
+        // تفريغ السلة وإغلاق الشيت
+        customerCart = [];
+        updateCustomerCartUI();
+        closeSheet('customerCartOverlay');
+        
+        showCustomerToast('✅ تم إرسال الطلب بنجاح!');
+        document.getElementById('customerCartError').textContent = '';
+        
+        // تحديث واجهة العميل (إخفاء السلة)
+        document.getElementById('customerCart').style.display = 'none';
+        
+        // إشعار في Console
+        console.log('✅ Order created successfully!');
+        
+        // تحديث قائمة الطلبات في لوحة الأدمن
+        await loadQrOrders();
+        renderStationsGrid();
+        updateHeaderBellBadge();
+        
+    } catch (e) {
+        console.error('Error submitting order:', e);
+        document.getElementById('customerCartError').textContent = '⚠️ فشل إرسال الطلب، حاول تاني';
+    }
+}
+
+// ============================================================
+// 📱 QR CODE GENERATION (لكل جهاز)
+// ============================================================
+
+// توليد رابط صفحة العميل لجهاز معين
 function getOrderPageUrl(station) {
-    return new URL('order.html?t=' + encodeURIComponent(station.qr_token), window.location.href).href;
+    const baseUrl = window.location.origin + window.location.pathname;
+    const bizId = business ? business.id : localStorage.getItem('platepro_business_id');
+    return baseUrl + '?customer=true&biz=' + encodeURIComponent(bizId) + '&station=' + encodeURIComponent(station.id);
 }
 
+// فتح شيت QR لجهاز معين (المستخدمة في زر QR جنب كل جهاز في الإعدادات)
 function openStationQrSheet(stationId) {
     const st = stations.find(s => s.id === stationId);
     if (!st) return;
-    if (!st.qr_token) {
-        showToast(t('الجهاز ده لسه معملوش QR token — شغّل ملف SQL migration الأول.', "This device doesn't have a QR token yet — run the SQL migration first."), 'error');
-        return;
-    }
+    
     const displayName = st.name ? st.name : t('جهاز', 'Device') + ' ' + st.number;
     document.getElementById('stationQrTitle').textContent = displayName;
+    
     const url = getOrderPageUrl(st);
     const qrImg = 'https://api.qrserver.com/v1/create-qr-code/?size=300x300&margin=8&data=' + encodeURIComponent(url);
-    const disabledNote = qrOrderingEnabled ? '' :
-        `<div class="empty" style="margin-bottom:10px;color:var(--red);"><i class="fa-solid fa-triangle-exclamation"></i>${t('خدمة الطلب عبر QR متوقفة حاليًا — فعّلها من الإعدادات.', 'QR ordering is currently disabled — enable it from Settings.')}</div>`;
+    
     document.getElementById('stationQrBody').innerHTML = `
-        ${disabledNote}
+        ${!qrOrderingEnabled ? `<div class="empty" style="margin-bottom:10px;color:var(--red);"><i class="fa-solid fa-triangle-exclamation"></i>${t('خدمة الطلب عبر QR متوقفة حاليًا — فعّلها من الإعدادات.', 'QR ordering is currently disabled — enable it from Settings.')}</div>` : ''}
         <div class="qr-code-box"><img src="${qrImg}" alt="QR"></div>
         <div class="qr-link-box">${escapeHtml(url)}</div>
         <div style="display:flex;gap:8px;margin-top:12px;">
-            <button class="btn btn-ghost btn-block" onclick="navigator.clipboard.writeText('${url}').then(()=>showToast(t('تم نسخ الرابط','Link copied'),'success'))"><i class="fa-solid fa-copy"></i> ${t('نسخ الرابط', 'Copy link')}</button>
-            <button class="btn btn-teal btn-block" onclick="window.open('${url}','_blank')"><i class="fa-solid fa-up-right-from-square"></i> ${t('فتح الصفحة', 'Open page')}</button>
+            <button class="btn btn-ghost btn-block" onclick="navigator.clipboard.writeText('${url}').then(()=>showToast(t('تم نسخ الرابط','Link copied'),'success'))">
+                <i class="fa-solid fa-copy"></i> ${t('نسخ الرابط', 'Copy link')}
+            </button>
+            <button class="btn btn-teal btn-block" onclick="window.open('${url}','_blank')">
+                <i class="fa-solid fa-up-right-from-square"></i> ${t('فتح الصفحة', 'Open page')}
+            </button>
         </div>
     `;
     openSheet('stationQrOverlay');
 }
+
+// توليد QR في لوحة التحكم (لأول جهاز متاح أو جهاز افتراضي)
+async function generateQRCode() {
+    if (!business) {
+        showToast('⚠️ لا يوجد نشاط', 'error');
+        return;
+    }
+    
+    // جلب أول جهاز من قائمة الأجهزة
+    let station = stations.find(s => s.id === stations[0]?.id);
+    if (!station) {
+        showToast('⚠️ مفيش أجهزة مسجلة', 'error');
+        return;
+    }
+    
+    const url = getOrderPageUrl(station);
+    const qrApiUrl = 'https://api.qrserver.com/v1/create-qr-code/?size=300x300&data=' + encodeURIComponent(url);
+    
+    document.getElementById('qrCodeImage').src = qrApiUrl;
+    document.getElementById('qrContainer').style.display = 'block';
+    
+    // حفظ الرابط للاستخدام
+    localStorage.setItem('platepro_customer_url', url);
+    localStorage.setItem('platepro_business_id', business.id);
+    
+    showToast('✅ تم توليد QR للجهاز ' + (station.name || station.number), 'success');
+}
+
+// إظهار/إخفاء الـ QR في لوحة التحكم
+function toggleQRCode() {
+    const container = document.getElementById('qrContainer');
+    if (container.style.display === 'none' || container.style.display === '') {
+        generateQRCode();
+    } else {
+        container.style.display = 'none';
+    }
+}
+
+// تحميل QR كصورة
+function downloadQR() {
+    const link = document.createElement('a');
+    link.download = 'QR_' + (business ? business.code : 'cafe') + '.png';
+    link.href = document.getElementById('qrCodeImage').src;
+    link.click();
+}
+
+// ============================================================
+// ✅ تفعيل / تعطيل QR Ordering (من الإعدادات)
+// ============================================================
 
 async function toggleQrOrdering(enabled) {
     try {
@@ -4048,15 +4491,15 @@ async function toggleQrOrdering(enabled) {
         business.qr_ordering_enabled = enabled;
         qrOrderingEnabled = enabled;
         localStorage.setItem('psr_qr_ordering_enabled', JSON.stringify(enabled));
-        showToast(enabled ? t('تم تفعيل الطلب عبر QR', 'QR ordering enabled') : t('تم تعطيل الطلب عبر QR', 'QR ordering disabled'), 'success');
-        renderSettingsStations(); // refresh to show/hide QR buttons
-        // Also update the toggle state in the settings UI
+        showToast(enabled ? '✅ تم تفعيل الطلب عبر QR' : '❌ تم تعطيل الطلب عبر QR', 'success');
+        renderSettingsStations(); // تحديث زر QR في الإعدادات
+        // تحديث الـ toggle في الواجهة
         const toggle = document.getElementById('qrOrderingToggle');
         if (toggle) toggle.checked = enabled;
     } catch (e) {
         console.error('Error toggling qr ordering:', e);
         document.getElementById('qrOrderingToggle').checked = !enabled;
-        showToast(t('فشل تغيير الإعداد، حاول تاني', 'Failed to change the setting, try again'), 'error');
+        showToast('⚠️ فشل تغيير الإعداد', 'error');
     }
 }
 
@@ -4070,7 +4513,9 @@ function escapeHtml(str) {
     return d.innerHTML; 
 }
 
-// Export all functions that are used in onclick attributes
+// ============================================================
+// EXPORT FUNCTIONS (للـ onclick في الـ HTML)
+// ============================================================
 window.handleSetupContinue = handleSetupContinue;
 window.handleActivateDevice = handleActivateDevice;
 window.selectLockRole = selectLockRole;
@@ -4136,6 +4581,8 @@ window.dismissQrOrder = dismissQrOrder;
 window.deliverQrOrder = deliverQrOrder;
 window.openStationQrSheet = openStationQrSheet;
 window.toggleQrOrdering = toggleQrOrdering;
+window.toggleQRCode = toggleQRCode;
+window.downloadQR = downloadQR;
 window.renderStationsGrid = renderStationsGrid;
 window.renderSettings = renderSettings;
 window.renderDashboard = renderDashboard;
@@ -4149,3 +4596,14 @@ window.t = t;
 window.escapeHtml = escapeHtml;
 window.formatElapsed = formatElapsed;
 window.nowCorrected = nowCorrected;
+window.addToCustomerCart = addToCustomerCart;
+window.removeFromCustomerCart = removeFromCustomerCart;
+window.showCustomerCart = showCustomerCart;
+window.submitCustomerOrder = submitCustomerOrder;
+window.filterCustomerItems = filterCustomerItems;
+window.initCustomerPage = initCustomerPage;
+window.loadCustomerData = loadCustomerData;
+
+console.log('✅ DORAK App loaded successfully!');
+console.log('📱 QR ordering per station enabled');
+console.log('🔔 Ring notifications active');
