@@ -136,6 +136,8 @@ let countdownAlerts = {};
 let categoryToggleState = {};
 let qrOrders = {};
 let qrOrderingEnabled = false;
+let qrReminderInterval = null;
+let qrReminderLastSent = {}; // orderId -> آخر وقت اتبعت فيه تذكير (ms)
 
 // ============================================================
 // PIN TOGGLE
@@ -448,12 +450,66 @@ async function enterMainApp() {
     await recoverActiveSession();
     setInterval(syncServerClock, 5 * 60 * 1000);
 
-    setInterval(() => {
-        const pendingCount = totalPendingQrOrders();
-        if (pendingCount > 0) {
-            showToast(t(`⚠️ ${pendingCount} طلب عميل لم يتم تسليمه بعد`, `⚠️ ${pendingCount} customer orders not delivered yet`), 'warning');
-        }
-    }, 60000);
+    startQrOrderReminders();
+}
+
+// ============================================================
+// تذكير الطلبات اللي لسه ما اتحضّرتش (كل 3 دقايق لكل طلب)
+// ============================================================
+function startQrOrderReminders() {
+    if (qrReminderInterval) clearInterval(qrReminderInterval);
+    qrReminderInterval = setInterval(checkQrOrderReminders, 20000);
+}
+
+function stopQrOrderReminders() {
+    if (qrReminderInterval) { clearInterval(qrReminderInterval); qrReminderInterval = null; }
+    qrReminderLastSent = {};
+}
+
+async function checkQrOrderReminders() {
+    if (!business) return;
+    const REMINDER_MS = 3 * 60 * 1000;
+    try {
+        // بنجيب من قاعدة البيانات أي طلب لسه مش "تم التحضير" (pending أو seen)
+        // عشان التذكير يفضل شغال حتى لو الطلب اتفتحله شيت الجهاز وبقى seen
+        const { data, error } = await supabaseClient
+            .from('qr_orders')
+            .select('id, station_id, created_at')
+            .eq('business_id', business.id)
+            .in('status', ['pending', 'seen']);
+        if (error || !data) return;
+
+        const now = Date.now();
+        const activeIds = new Set();
+
+        data.forEach(o => {
+            activeIds.add(o.id);
+            const createdAt = new Date(o.created_at).getTime();
+            const lastSent = qrReminderLastSent[o.id] || createdAt;
+            if (now - lastSent >= REMINDER_MS) {
+                qrReminderLastSent[o.id] = now;
+                const station = stations.find(s => s.id === o.station_id);
+                const deviceName = station ? (station.name || t('جهاز', 'Device') + ' ' + station.number) : t('جهاز', 'Device');
+                const msg = t(`فيه طلب على ${deviceName} لسه متحضرش`, `There's an order on ${deviceName} still not prepared`);
+                if (typeof showRingNotification === 'function') {
+                    showRingNotification(
+                        t('⏰ تذكير: طلب لسه مش متحضر', '⏰ Reminder: order not prepared'),
+                        msg,
+                        'warning'
+                    );
+                } else if (typeof showToast === 'function') {
+                    showToast('⏰ ' + msg, 'warning');
+                }
+            }
+        });
+
+        // تنظيف الطلبات اللي اتحضّرت من الذاكرة عشان ميفضلش تراكم
+        Object.keys(qrReminderLastSent).forEach(id => {
+            if (!activeIds.has(id)) delete qrReminderLastSent[id];
+        });
+    } catch (e) {
+        console.warn('QR order reminder check failed:', e);
+    }
 }
 
 async function loadAllData() {
@@ -1112,6 +1168,7 @@ function stopRealtimeAndTimers() {
         if (countdownTimers[key]) clearInterval(countdownTimers[key]);
         delete countdownTimers[key];
     });
+    stopQrOrderReminders();
 }
 
 function handleSessionChange(payload) {
