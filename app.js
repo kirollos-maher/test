@@ -857,9 +857,9 @@ function renderQrOrdersBody() {
             <div class="qr-order-lines">${qrOrderItemsLineHtml(o.items)}</div>
             ${o.note ? `<div class="qr-order-note"><i class="fa-solid fa-note-sticky"></i> ${escapeHtml(o.note)}</div>` : ''}
             <div class="row-value mono" style="text-align:end;margin-bottom:8px;font-weight:700;">${t('الإجمالي', 'Total')}: ${money(total)} ${t('ج', 'EGP')}</div>
+            <div style="font-size:11px;color:var(--text-dim);margin-bottom:8px;">${t('✅ اتضاف للفاتورة تلقائيًا', '✅ Already added to the bill')}</div>
             <div class="qr-order-actions">
-                <button class="btn btn-amber" onclick="addQrOrderToBill('${o.id}')"><i class="fa-solid fa-plus"></i> ${t('أضف للفاتورة', 'Add to bill')}</button>
-                <button class="btn btn-ghost" onclick="dismissQrOrder('${o.id}')"><i class="fa-solid fa-check"></i> ${t('تم الاستلام', 'Acknowledge')}</button>
+                <button class="btn btn-amber btn-block" onclick="dismissQrOrder('${o.id}')"><i class="fa-solid fa-check"></i> ${t('تم التحضير', 'Prepared')}</button>
             </div>
         </div>`;
     }).join('');
@@ -1694,7 +1694,7 @@ async function renderQrOrdersInSheet(stationId, bodyElement) {
     const insertMode = container ? null : 'beforeend';
 
     if (qrOrdersForStation && qrOrdersForStation.length > 0) {
-        let qrHtml = `<div class="section-title">${t('طلبات العملاء (QR)', 'Customer Orders (QR)')}</div>`;
+        let qrHtml = `<div class="section-title">${t('🔔 طلبات محتاجة تحضير (اتضافت للفاتورة تلقائيًا)', '🔔 Orders needing prep (already on the bill)')}</div>`;
         qrOrdersForStation.forEach(o => {
             const total = (o.items || []).reduce((s, it) => s + Number(it.price) * Number(it.qty), 0);
             const itemsText = (o.items || []).map(it => `${it.name} ×${it.qty}`).join('، ');
@@ -1706,7 +1706,7 @@ async function renderQrOrdersInSheet(stationId, bodyElement) {
                     </div>
                     ${o.note ? `<div style="font-size:11px;color:var(--text-dim);">${escapeHtml(o.note)}</div>` : ''}
                     <div style="margin-top:6px;">
-                        <button class="btn btn-amber btn-sm" onclick="deliverQrOrder('${o.id}')">${t('تم التسليم', 'Delivered')}</button>
+                        <button class="btn btn-amber btn-sm" onclick="deliverQrOrder('${o.id}')">${t('تم التحضير', 'Prepared')}</button>
                     </div>
                 </div>
             `;
@@ -4082,6 +4082,7 @@ let customerCategories = [];
 let currentCustomerFilter = 'all';
 let customerBusinessId = null;
 let customerStations = [];
+let customerActiveStationIds = new Set();
 
 // تهيئة صفحة العميل عند تحميل الصفحة مع ?customer=true
 function initCustomerPage() {
@@ -4166,6 +4167,14 @@ async function loadCustomerData() {
             .eq('business_id', bizId)
             .order('number');
         customerStations = stationsData || [];
+
+        // تحميل الأجهزة اللي شغالة دلوقتي (عليها جلسة نشطة) — الطلب لازم يتضاف لجلسة شغالة
+        const { data: activeSessionsData } = await supabaseClient
+            .from('sessions')
+            .select('station_id')
+            .eq('business_id', bizId)
+            .eq('status', 'active');
+        customerActiveStationIds = new Set((activeSessionsData || []).map(s => s.station_id));
         
         // تحميل المنيو والتصنيفات
         const [itemsRes, catsRes] = await Promise.all([
@@ -4220,16 +4229,15 @@ function renderCustomerStations() {
         return;
     }
     
-    // عرض الأجهزة المتاحة فقط (اللي مش شغالة) أو كلها حسب رغبتك
-    // هنا نعرض كل الأجهزة عشان العميل يختار
+    // عرض الأجهزة المتاحة فقط (اللي شغالة بجلسة نشطة) عشان الطلب يترّبط بالجلسة صح
     let options = `<option value="">-- اختر جهاز --</option>`;
     customerStations.forEach(st => {
-        // التحقق من أن الجهاز متاح (ليس مشغولاً) - يمكنك تعديل الشرط حسب رغبتك
-        const isAvailable = !sessions[st.id];
-        const disabled = isAvailable ? '' : 'disabled style="opacity:0.5;"';
+        // الطلب لازم يتضاف لجلسة شغالة فعلاً، فبنمنع اختيار الأجهزة المقفولة
+        const isActive = customerActiveStationIds.has(st.id);
+        const disabled = isActive ? '' : 'disabled style="opacity:0.5;"';
         const selected = (stationIdFromUrl && st.id === stationIdFromUrl) ? 'selected' : '';
         const label = st.name ? st.name : `جهاز ${st.number}`;
-        const statusText = isAvailable ? '' : ' (مشغول)';
+        const statusText = isActive ? '' : ' (غير شغال)';
         options += `<option value="${st.id}" ${selected} ${disabled}>${label}${statusText}</option>`;
     });
     select.innerHTML = options;
@@ -4407,7 +4415,7 @@ async function submitCustomerOrder() {
     }
     
     try {
-        // جلب بيانات الجهاز للتأكد من أنه متاح
+        // جلب بيانات الجهاز
         const { data: stationData } = await supabaseClient
             .from('stations')
             .select('*')
@@ -4419,16 +4427,54 @@ async function submitCustomerOrder() {
             return;
         }
         
-        // التحقق من أن الجهاز متاح (ليس مشغولاً)
-        if (sessions[stationId]) {
-            document.getElementById('customerCartError').textContent = '⚠️ هذا الجهاز مشغول حالياً، اختر جهاز آخر';
+        // الطلب لازم يتضاف لجلسة شغالة فعلاً على الجهاز ده — بنتأكد لحظيًا من قاعدة البيانات
+        // (مش من بيانات مخزنة عند العميل) عشان نضمن الجلسة لسه شغالة فعلاً وقت الإرسال
+        const { data: activeSession, error: sessionErr } = await supabaseClient
+            .from('sessions')
+            .select('*')
+            .eq('station_id', stationId)
+            .eq('status', 'active')
+            .maybeSingle();
+        
+        if (sessionErr || !activeSession) {
+            document.getElementById('customerCartError').textContent = '⚠️ الجهاز ده مش شغال دلوقتي';
             return;
         }
         
-        const subtotal = customerCart.reduce((sum, i) => sum + (i.price * i.quantity), 0);
+        // 1) إضافة الأصناف مباشرة كطلبات عادية على الجلسة — بالظبط زي ما لو الكاشير زودهم بإيده،
+        // فتظهر في قسم "الطلبات" وتتحسب في الإجمالي الكلي فورًا
+        const { data: existingOrders } = await supabaseClient
+            .from('session_orders')
+            .select('id, menu_item_id, quantity')
+            .eq('session_id', activeSession.id);
         
-        // حفظ الطلب في جدول qr_orders
-        const { data: order, error } = await supabaseClient.from('qr_orders').insert({
+        for (const cartItem of customerCart) {
+            const existing = (existingOrders || []).find(o => String(o.menu_item_id) === String(cartItem.id));
+            if (existing) {
+                await supabaseClient
+                    .from('session_orders')
+                    .update({ quantity: Number(existing.quantity || 0) + Number(cartItem.quantity) })
+                    .eq('id', existing.id);
+            } else {
+                let insertPayload = {
+                    business_id: customerBusiness.id,
+                    session_id: activeSession.id,
+                    menu_item_id: cartItem.id,
+                    item_name: cartItem.name,
+                    unit_price: Number(cartItem.price),
+                    quantity: Number(cartItem.quantity)
+                };
+                let { error: insErr } = await supabaseClient.from('session_orders').insert(insertPayload);
+                if (insErr && /business_id/i.test(insErr.message || '') && /column/i.test(insErr.message || '')) {
+                    delete insertPayload.business_id;
+                    await supabaseClient.from('session_orders').insert(insertPayload);
+                }
+            }
+        }
+        
+        // 2) تسجيل تنبيه للكاشير (علامة التعجب فوق الجهاز + رنة + تذكير كل 3 دقايق)
+        // ده منفصل عن الفاتورة تمامًا، غرضه بس تنبيه الموظف إن فيه طلب محتاج تحضير
+        await supabaseClient.from('qr_orders').insert({
             business_id: customerBusiness.id,
             station_id: stationId,
             items: customerCart.map(item => ({
@@ -4437,14 +4483,9 @@ async function submitCustomerOrder() {
                 price: item.price,
                 qty: item.quantity
             })),
-            note: '📱 طلب من العميل عبر QR',
+            note: '📱 طلب من العميل عبر QR (اتضاف للفاتورة تلقائيًا)',
             status: 'pending'
-        }).select().single();
-        
-        if (error) throw error;
-        
-        // ملحوظة: مفيش داعي نشغّل تنبيه هنا — التنبيه بيوصل تلقائيًا لجهاز الكاشير
-        // عن طريق الاشتراك اللحظي (Realtime) في handleQrOrderChange، مش من متصفح العميل
+        });
         
         // تفريغ السلة وإغلاق الشيت
         customerCart = [];
