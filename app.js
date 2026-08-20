@@ -4493,8 +4493,68 @@ function openStationQrSheet(stationId) {
                 <i class="fa-solid fa-up-right-from-square"></i> ${t('فتح الصفحة', 'Open page')}
             </button>
         </div>
+        <button class="btn btn-amber btn-block" style="margin-top:8px;" onclick="printStationQr('${st.id}')">
+            <i class="fa-solid fa-print"></i> ${t('طباعة وحطها على الترابيزة', 'Print for the table')}
+        </button>
     `;
     openSheet('stationQrOverlay');
+}
+
+// طباعة QR الجهاز كورقة جاهزة تتحط على الترابيزة
+function printStationQr(stationId) {
+    const st = stations.find(s => s.id === stationId);
+    if (!st) return;
+    const displayName = st.name ? st.name : t('جهاز', 'Device') + ' ' + st.number;
+    const url = getOrderPageUrl(st);
+    const qrImg = 'https://api.qrserver.com/v1/create-qr-code/?size=500x500&margin=10&data=' + encodeURIComponent(url);
+    const bizName = business ? business.name : '';
+
+    const printWindow = window.open('', '_blank', 'width=420,height=620');
+    if (!printWindow) {
+        showToast(t('الرجاء السماح للنوافذ المنبثقة', 'Please allow popups'), 'error');
+        return;
+    }
+
+    printWindow.document.write(`
+        <!DOCTYPE html>
+        <html>
+        <head>
+            <title>QR - ${escapeHtml(displayName)}</title>
+            <meta charset="UTF-8">
+            <style>
+                @page { margin: 12px; size: auto; }
+                body { font-family: 'Cairo', Arial, sans-serif; margin: 0; padding: 0; background: #fff; text-align: center; }
+                .wrap { padding: 24px 16px; max-width: 340px; margin: 0 auto; }
+                .biz { font-size: 14px; color: #888; margin-bottom: 4px; }
+                .station { font-size: 26px; font-weight: 800; color: #000; margin-bottom: 16px; }
+                .qr { border: 2px solid #000; border-radius: 16px; padding: 16px; display: inline-block; }
+                .qr img { display: block; width: 260px; height: 260px; }
+                .caption { font-size: 15px; font-weight: 700; margin-top: 16px; color: #000; }
+                @media print { .no-print { display: none; } }
+            </style>
+        </head>
+        <body>
+            <div class="wrap">
+                ${bizName ? `<div class="biz">${escapeHtml(bizName)}</div>` : ''}
+                <div class="station">${escapeHtml(displayName)}</div>
+                <div class="qr"><img src="${qrImg}" alt="QR"></div>
+                <div class="caption">${t('امسح الكود واطلب من هنا 📱', 'Scan to order 📱')}</div>
+                <div class="no-print" style="margin-top:20px;">
+                    <button onclick="window.print()" style="padding:10px 30px;background:#ff8a1e;color:#fff;border:none;border-radius:8px;font-size:16px;cursor:pointer;">
+                        🖨️ ${t('طباعة', 'Print')}
+                    </button>
+                    <button onclick="window.close()" style="padding:10px 30px;background:#666;color:#fff;border:none;border-radius:8px;font-size:16px;cursor:pointer;margin-right:8px;">
+                        ✕ ${t('إغلاق', 'Close')}
+                    </button>
+                </div>
+            </div>
+            <script>
+                setTimeout(() => { window.print(); }, 400);
+            <\/script>
+        </body>
+        </html>
+    `);
+    printWindow.document.close();
 }
 
 // توليد QR في لوحة التحكم (لأول جهاز متاح أو جهاز افتراضي)
@@ -4643,6 +4703,7 @@ window.addQrOrderToBill = addQrOrderToBill;
 window.dismissQrOrder = dismissQrOrder;
 window.deliverQrOrder = deliverQrOrder;
 window.openStationQrSheet = openStationQrSheet;
+window.printStationQr = printStationQr;
 window.toggleQrOrdering = toggleQrOrdering;
 window.toggleQRCode = toggleQRCode;
 window.downloadQR = downloadQR;
