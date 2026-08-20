@@ -2,6 +2,16 @@
 // ANALYTICS MODULE (منفصل عن app.js)
 // ============================================================
 
+// دالة مساعدة لتحويل الثواني إلى ساعات ودقائق
+function formatHoursDuration(totalSeconds) {
+    const hrs = totalSeconds / 3600;
+    if (hrs >= 1) {
+        return `${moneyDec(hrs)} ${t('ساعة', 'hrs')}`;
+    }
+    const mins = Math.round(totalSeconds / 60);
+    return `${mins} ${t('دقيقة', 'min')}`;
+}
+
 let analyticsFilter = 'week';
 
 function setAnalyticsFilter(filter) {
