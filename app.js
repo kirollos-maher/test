@@ -1647,6 +1647,8 @@ async function openStationSheet(stationId) {
         <div class="section-title">${t('إضافة طلب', 'Add Order')}</div>
         <div id="menuQuickAdd" style="margin-bottom:12px;"></div>
         
+        <div id="qrOrdersInSessionSheet"></div>
+
         <div class="section-title">${t('الطلبات', 'Orders')}</div>
         <div class="panel" id="stationOrdersList"></div>
         
@@ -1685,6 +1687,12 @@ async function renderQrOrdersInSheet(stationId, bodyElement) {
         .in('status', ['pending', 'seen'])
         .order('created_at', { ascending: true });
 
+    // بنحاول نلاقي المكان المخصص فوق قسم "الطلبات"؛ لو مش موجود (زي شاشة بدء الجلسة)
+    // بنرجع للسلوك القديم ونضيفهم في آخر الشيت
+    const container = bodyElement.querySelector('#qrOrdersInSessionSheet');
+    const target = container || bodyElement;
+    const insertMode = container ? null : 'beforeend';
+
     if (qrOrdersForStation && qrOrdersForStation.length > 0) {
         let qrHtml = `<div class="section-title">${t('طلبات العملاء (QR)', 'Customer Orders (QR)')}</div>`;
         qrOrdersForStation.forEach(o => {
@@ -1703,7 +1711,13 @@ async function renderQrOrdersInSheet(stationId, bodyElement) {
                 </div>
             `;
         });
-        bodyElement.insertAdjacentHTML('beforeend', qrHtml);
+        if (insertMode) {
+            target.insertAdjacentHTML(insertMode, qrHtml);
+        } else {
+            target.innerHTML = qrHtml;
+        }
+    } else if (container) {
+        container.innerHTML = '';
     }
 }
 
@@ -4429,13 +4443,8 @@ async function submitCustomerOrder() {
         
         if (error) throw error;
         
-        // 🔔 تشغيل رنة الطلب الجديد
-        const stationName = stationData.name || ('جهاز ' + stationData.number);
-        showRingNotification(
-            '🔔 طلب جديد من العميل!',
-            `جهاز ${stationName} - ${customerCart.length} أصناف`,
-            'warning'
-        );
+        // ملحوظة: مفيش داعي نشغّل تنبيه هنا — التنبيه بيوصل تلقائيًا لجهاز الكاشير
+        // عن طريق الاشتراك اللحظي (Realtime) في handleQrOrderChange، مش من متصفح العميل
         
         // تفريغ السلة وإغلاق الشيت
         customerCart = [];
@@ -4450,11 +4459,6 @@ async function submitCustomerOrder() {
         
         // إشعار في Console
         console.log('✅ Order created successfully!');
-        
-        // تحديث قائمة الطلبات في لوحة الأدمن
-        await loadQrOrders();
-        renderStationsGrid();
-        updateHeaderBellBadge();
         
     } catch (e) {
         console.error('Error submitting order:', e);
