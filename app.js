@@ -54,7 +54,7 @@ function updateTexts() {
     renderSettingsPaymentMethods();
     if (document.getElementById('view-shift').classList.contains('active')) renderShiftView();
     if (document.getElementById('view-analytics').classList.contains('active')) renderAnalytics();
-    if (document.getElementById('view-settings').classList.contains('active')) renderSettings();
+    if (document.getElementById('view-settings').classList.contains('active')) { renderSettings(); renderWhatsappSettingsUI(); }
 }
 
 function updateMonthNames() {
@@ -138,7 +138,7 @@ let categoryToggleState = {};
 let qrOrders = {};
 let qrOrderingEnabled = false;
 let qrReminderInterval = null;
-let qrReminderLastSent = {}; // orderId -> آخر وقت اتبعت فيه تذكير (ms)
+let qrReminderLastSent = {};
 
 // ============================================================
 // PIN TOGGLE
@@ -186,7 +186,7 @@ function navigateTo(viewId) {
     if (viewId === 'view-dashboard') renderDashboard();
     if (viewId === 'view-shift') renderShiftView();
     if (viewId === 'view-analytics') renderAnalytics();
-    if (viewId === 'view-settings') { renderSettings(); renderSettingsStations(); renderSettingsPaymentMethods(); }
+    if (viewId === 'view-settings') { renderSettings(); renderSettingsStations(); renderSettingsPaymentMethods(); renderWhatsappSettingsUI(); }
 }
 function openSheet(id) { document.getElementById(id).classList.add('show'); }
 function closeSheet(id) {
@@ -432,6 +432,7 @@ window.addEventListener('DOMContentLoaded', async () => {
     await tryAutoActivateFromURL();
     tryAutoResume();
     initCustomerPage();
+    loadWhatsappConfig();
 });
 
 // ============================================================
@@ -456,12 +457,12 @@ async function enterMainApp() {
     setInterval(syncServerClock, 5 * 60 * 1000);
 
     startQrOrderReminders();
+    loadWhatsappConfig();
+    startWhatsappAutoReports();
 }
 
 // ============================================================
 // شبكة أمان: اكتشاف الطلبات الجديدة + تذكير بالطلبات اللي لسه ما اتحضّرتش
-// (بتشتغل بالـ polling كل 20 ثانية بغض النظر عن حالة الـ Realtime، عشان
-// التنبيه والعلامة الحمرا يوصلوا للكاشير حتى لو حصلت مشكلة في الاشتراك اللحظي)
 // ============================================================
 function startQrOrderReminders() {
     if (qrReminderInterval) clearInterval(qrReminderInterval);
@@ -477,7 +478,6 @@ async function checkQrOrderReminders() {
     if (!business) return;
     const REMINDER_MS = 3 * 60 * 1000;
     try {
-        // بنجيب من قاعدة البيانات أي طلب لسه مش "تم التحضير" (pending أو seen)
         const { data, error } = await supabaseClient
             .from('qr_orders')
             .select('*')
@@ -493,8 +493,6 @@ async function checkQrOrderReminders() {
             activeIds.add(o.id);
             const alreadyKnown = (qrOrders[o.station_id] || []).some(x => x.id === o.id);
 
-            // حالة 1: طلب جديد ظهر في القاعدة ومفيش عندنا خبر عنه لسه (يعني الـ Realtime
-            // ماوصلش، أو الصفحة كانت متقفلة) — بنعامله كطلب جديد فورًا: علامة تعجب + رنة
             if (!alreadyKnown && o.status === 'pending') {
                 if (!qrOrders[o.station_id]) qrOrders[o.station_id] = [];
                 qrOrders[o.station_id].push(o);
@@ -516,7 +514,6 @@ async function checkQrOrderReminders() {
                 return;
             }
 
-            // حالة 2: طلب معروف بالفعل ولسه مش متحضر بعد 3 دقايق — تذكير دوري
             const createdAt = new Date(o.created_at).getTime();
             const lastSent = qrReminderLastSent[o.id] || createdAt;
             if (now - lastSent >= REMINDER_MS) {
@@ -541,7 +538,6 @@ async function checkQrOrderReminders() {
             renderStationsGrid();
         }
 
-        // تنظيف الطلبات اللي اتحضّرت من الذاكرة عشان ميفضلش تراكم
         Object.keys(qrReminderLastSent).forEach(id => {
             if (!activeIds.has(id)) delete qrReminderLastSent[id];
         });
@@ -1725,8 +1721,6 @@ async function renderQrOrdersInSheet(stationId, bodyElement) {
         .in('status', ['pending', 'seen'])
         .order('created_at', { ascending: true });
 
-    // بنحاول نلاقي المكان المخصص فوق قسم "الطلبات"؛ لو مش موجود (زي شاشة بدء الجلسة)
-    // بنرجع للسلوك القديم ونضيفهم في آخر الشيت
     const container = bodyElement.querySelector('#qrOrdersInSessionSheet');
     const target = container || bodyElement;
     const insertMode = container ? null : 'beforeend';
@@ -2837,6 +2831,9 @@ async function confirmEndSessionWithPayment() {
             await renderShiftView();
         }
         
+        // إرسال تنبيه واتساب بعد إقفال الجلسة (إذا كانت الجلسة هي آخر جلسة في الشيفت)
+        // سيتم إرسال التنبيه في confirmCloseShift بدلاً من هنا
+        
         setTimeout(() => {
             printReceipt();
         }, 500);
@@ -3132,7 +3129,6 @@ async function getShiftTotals(shift) {
 async function fetchShiftsAggregated(shiftIds, businessId) {
     if (!shiftIds || shiftIds.length === 0) return {};
 
-    // 1) إيرادات الجلسات المغلقة لكل شيفت
     const { data: sessionsData } = await supabaseClient
         .from('sessions')
         .select('shift_id, amount')
@@ -3140,13 +3136,11 @@ async function fetchShiftsAggregated(shiftIds, businessId) {
         .eq('status', 'completed')
         .in('shift_id', shiftIds);
 
-    // 2) مصروفات كل شيفت
     const { data: expensesData } = await supabaseClient
         .from('expenses')
         .select('shift_id, amount')
         .in('shift_id', shiftIds);
 
-    // تجميع النتائج
     const result = {};
     shiftIds.forEach(id => {
         const sessionsAmt = (sessionsData || [])
@@ -3178,7 +3172,6 @@ async function renderShiftView() {
         return;
     }
 
-    // جلب تفاصيل الشيفت الحالي (بنفس الطريقة القديمة للحفاظ على التوافق)
     const totals = await getShiftTotals(currentShift);
     document.getElementById('shiftSummary').innerHTML = `
         <div class="list-row"><div class="row-title">${t('وقت الفتح', 'Opened At')}</div><div class="row-value mono">${new Date(currentShift.opened_at).toLocaleTimeString(currentLang === 'ar' ? 'ar-EG' : 'en-US')}</div></div>
@@ -3186,7 +3179,6 @@ async function renderShiftView() {
         <div class="list-row"><div class="row-title">${t('المصروفات', 'Expenses')}</div><div class="row-value mono">${money(totals.expenses)}</div></div>
         <div class="list-row"><div class="row-title">${t('الصافي', 'Net Income')}</div><div class="row-value mono" style="color:var(--amber);">${money(totals.profit)}</div></div>`;
 
-    // توزيع طرق الدفع للشيفت الحالي (نفس المنطق القديم)
     const pmBreakdown = {};
     totals.sessions.forEach(s => {
         if (s.payment_method) {
@@ -3205,7 +3197,6 @@ async function renderShiftView() {
         document.getElementById('shiftSummary').innerHTML += pmHtml;
     }
 
-    // ------------------ بناء تاريخ الشيفتات (محسّن) ------------------
     let query = supabaseClient
         .from('shifts')
         .select('*')
@@ -3251,7 +3242,6 @@ async function renderShiftView() {
         return;
     }
 
-    // جلب الإحصائيات لكل الشيفتات دفعة واحدة
     const shiftIds = pastShifts.map(s => s.id);
     const aggregated = await fetchShiftsAggregated(shiftIds, business.id);
 
@@ -3438,6 +3428,11 @@ async function confirmCloseShift() {
     await loadOrOpenShift();
     renderShiftView();
     renderDashboard();
+
+    // إرسال تنبيه واتساب لإقفال الشيفت
+    if (typeof sendShiftClosedAlert === 'function') {
+        await sendShiftClosedAlert(currentShift, totals);
+    }
 }
 
 // ============================================================
@@ -3522,11 +3517,13 @@ function renderSettings() {
         chevron.style.transform = settingsPinExpanded ? 'rotate(180deg)' : 'rotate(0deg)';
     }
 
-    // تحديث حالة زر تفعيل QR
     const qrToggle = document.getElementById('qrOrderingToggle');
     if (qrToggle) {
         qrToggle.checked = qrOrderingEnabled;
     }
+
+    // عرض إعدادات واتساب
+    renderWhatsappSettingsUI();
 }
 
 // ============================================================
@@ -3719,7 +3716,6 @@ async function submitMenuItem() {
         renderSettings();
         renderMenuQuickAdd();
         renderStationOrdersSection();
-        // تحديث صفحة العميل (إن كانت مفتوحة)
         if (document.getElementById('customerPage').classList.contains('active')) {
             loadCustomerData();
         }
@@ -4155,17 +4151,15 @@ async function recoverActiveSession() {
 }
 
 async function refreshStationSheetContent(stationId) {
-    // هذه الدالة تُستخدم لتحديث محتوى ورق الجلسة بدون إعادة فتحها
     if (activeStationId === stationId) {
         await openStationSheet(stationId);
     }
 }
 
 // ============================================================
-// CUSTOMER PAGE FUNCTIONS - شاشة العميل (مدمجة من نظام الكافيه)
+// CUSTOMER PAGE FUNCTIONS - شاشة العميل
 // ============================================================
 
-// متغيرات شاشة العميل
 let customerCart = [];
 let customerBusiness = null;
 let customerMenuItems = [];
@@ -4175,11 +4169,9 @@ let customerBusinessId = null;
 let customerStations = [];
 let customerActiveStationIds = new Set();
 
-// تهيئة صفحة العميل عند تحميل الصفحة مع ?customer=true
 function initCustomerPage() {
     const params = new URLSearchParams(window.location.search);
     if (params.get('customer') === 'true') {
-        // إخفاء الشاشات الأخرى وإظهار صفحة العميل
         document.getElementById('setupScreen').classList.remove('active');
         document.getElementById('mainApp').classList.remove('active');
         document.getElementById('customerPage').classList.add('active');
@@ -4187,10 +4179,7 @@ function initCustomerPage() {
     }
 }
 
-// تحميل بيانات العميل (النشاط، المنيو، الأجهزة)
 async function loadCustomerData() {
-    // لازم نقرأ رقم النشاط من رابط الـ QR نفسه أولاً، مش من أي بيانات قديمة متخزنة
-    // على المتصفح (لو الجهاز اتستخدم قبل كده لفتح نشاط تاني، كانت هتفضل تجيب الغلط)
     const urlBizId = new URLSearchParams(window.location.search).get('biz');
     const bizId = urlBizId || localStorage.getItem('platepro_business_id');
     
@@ -4244,14 +4233,12 @@ async function loadCustomerData() {
         document.getElementById('customerBizName').textContent = biz.name;
         document.title = biz.name + ' - Menu';
         
-        // تحميل الشعار إن وجد
         const savedLogo = localStorage.getItem('platepro_logo');
         if (savedLogo) {
             const logoContainer = document.getElementById('customerLogoContainer');
             logoContainer.innerHTML = `<img src="${savedLogo}" class="logo-img" alt="Logo">`;
         }
         
-        // تحميل الأجهزة (stations) الخاصة بهذا النشاط
         const { data: stationsData } = await supabaseClient
             .from('stations')
             .select('*')
@@ -4259,7 +4246,6 @@ async function loadCustomerData() {
             .order('number');
         customerStations = stationsData || [];
 
-        // تحميل الأجهزة اللي شغالة دلوقتي (عليها جلسة نشطة) — الطلب لازم يتضاف لجلسة شغالة
         const { data: activeSessionsData } = await supabaseClient
             .from('sessions')
             .select('station_id')
@@ -4267,7 +4253,6 @@ async function loadCustomerData() {
             .eq('status', 'active');
         customerActiveStationIds = new Set((activeSessionsData || []).map(s => s.station_id));
         
-        // تحميل المنيو والتصنيفات
         const [itemsRes, catsRes] = await Promise.all([
             supabaseClient.from('menu_items')
                 .select('*')
@@ -4284,10 +4269,7 @@ async function loadCustomerData() {
         customerMenuItems = itemsRes.data || [];
         customerCategories = catsRes.data || [];
         
-        // عرض الأجهزة في القائمة المنسدلة
         renderCustomerStations();
-        
-        // عرض التصنيفات والمنيو
         renderCustomerCategories();
         renderCustomerItems();
         
@@ -4306,12 +4288,10 @@ async function loadCustomerData() {
     }
 }
 
-// عرض الأجهزة في قائمة الاختيار
 function renderCustomerStations() {
     const select = document.getElementById('customerStationSelect');
     if (!select) return;
     
-    // جلب الجهاز من الرابط إن وجد (لتحديده تلقائياً)
     const params = new URLSearchParams(window.location.search);
     const stationIdFromUrl = params.get('station');
     
@@ -4320,10 +4300,8 @@ function renderCustomerStations() {
         return;
     }
     
-    // عرض الأجهزة المتاحة فقط (اللي شغالة بجلسة نشطة) عشان الطلب يترّبط بالجلسة صح
     let options = `<option value="">-- اختر جهاز --</option>`;
     customerStations.forEach(st => {
-        // الطلب لازم يتضاف لجلسة شغالة فعلاً، فبنمنع اختيار الأجهزة المقفولة
         const isActive = customerActiveStationIds.has(st.id);
         const disabled = isActive ? '' : 'disabled style="opacity:0.5;"';
         const selected = (stationIdFromUrl && st.id === stationIdFromUrl) ? 'selected' : '';
@@ -4334,7 +4312,6 @@ function renderCustomerStations() {
     select.innerHTML = options;
 }
 
-// عرض تصنيفات المنيو
 function renderCustomerCategories() {
     const container = document.getElementById('customerCategories');
     if (!container) return;
@@ -4348,20 +4325,17 @@ function renderCustomerCategories() {
     container.innerHTML = html;
 }
 
-// تصفية الأصناف حسب التصنيف
 function filterCustomerItems(categoryId) {
     currentCustomerFilter = categoryId;
     document.querySelectorAll('#customerCategories .btn').forEach(btn => {
         btn.classList.remove('active');
     });
-    // تحديد الزر النشط
     const btns = document.querySelectorAll('#customerCategories .btn');
     const idx = categoryId === 'all' ? 0 : customerCategories.findIndex(c => c.id === categoryId) + 1;
     if (btns[idx]) btns[idx].classList.add('active');
     renderCustomerItems(categoryId);
 }
 
-// عرض الأصناف حسب التصنيف
 function renderCustomerItems(categoryId) {
     const container = document.getElementById('customerMenuItems');
     if (!container) return;
@@ -4406,10 +4380,6 @@ function renderCustomerItems(categoryId) {
     }).join('');
 }
 
-// ============================================================
-// 🛒 CUSTOMER CART (سلة العميل)
-// ============================================================
-
 function addToCustomerCart(itemId) {
     const item = customerMenuItems.find(i => i.id === itemId);
     if (!item) return;
@@ -4428,7 +4398,7 @@ function addToCustomerCart(itemId) {
 function removeFromCustomerCart(index) {
     customerCart.splice(index, 1);
     updateCustomerCartUI();
-    showCustomerCart(); // لتحديث الـ Sheet
+    showCustomerCart();
 }
 
 function updateCustomerCartUI() {
@@ -4482,10 +4452,6 @@ function showCustomerToast(msg) {
     el._t = setTimeout(() => { el.style.display = 'none'; }, 2000);
 }
 
-// ============================================================
-// 📤 إرسال طلب العميل
-// ============================================================
-
 async function submitCustomerOrder() {
     if (customerCart.length === 0) {
         document.getElementById('customerCartError').textContent = 'أضف صنف واحد على الأقل';
@@ -4506,7 +4472,6 @@ async function submitCustomerOrder() {
     }
     
     try {
-        // جلب بيانات الجهاز
         const { data: stationData } = await supabaseClient
             .from('stations')
             .select('*')
@@ -4518,8 +4483,6 @@ async function submitCustomerOrder() {
             return;
         }
         
-        // الطلب لازم يتضاف لجلسة شغالة فعلاً على الجهاز ده — بنتأكد لحظيًا من قاعدة البيانات
-        // (مش من بيانات مخزنة عند العميل) عشان نضمن الجلسة لسه شغالة فعلاً وقت الإرسال
         const { data: activeSession, error: sessionErr } = await supabaseClient
             .from('sessions')
             .select('*')
@@ -4532,8 +4495,6 @@ async function submitCustomerOrder() {
             return;
         }
         
-        // 1) إضافة الأصناف مباشرة كطلبات عادية على الجلسة — بالظبط زي ما لو الكاشير زودهم بإيده،
-        // فتظهر في قسم "الطلبات" وتتحسب في الإجمالي الكلي فورًا
         const { data: existingOrders } = await supabaseClient
             .from('session_orders')
             .select('id, menu_item_id, quantity')
@@ -4563,10 +4524,6 @@ async function submitCustomerOrder() {
             }
         }
         
-        // 2) تسجيل تنبيه للكاشير (علامة التعجب فوق الجهاز + رنة + تذكير كل 3 دقايق)
-        // ده منفصل عن الفاتورة تمامًا، غرضه بس تنبيه الموظف إن فيه طلب محتاج تحضير
-        // ملحوظة: بنعمله في try/catch منفصل عشان لو فشل لأي سبب (صلاحيات مثلاً)،
-        // الطلب نفسه يكون خلاص اتضاف للفاتورة بنجاح ومتوقفش عليه
         try {
             const { error: qrErr } = await supabaseClient.from('qr_orders').insert({
                 business_id: customerBusiness.id,
@@ -4585,18 +4542,14 @@ async function submitCustomerOrder() {
             console.error('⚠️ خطأ غير متوقع أثناء تسجيل تنبيه الطلب:', qrEx);
         }
         
-        // تفريغ السلة وإغلاق الشيت
         customerCart = [];
         updateCustomerCartUI();
         closeSheet('customerCartOverlay');
         
         showCustomerToast('✅ تم إرسال الطلب بنجاح!');
         document.getElementById('customerCartError').textContent = '';
-        
-        // تحديث واجهة العميل (إخفاء السلة)
         document.getElementById('customerCart').style.display = 'none';
         
-        // إشعار في Console
         console.log('✅ Order created successfully!');
         
     } catch (e) {
@@ -4606,17 +4559,15 @@ async function submitCustomerOrder() {
 }
 
 // ============================================================
-// 📱 QR CODE GENERATION (لكل جهاز)
+// QR CODE GENERATION
 // ============================================================
 
-// توليد رابط صفحة العميل لجهاز معين
 function getOrderPageUrl(station) {
     const baseUrl = window.location.origin + window.location.pathname;
     const bizId = business ? business.id : localStorage.getItem('platepro_business_id');
     return baseUrl + '?customer=true&biz=' + encodeURIComponent(bizId) + '&station=' + encodeURIComponent(station.id);
 }
 
-// فتح شيت QR لجهاز معين (المستخدمة في زر QR جنب كل جهاز في الإعدادات)
 function openStationQrSheet(stationId) {
     const st = stations.find(s => s.id === stationId);
     if (!st) return;
@@ -4646,7 +4597,6 @@ function openStationQrSheet(stationId) {
     openSheet('stationQrOverlay');
 }
 
-// طباعة QR الجهاز كورقة جاهزة تتحط على الترابيزة
 function printStationQr(stationId) {
     const st = stations.find(s => s.id === stationId);
     if (!st) return;
@@ -4704,7 +4654,7 @@ function printStationQr(stationId) {
 }
 
 // ============================================================
-// ✅ تفعيل / تعطيل QR Ordering (من الإعدادات)
+// TOGGLE QR ORDERING
 // ============================================================
 
 async function toggleQrOrdering(enabled) {
@@ -4715,9 +4665,8 @@ async function toggleQrOrdering(enabled) {
         qrOrderingEnabled = enabled;
         localStorage.setItem('psr_qr_ordering_enabled', JSON.stringify(enabled));
         showToast(enabled ? '✅ تم تفعيل الطلب عبر QR' : '❌ تم تعطيل الطلب عبر QR', 'success');
-        renderSettingsStations(); // تحديث زر QR في الإعدادات
-        renderStationsGrid(); // تحديث زرار QR فوق كل جهاز في صفحة الأجهزة
-        // تحديث الـ toggle في الواجهة
+        renderSettingsStations();
+        renderStationsGrid();
         const toggle = document.getElementById('qrOrderingToggle');
         if (toggle) toggle.checked = enabled;
     } catch (e) {
@@ -4728,8 +4677,15 @@ async function toggleQrOrdering(enabled) {
 }
 
 // ============================================================
-// دالة مساعدة لتحويل الثواني إلى ساعات ودقائق
+// HELPERS - ESCAPE & FORMAT
 // ============================================================
+function escapeHtml(str) { 
+    if (!str) return '';
+    const d = document.createElement('div'); 
+    d.textContent = str; 
+    return d.innerHTML; 
+}
+
 function formatHoursDuration(totalSeconds) {
     const hrs = totalSeconds / 3600;
     if (hrs >= 1) {
@@ -4740,17 +4696,7 @@ function formatHoursDuration(totalSeconds) {
 }
 
 // ============================================================
-// ESCAPE HTML HELPER
-// ============================================================
-function escapeHtml(str) { 
-    if (!str) return '';
-    const d = document.createElement('div'); 
-    d.textContent = str; 
-    return d.innerHTML; 
-}
-
-// ============================================================
-// EXPORT FUNCTIONS (للـ onclick في الـ HTML)
+// EXPORT FUNCTIONS
 // ============================================================
 window.handleSetupContinue = handleSetupContinue;
 window.handleActivateDevice = handleActivateDevice;
@@ -4839,7 +4785,9 @@ window.submitCustomerOrder = submitCustomerOrder;
 window.filterCustomerItems = filterCustomerItems;
 window.initCustomerPage = initCustomerPage;
 window.loadCustomerData = loadCustomerData;
+window.renderWhatsappSettingsUI = renderWhatsappSettingsUI;
 
 console.log('✅ DORAK App loaded successfully!');
 console.log('📱 QR ordering per station enabled');
 console.log('🔔 Ring notifications active');
+console.log('📱 WhatsApp notifications module ready');
