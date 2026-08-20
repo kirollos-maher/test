@@ -4083,8 +4083,10 @@ function initCustomerPage() {
 
 // تحميل بيانات العميل (النشاط، المنيو، الأجهزة)
 async function loadCustomerData() {
-    const bizId = localStorage.getItem('platepro_business_id') || 
-                  new URLSearchParams(window.location.search).get('biz');
+    // لازم نقرأ رقم النشاط من رابط الـ QR نفسه أولاً، مش من أي بيانات قديمة متخزنة
+    // على المتصفح (لو الجهاز اتستخدم قبل كده لفتح نشاط تاني، كانت هتفضل تجيب الغلط)
+    const urlBizId = new URLSearchParams(window.location.search).get('biz');
+    const bizId = urlBizId || localStorage.getItem('platepro_business_id');
     
     if (!bizId) {
         document.getElementById('customerBizName').textContent = '❌ رابط غير صحيح';
@@ -4132,6 +4134,7 @@ async function loadCustomerData() {
         }
         
         customerBusiness = biz;
+        localStorage.setItem('platepro_business_id', biz.id);
         document.getElementById('customerBizName').textContent = biz.name;
         document.title = biz.name + ' - Menu';
         
@@ -4557,51 +4560,6 @@ function printStationQr(stationId) {
     printWindow.document.close();
 }
 
-// توليد QR في لوحة التحكم (لأول جهاز متاح أو جهاز افتراضي)
-async function generateQRCode() {
-    if (!business) {
-        showToast('⚠️ لا يوجد نشاط', 'error');
-        return;
-    }
-    
-    // جلب أول جهاز من قائمة الأجهزة
-    let station = stations.find(s => s.id === stations[0]?.id);
-    if (!station) {
-        showToast('⚠️ مفيش أجهزة مسجلة', 'error');
-        return;
-    }
-    
-    const url = getOrderPageUrl(station);
-    const qrApiUrl = 'https://api.qrserver.com/v1/create-qr-code/?size=300x300&data=' + encodeURIComponent(url);
-    
-    document.getElementById('qrCodeImage').src = qrApiUrl;
-    document.getElementById('qrContainer').style.display = 'block';
-    
-    // حفظ الرابط للاستخدام
-    localStorage.setItem('platepro_customer_url', url);
-    localStorage.setItem('platepro_business_id', business.id);
-    
-    showToast('✅ تم توليد QR للجهاز ' + (station.name || station.number), 'success');
-}
-
-// إظهار/إخفاء الـ QR في لوحة التحكم
-function toggleQRCode() {
-    const container = document.getElementById('qrContainer');
-    if (container.style.display === 'none' || container.style.display === '') {
-        generateQRCode();
-    } else {
-        container.style.display = 'none';
-    }
-}
-
-// تحميل QR كصورة
-function downloadQR() {
-    const link = document.createElement('a');
-    link.download = 'QR_' + (business ? business.code : 'cafe') + '.png';
-    link.href = document.getElementById('qrCodeImage').src;
-    link.click();
-}
-
 // ============================================================
 // ✅ تفعيل / تعطيل QR Ordering (من الإعدادات)
 // ============================================================
@@ -4705,8 +4663,6 @@ window.deliverQrOrder = deliverQrOrder;
 window.openStationQrSheet = openStationQrSheet;
 window.printStationQr = printStationQr;
 window.toggleQrOrdering = toggleQrOrdering;
-window.toggleQRCode = toggleQRCode;
-window.downloadQR = downloadQR;
 window.renderStationsGrid = renderStationsGrid;
 window.renderSettings = renderSettings;
 window.renderDashboard = renderDashboard;
