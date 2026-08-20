@@ -4728,6 +4728,18 @@ async function toggleQrOrdering(enabled) {
 }
 
 // ============================================================
+// دالة مساعدة لتحويل الثواني إلى ساعات ودقائق
+// ============================================================
+function formatHoursDuration(totalSeconds) {
+    const hrs = totalSeconds / 3600;
+    if (hrs >= 1) {
+        return `${moneyDec(hrs)} ${t('ساعة', 'hrs')}`;
+    }
+    const mins = Math.round(totalSeconds / 60);
+    return `${mins} ${t('دقيقة', 'min')}`;
+}
+
+// ============================================================
 // ESCAPE HTML HELPER
 // ============================================================
 function escapeHtml(str) { 
@@ -4819,6 +4831,7 @@ window.t = t;
 window.escapeHtml = escapeHtml;
 window.formatElapsed = formatElapsed;
 window.nowCorrected = nowCorrected;
+window.formatHoursDuration = formatHoursDuration;
 window.addToCustomerCart = addToCustomerCart;
 window.removeFromCustomerCart = removeFromCustomerCart;
 window.showCustomerCart = showCustomerCart;
