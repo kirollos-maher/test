@@ -2391,6 +2391,13 @@ async function startSessionWithMode(stationId) {
     const st = stations.find(s => s.id === stationId);
     const rate = mode === 'single' ? (st.single_rate || 20) : (st.multi_rate || 30);
     
+    // ✅ نقرأ قيمة الدفعة المقدمة فوراً *قبل* أي عملية async
+    // لأن أول ما الجلسة تتسجل في الداتابيز، الـ realtime subscription بيرجع يعمل
+    // openStationSheet() تلقائياً ويمسح الفورم (فيه حقل الدفعة المقدمة) قبل ما
+    // نوصل نقراه، فكانت الدفعة بتتفقد بصمت من غير أي رسالة خطأ
+    const prepayInputEl = document.getElementById('prepaymentInput');
+    const prepayAmount = prepayInputEl ? (parseFloat(prepayInputEl.value) || 0) : 0;
+    
     const errEl = document.getElementById('startSessionError');
     errEl.textContent = '';
     
@@ -2424,9 +2431,6 @@ async function startSessionWithMode(stationId) {
         const durationDisplay = timerType === 'countdown' ? ` (${hours} ${t('ساعة', 'hour')})` : '';
         
         // ✅ لو العميل دفع مقدماً قبل ما يقعد، نسجل الدفعة دي على الجلسة الجديدة
-        const prepayInput = document.getElementById('prepaymentInput');
-        const prepayAmount = prepayInput ? (parseFloat(prepayInput.value) || 0) : 0;
-        
         if (prepayAmount > 0) {
             try {
                 await addPrepayment(session.id, prepayAmount, t('قبل الجلسة', 'Before session'));
