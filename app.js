@@ -2,8 +2,8 @@
 // ============================================================
 // CONFIG
 // ============================================================
-const SUPABASE_URL = 'https://fhjhtgbvtkuhhzitvxtx.supabase.co';
-const SUPABASE_ANON_KEY = 'sb_publishable_X0aLD3gjXGqC_no4gW78ng_TWztP5cd';
+const SUPABASE_URL = 'https://hdrvqgicxxgfolozxgjp.supabase.co';
+const SUPABASE_ANON_KEY = 'sb_publishable_dGNw7eTTempKBdFmAZRjYA_eaeEE2jj';
 const supabaseClient = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 
 // V2 safety helpers: never report success when Supabase rejected the operation.
@@ -47,14 +47,14 @@ function updateTexts() {
         el.textContent = currentLang === 'ar' ? el.dataset.ar : el.dataset.en;
     });
     
+    // تحديث أسماء الأشهر
     updateMonthNames();
     
     renderStationsGrid();
     renderSettingsStations();
     renderSettingsPaymentMethods();
     if (document.getElementById('view-shift').classList.contains('active')) renderShiftView();
-    if (document.getElementById('view-analytics').classList.contains('active')) renderAnalytics();
-    if (document.getElementById('view-settings').classList.contains('active')) { renderSettings(); renderWhatsappSettingsUI(); }
+    if (document.getElementById('view-settings').classList.contains('active')) renderSettings();
 }
 
 function updateMonthNames() {
@@ -111,7 +111,6 @@ let deviceRecord = null;
 let stations = [];
 let sessions = {};
 let menuItems = [];
-let menuCategories = [];
 let employees = [];
 let paymentMethods = [];
 let currentShift = null;
@@ -124,24 +123,24 @@ let currentOrderSessionId = null;
 let selectedPaymentMethod = null;
 let endSessionStationId = null;
 let endingSessionInProgress = false;
+// ✅ حالة الخصم/المبلغ المدفوع لشاشة إنهاء الجلسة
 let currentEndSessionTotals = null;
 let endSessionDiscount = 0;
 let endSessionAmountPaid = null;
-let endSessionPrepaidAmount = 0;
+let endSessionPrepaidTotal = 0;
 let sessionSegmentsCache = {};
 let activeSegmentCache = {};
+// ✅ كاش الدفعات المقدمة (قبل الجلسة/أثناءها)
+let sessionPrepaymentsCache = {};
 let pendingSwitch = false;
 let transferSourceStationId = null;
 let countdownTimers = {};
 let countdownAlerts = {};
+// تخزين حالة التوجل لكل تصنيف
 let categoryToggleState = {};
-let qrOrders = {};
-let qrOrderingEnabled = false;
-let qrReminderInterval = null;
-let qrReminderLastSent = {};
 
 // ============================================================
-// PIN TOGGLE
+// ✅ TOGGLE PIN SECTION (قابل للطي)
 // ============================================================
 let settingsPinExpanded = false;
 
@@ -149,8 +148,13 @@ function toggleSettingsPin() {
     settingsPinExpanded = !settingsPinExpanded;
     const pinSection = document.getElementById('settingsChangePin');
     const chevron = document.getElementById('settingsPinChevron');
-    if (pinSection) pinSection.style.display = settingsPinExpanded ? 'block' : 'none';
-    if (chevron) chevron.style.transform = settingsPinExpanded ? 'rotate(180deg)' : 'rotate(0deg)';
+    
+    if (pinSection) {
+        pinSection.style.display = settingsPinExpanded ? 'block' : 'none';
+    }
+    if (chevron) {
+        chevron.style.transform = settingsPinExpanded ? 'rotate(180deg)' : 'rotate(0deg)';
+    }
 }
 
 // ============================================================
@@ -178,15 +182,13 @@ function navigateTo(viewId) {
         if (viewId === 'view-settings' && !perms.settings) viewId = 'view-dashboard';
         if (viewId === 'view-shift' && !perms.shift) viewId = 'view-dashboard';
         if (viewId === 'view-stations' && !perms.stations) viewId = 'view-dashboard';
-        if (viewId === 'view-analytics' && !perms.reports) viewId = 'view-dashboard';
     }
     document.querySelectorAll('.view').forEach(v => v.classList.remove('active'));
     document.getElementById(viewId).classList.add('active');
     document.querySelectorAll('.nav-btn').forEach(b => b.classList.toggle('active', b.dataset.view === viewId));
     if (viewId === 'view-dashboard') renderDashboard();
     if (viewId === 'view-shift') renderShiftView();
-    if (viewId === 'view-analytics') renderAnalytics();
-    if (viewId === 'view-settings') { renderSettings(); renderSettingsStations(); renderSettingsPaymentMethods(); renderWhatsappSettingsUI(); }
+    if (viewId === 'view-settings') { renderSettings(); renderSettingsStations(); renderSettingsPaymentMethods(); }
 }
 function openSheet(id) { document.getElementById(id).classList.add('show'); }
 function closeSheet(id) {
@@ -197,8 +199,9 @@ function closeSheet(id) {
         sessionSegmentsCache = {};
         endingSessionInProgress = false;
     }
-    if (id === 'transferOverlay') transferSourceStationId = null;
-    if (id === 'customerCartOverlay') { /* do nothing special */ }
+    if (id === 'transferOverlay') {
+        transferSourceStationId = null;
+    }
 }
 function t(ar, en) { return currentLang === 'ar' ? ar : en; }
 
@@ -208,12 +211,10 @@ function applyPermissions() {
     const navSettings = document.querySelector('.bottom-nav .nav-btn[data-view="view-settings"]');
     const navShift = document.querySelector('.bottom-nav .nav-btn[data-view="view-shift"]');
     const navStations = document.querySelector('.bottom-nav .nav-btn[data-view="view-stations"]');
-    const navAnalytics = document.querySelector('.bottom-nav .nav-btn[data-view="view-analytics"]');
     const fab = document.getElementById('fabAddExpense');
     if (navSettings) navSettings.style.display = (isOwner || perms.settings) ? 'flex' : 'none';
     if (navShift) navShift.style.display = (isOwner || perms.shift) ? 'flex' : 'none';
     if (navStations) navStations.style.display = (isOwner || perms.stations) ? 'flex' : 'none';
-    if (navAnalytics) navAnalytics.style.display = (isOwner || perms.reports) ? 'flex' : 'none';
     if (fab) fab.style.display = (isOwner || perms.shift) ? 'flex' : 'none';
 }
 
@@ -232,22 +233,9 @@ async function handleSetupContinue() {
         if (error || !biz) { errEl.textContent = t('مفيش نشاط بالكود ده.', 'No business found with this code.'); return; }
         business = biz;
         localStorage.setItem('psr_business_code', code);
-        qrOrderingEnabled = !!business.qr_ordering_enabled;
-        localStorage.setItem('psr_qr_ordering_enabled', JSON.stringify(qrOrderingEnabled));
 
         const deviceId = getDeviceId();
-        let dev = null;
-        const savedDevice = localStorage.getItem('psr_device_record');
-        if (savedDevice) {
-            try {
-                dev = JSON.parse(savedDevice);
-                if (dev.business_id !== biz.id || dev.device_id !== deviceId) dev = null;
-            } catch (e) { dev = null; }
-        }
-        if (!dev) {
-            const { data: devData } = await supabaseClient.from('devices').select('*').eq('business_id', biz.id).eq('device_id', deviceId).maybeSingle();
-            dev = devData;
-        }
+        const { data: dev } = await supabaseClient.from('devices').select('*').eq('business_id', biz.id).eq('device_id', deviceId).maybeSingle();
         if (!dev) {
             document.getElementById('activationBizName').textContent = biz.name;
             showScreen('activationScreen');
@@ -282,7 +270,6 @@ async function handleActivateDevice() {
 
         await supabaseClient.from('activation_codes').update({ used: true, used_at: new Date().toISOString() }).eq('id', actCode.id);
         deviceRecord = newDev;
-        localStorage.setItem('psr_device_record', JSON.stringify(deviceRecord));
         showToast(t('تم تفعيل الجهاز بنجاح', 'Device activated successfully'), 'success');
         proceedToLock();
     } catch (e) { console.error(e); errEl.textContent = t('حصل خطأ، حاول تاني.', 'Error, try again.'); }
@@ -373,8 +360,6 @@ function lockApp() {
 function switchBusiness() {
     stopRealtimeAndTimers();
     localStorage.removeItem('psr_business_code');
-    localStorage.removeItem('psr_device_record');
-    localStorage.removeItem('psr_qr_ordering_enabled');
     business = null; deviceRecord = null; currentUser = null;
     document.getElementById('setupBusinessCode').value = '';
     showScreen('setupScreen');
@@ -387,20 +372,7 @@ async function tryAutoResume() {
         const { data: biz } = await supabaseClient.from('businesses').select('*').eq('code', code).single();
         if (!biz) return;
         business = biz;
-        qrOrderingEnabled = !!business.qr_ordering_enabled;
-        localStorage.setItem('psr_qr_ordering_enabled', JSON.stringify(qrOrderingEnabled));
-        const savedDevice = localStorage.getItem('psr_device_record');
-        let dev = null;
-        if (savedDevice) {
-            try {
-                dev = JSON.parse(savedDevice);
-                if (dev.business_id !== biz.id) dev = null;
-            } catch (e) { dev = null; }
-        }
-        if (!dev) {
-            const { data: devData } = await supabaseClient.from('devices').select('*').eq('business_id', biz.id).eq('device_id', getDeviceId()).maybeSingle();
-            dev = devData;
-        }
+        const { data: dev } = await supabaseClient.from('devices').select('*').eq('business_id', biz.id).eq('device_id', getDeviceId()).maybeSingle();
         if (!dev) return;
         deviceRecord = dev;
         proceedToLock();
@@ -408,18 +380,28 @@ async function tryAutoResume() {
 }
 
 // ============================================================
-// AUTO-ACTIVATE FROM URL
+// AUTO-ACTIVATE FROM URL (?biz=CODE&code=ACTIVATION)
+// Used by the "start free trial" button on the marketing/dashboard
+// site, which creates a business + trial activation code and sends
+// the device straight here. Only runs for a device with no existing
+// saved session, so it never hijacks an already-installed device.
 // ============================================================
 async function tryAutoActivateFromURL() {
-    if (localStorage.getItem('psr_business_code')) return;
+    if (localStorage.getItem('psr_business_code')) return; // existing device — don't interfere
     const params = new URLSearchParams(window.location.search);
     const bizCode = params.get('biz');
     const actCodeParam = params.get('code');
     if (!bizCode) return;
+
+    // Clean the URL so a refresh/share doesn't re-trigger this.
     window.history.replaceState({}, document.title, window.location.pathname);
+
     const setupInput = document.getElementById('setupBusinessCode');
     if (setupInput) setupInput.value = bizCode;
     await handleSetupContinue();
+
+    // If handleSetupContinue routed us to the activation screen (new device)
+    // and we have an activation code, fill it in and submit automatically.
     const activationScreen = document.getElementById('activationScreen');
     if (actCodeParam && activationScreen && activationScreen.classList.contains('active')) {
         const actInput = document.getElementById('activationCodeInput');
@@ -431,8 +413,6 @@ async function tryAutoActivateFromURL() {
 window.addEventListener('DOMContentLoaded', async () => {
     await tryAutoActivateFromURL();
     tryAutoResume();
-    initCustomerPage();
-    loadWhatsappConfig();
 });
 
 // ============================================================
@@ -448,120 +428,37 @@ async function enterMainApp() {
     document.querySelectorAll('.nav-btn').forEach(b => b.classList.toggle('active', b.dataset.view === 'view-dashboard'));
     
     populateYearSelect();
+    // مبنعملهاش await عشان ملف الشبكة بتاعها (حتى لو بطيء) ميأخرش فتح
+    // التطبيق؛ بمجرد ما تخلص في الخلفية، بتحدّث الأرقام المعروضة تلقائيًا
     syncServerClock().then(() => { renderStationsGrid(); });
     await loadAllData();
     subscribeRealtime();
     startTicker();
     updateTexts();
     await recoverActiveSession();
+    // إعادة مزامنة الساعة كل 5 دقايق عشان نلحق أي انزياح لساعة الجهاز أثناء الاستخدام
     setInterval(syncServerClock, 5 * 60 * 1000);
-
-    startQrOrderReminders();
-    loadWhatsappConfig();
-    startWhatsappAutoReports();
-}
-
-// ============================================================
-// شبكة أمان: اكتشاف الطلبات الجديدة + تذكير بالطلبات اللي لسه ما اتحضّرتش
-// ============================================================
-function startQrOrderReminders() {
-    if (qrReminderInterval) clearInterval(qrReminderInterval);
-    qrReminderInterval = setInterval(checkQrOrderReminders, 20000);
-}
-
-function stopQrOrderReminders() {
-    if (qrReminderInterval) { clearInterval(qrReminderInterval); qrReminderInterval = null; }
-    qrReminderLastSent = {};
-}
-
-async function checkQrOrderReminders() {
-    if (!business) return;
-    const REMINDER_MS = 3 * 60 * 1000;
-    try {
-        const { data, error } = await supabaseClient
-            .from('qr_orders')
-            .select('*')
-            .eq('business_id', business.id)
-            .in('status', ['pending', 'seen']);
-        if (error || !data) return;
-
-        const now = Date.now();
-        const activeIds = new Set();
-        let gridNeedsUpdate = false;
-
-        data.forEach(o => {
-            activeIds.add(o.id);
-            const alreadyKnown = (qrOrders[o.station_id] || []).some(x => x.id === o.id);
-
-            if (!alreadyKnown && o.status === 'pending') {
-                if (!qrOrders[o.station_id]) qrOrders[o.station_id] = [];
-                qrOrders[o.station_id].push(o);
-                gridNeedsUpdate = true;
-                qrReminderLastSent[o.id] = now;
-
-                const station = stations.find(s => s.id === o.station_id);
-                const deviceName = station ? (station.name || t('جهاز', 'Device') + ' ' + station.number) : t('جهاز', 'Device');
-                const itemsSummary = (o.items || []).map(it => `${it.name} ×${it.qty}`).join('، ');
-                if (typeof showRingNotification === 'function') {
-                    showRingNotification(
-                        t('🛎️ طلب جديد من العميل', '🛎️ New customer order'),
-                        t(`${deviceName}: ${itemsSummary}`, `${deviceName}: ${itemsSummary}`),
-                        'warning'
-                    );
-                } else if (typeof showToast === 'function') {
-                    showToast(t(`🛎️ طلب جديد من ${deviceName}: ${itemsSummary}`, `🛎️ New order from ${deviceName}: ${itemsSummary}`), 'warning');
-                }
-                return;
-            }
-
-            const createdAt = new Date(o.created_at).getTime();
-            const lastSent = qrReminderLastSent[o.id] || createdAt;
-            if (now - lastSent >= REMINDER_MS) {
-                qrReminderLastSent[o.id] = now;
-                const station = stations.find(s => s.id === o.station_id);
-                const deviceName = station ? (station.name || t('جهاز', 'Device') + ' ' + station.number) : t('جهاز', 'Device');
-                const msg = t(`فيه طلب على ${deviceName} لسه متحضرش`, `There's an order on ${deviceName} still not prepared`);
-                if (typeof showRingNotification === 'function') {
-                    showRingNotification(
-                        t('⏰ تذكير: طلب لسه مش متحضر', '⏰ Reminder: order not prepared'),
-                        msg,
-                        'warning'
-                    );
-                } else if (typeof showToast === 'function') {
-                    showToast('⏰ ' + msg, 'warning');
-                }
-            }
-        });
-
-        if (gridNeedsUpdate) {
-            updateHeaderBellBadge();
-            renderStationsGrid();
-        }
-
-        Object.keys(qrReminderLastSent).forEach(id => {
-            if (!activeIds.has(id)) delete qrReminderLastSent[id];
-        });
-    } catch (e) {
-        console.warn('QR order reminder check failed:', e);
-    }
 }
 
 async function loadAllData() {
+    // Load each area independently. A problem in one table (for example,
+    // duplicate open shifts in an older database) must not prevent the
+    // stations and the rest of the app from rendering.
     const results = await Promise.allSettled([
         loadStations(),
         loadMenuItems(),
-        loadMenuCategories(),
         loadEmployees(),
         loadPaymentMethods(),
-        loadOrOpenShift(),
-        loadQrOrders()
+        loadOrOpenShift()
     ]);
+
     results.forEach((result, index) => {
         if (result.status === 'rejected') {
-            const names = ['stations', 'menu_items', 'menu_categories', 'employees', 'payment_methods', 'shift', 'qr_orders'];
+            const names = ['stations', 'menu_items', 'employees', 'payment_methods', 'shift'];
             console.error(`Failed to load ${names[index]}:`, result.reason);
         }
     });
+
     renderDashboard();
     renderStationsGrid();
     renderSettingsStations();
@@ -593,7 +490,7 @@ async function loadStations() {
 }
 
 // ============================================================
-// MENU ITEMS & CATEGORIES
+// MENU ITEMS - with localStorage fallback
 // ============================================================
 async function loadMenuItems() {
     try {
@@ -620,21 +517,6 @@ async function loadMenuItems() {
         } else {
             menuItems = [];
         }
-    }
-}
-
-async function loadMenuCategories() {
-    try {
-        const { data, error } = await supabaseClient.from('menu_categories').select('*').eq('business_id', business.id).eq('active', true).order('sort_order');
-        if (error) {
-            console.warn('Error loading menu categories:', error);
-            menuCategories = [];
-            return;
-        }
-        menuCategories = data || [];
-    } catch (e) {
-        console.warn('Error loading menu categories:', e);
-        menuCategories = [];
     }
 }
 
@@ -709,15 +591,24 @@ async function loadPaymentMethods() {
 
 async function loadOrOpenShift() {
     assertBusinessContext();
+
+    // Do not use maybeSingle() here. The current database contains multiple
+    // open shifts for this business (the console reports 19 rows), so
+    // maybeSingle() throws PGRST116 and used to stop the whole app from rendering.
     const { data: openShifts, error } = await supabaseClient
         .from('shifts')
         .select('*')
         .eq('business_id', business.id)
         .eq('status', 'open')
         .order('opened_at', { ascending: false });
+
     if (error) throw error;
+
     if (openShifts && openShifts.length > 0) {
+        // Use the newest open shift for now. Do NOT automatically delete or
+        // close the other financial records; they need manual review.
         currentShift = openShifts[0];
+
         if (openShifts.length > 1) {
             console.warn(
                 `PS Rental: ${openShifts.length} open shifts found for business ${business.id}. ` +
@@ -726,6 +617,7 @@ async function loadOrOpenShift() {
         }
         return;
     }
+
     const createdResult = await dbResult(
         supabaseClient
             .from('shifts')
@@ -735,247 +627,6 @@ async function loadOrOpenShift() {
         'Opening shift'
     );
     currentShift = createdResult.data;
-}
-
-// ============================================================
-// QR CUSTOMER ORDERS
-// ============================================================
-async function loadQrOrders() {
-    assertBusinessContext();
-    qrOrders = {};
-    const { data, error } = await supabaseClient
-        .from('qr_orders')
-        .select('*')
-        .eq('business_id', business.id)
-        .eq('status', 'pending')
-        .order('created_at', { ascending: true });
-    if (error) {
-        console.warn('Could not load qr_orders:', error);
-        return;
-    }
-    (data || []).forEach(o => {
-        if (!qrOrders[o.station_id]) qrOrders[o.station_id] = [];
-        qrOrders[o.station_id].push(o);
-    });
-    updateHeaderBellBadge();
-}
-
-function totalPendingQrOrders() {
-    return Object.values(qrOrders).reduce((sum, arr) => sum + arr.length, 0);
-}
-
-function updateHeaderBellBadge() {
-    const badge = document.getElementById('headerBellBadge');
-    const bell = document.getElementById('headerBell');
-    const count = totalPendingQrOrders();
-    if (badge) {
-        badge.textContent = count > 9 ? '9+' : String(count);
-        badge.style.display = count > 0 ? 'flex' : 'none';
-    }
-    if (bell) bell.classList.toggle('bell-ringing', count > 0);
-}
-
-function handleQrOrderChange(payload) {
-    const row = payload.new && Object.keys(payload.new).length ? payload.new : payload.old;
-    if (!row) return;
-
-    Object.keys(qrOrders).forEach(stId => {
-        qrOrders[stId] = (qrOrders[stId] || []).filter(o => o.id !== row.id);
-        if (qrOrders[stId].length === 0) delete qrOrders[stId];
-    });
-
-    if (payload.eventType !== 'DELETE' && payload.new && payload.new.status === 'pending') {
-        const stId = payload.new.station_id;
-        if (!qrOrders[stId]) qrOrders[stId] = [];
-        qrOrders[stId].push(payload.new);
-
-        if (payload.eventType === 'INSERT') {
-            const station = stations.find(s => s.id === stId);
-            const deviceName = station ? (station.name || t('جهاز', 'Device') + ' ' + station.number) : t('جهاز', 'Device');
-            const itemsSummary = (payload.new.items || []).map(it => `${it.name} ×${it.qty}`).join('، ');
-            if (typeof showRingNotification === 'function') {
-                showRingNotification(
-                    t('🛎️ طلب جديد من العميل', '🛎️ New customer order'),
-                    t(`${deviceName}: ${itemsSummary}`, `${deviceName}: ${itemsSummary}`),
-                    'warning'
-                );
-            } else if (typeof showToast === 'function') {
-                showToast(t(`🛎️ طلب جديد من ${deviceName}: ${itemsSummary}`, `🛎️ New order from ${deviceName}: ${itemsSummary}`), 'warning');
-            }
-        }
-    }
-
-    updateHeaderBellBadge();
-    renderStationsGrid();
-    if (document.getElementById('qrOrdersOverlay').classList.contains('show')) renderQrOrdersBody();
-}
-
-async function markStationQrOrdersSeen(stationId) {
-    const pendingOrders = (qrOrders[stationId] || []).filter(o => o.status === 'pending');
-    if (pendingOrders.length === 0) return;
-    const ids = pendingOrders.map(o => o.id);
-    try {
-        await supabaseClient
-            .from('qr_orders')
-            .update({ status: 'seen' })
-            .in('id', ids);
-        qrOrders[stationId] = (qrOrders[stationId] || []).map(o =>
-            ids.includes(o.id) ? { ...o, status: 'seen' } : o
-        ).filter(o => o.status !== 'seen');
-        updateHeaderBellBadge();
-        renderStationsGrid();
-    } catch (e) {
-        console.warn('Error marking QR orders as seen:', e);
-    }
-}
-
-async function deliverQrOrder(orderId) {
-    try {
-        await supabaseClient
-            .from('qr_orders')
-            .update({ status: 'done', done_at: new Date().toISOString() })
-            .eq('id', orderId);
-        Object.keys(qrOrders).forEach(stId => {
-            qrOrders[stId] = (qrOrders[stId] || []).filter(o => o.id !== orderId);
-            if (qrOrders[stId].length === 0) delete qrOrders[stId];
-        });
-        updateHeaderBellBadge();
-        renderStationsGrid();
-        if (activeStationId) {
-            await openStationSheet(activeStationId);
-        }
-        showToast(t('تم تسليم الطلب', 'Order delivered'), 'success');
-    } catch (e) {
-        console.error('Error delivering QR order:', e);
-        showToast(t('فشل التسليم', 'Delivery failed'), 'error');
-    }
-}
-
-function qrOrderItemsLineHtml(items) {
-    return (items || []).map(it =>
-        `<div><span>${escapeHtml(it.name)} × ${it.qty}</span><span class="mono">${money(Number(it.price) * Number(it.qty))}</span></div>`
-    ).join('');
-}
-
-function openQrOrdersSheet(stationFilter) {
-    openQrOrdersSheet._filter = stationFilter || null;
-    renderQrOrdersBody();
-    openSheet('qrOrdersOverlay');
-}
-
-function renderQrOrdersBody() {
-    const body = document.getElementById('qrOrdersBody');
-    const filter = openQrOrdersSheet._filter;
-    let list = [];
-    Object.entries(qrOrders).forEach(([stId, orders]) => {
-        if (filter && stId !== filter) return;
-        orders.forEach(o => list.push(o));
-    });
-    list.sort((a, b) => new Date(a.created_at) - new Date(b.created_at));
-
-    if (list.length === 0) {
-        body.innerHTML = `<div class="empty"><i class="fa-solid fa-bell-slash"></i>${t('مفيش طلبات عملاء دلوقتي', 'No customer orders right now')}</div>`;
-        return;
-    }
-
-    body.innerHTML = list.map(o => {
-        const station = stations.find(s => s.id === o.station_id);
-        const deviceName = station ? (station.name || t('جهاز', 'Device') + ' ' + station.number) : t('جهاز محذوف', 'Deleted device');
-        const timeStr = new Date(o.created_at).toLocaleTimeString(currentLang === 'ar' ? 'ar-EG' : 'en-US', { hour: '2-digit', minute: '2-digit' });
-        const total = (o.items || []).reduce((s, it) => s + Number(it.price) * Number(it.qty), 0);
-        return `<div class="qr-order-item">
-            <div class="qr-order-head">
-                <span class="qr-order-station"><i class="fa-solid fa-gamepad"></i> ${escapeHtml(deviceName)}</span>
-                <span class="qr-order-time">${timeStr}</span>
-            </div>
-            <div class="qr-order-lines">${qrOrderItemsLineHtml(o.items)}</div>
-            ${o.note ? `<div class="qr-order-note"><i class="fa-solid fa-note-sticky"></i> ${escapeHtml(o.note)}</div>` : ''}
-            <div class="row-value mono" style="text-align:end;margin-bottom:8px;font-weight:700;">${t('الإجمالي', 'Total')}: ${money(total)} ${t('ج', 'EGP')}</div>
-            <div style="font-size:11px;color:var(--text-dim);margin-bottom:8px;">${t('✅ اتضاف للفاتورة تلقائيًا', '✅ Already added to the bill')}</div>
-            <div class="qr-order-actions">
-                <button class="btn btn-amber btn-block" onclick="dismissQrOrder('${o.id}')"><i class="fa-solid fa-check"></i> ${t('تم التحضير', 'Prepared')}</button>
-            </div>
-        </div>`;
-    }).join('');
-}
-
-async function addQrOrderToBill(orderId) {
-    let order = null;
-    Object.values(qrOrders).forEach(arr => { const f = arr.find(o => o.id === orderId); if (f) order = f; });
-    if (!order) return;
-
-    const session = sessions[order.station_id];
-    if (!session) {
-        showToast(t('لازم تبدأ جلسة على الجهاز الأول عشان تضيف الطلب للفاتورة', 'Start a session on this device first to add the order to its bill'), 'error');
-        return;
-    }
-
-    for (const it of (order.items || [])) {
-        const qty = Math.max(1, parseInt(it.qty) || 1);
-        for (let i = 0; i < qty; i++) {
-            await addOrderItem(session.id, it.id);
-        }
-    }
-    await dismissQrOrder(orderId, true);
-    showToast(t('تمت إضافة طلب العميل للفاتورة', "Customer's order added to the bill"), 'success');
-}
-
-async function dismissQrOrder(orderId, silent) {
-    try {
-        await supabaseClient.from('qr_orders').update({ status: 'done', done_at: new Date().toISOString() }).eq('id', orderId);
-    } catch (e) {
-        console.error('Error dismissing qr order:', e);
-    }
-    Object.keys(qrOrders).forEach(stId => {
-        qrOrders[stId] = (qrOrders[stId] || []).filter(o => o.id !== orderId);
-        if (qrOrders[stId].length === 0) delete qrOrders[stId];
-    });
-    updateHeaderBellBadge();
-    renderStationsGrid();
-    renderQrOrdersBody();
-    if (!silent) showToast(t('تم استلام الطلب', 'Order acknowledged'), 'success');
-}
-
-// ============================================================
-// CLOCK SYNC
-// ============================================================
-let serverClockOffsetMs = 0;
-
-async function fetchWithTimeout(url, ms) {
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), ms);
-    try {
-        return await fetch(url, { signal: controller.signal });
-    } finally {
-        clearTimeout(timeoutId);
-    }
-}
-
-async function syncServerClock() {
-    try {
-        const res = await fetchWithTimeout('https://worldtimeapi.org/api/timezone/Etc/UTC', 4000);
-        const data = await res.json();
-        if (data && data.unixtime) {
-            serverClockOffsetMs = (data.unixtime * 1000) - Date.now();
-            return;
-        }
-    } catch (e) {
-        console.warn('worldtimeapi failed, trying fallback:', e);
-    }
-    try {
-        const res = await fetchWithTimeout('https://timeapi.io/api/Time/current/zone?timeZone=UTC', 4000);
-        const data = await res.json();
-        if (data && data.dateTime) {
-            const serverTime = new Date(data.dateTime + 'Z').getTime();
-            if (!isNaN(serverTime)) serverClockOffsetMs = serverTime - Date.now();
-        }
-    } catch (e) {
-        console.warn('Error syncing server clock (both sources failed):', e);
-    }
-}
-
-function nowCorrected() {
-    return Date.now() + serverClockOffsetMs;
 }
 
 // ============================================================
@@ -1058,7 +709,199 @@ async function getActiveSegment(sessionId) {
 }
 
 function getActiveSegmentFast(sessionId) {
-    return activeSegmentCache[sessionId] || null;
+    // ✅ لو الكاش فاضي أو null، نجيب من الداتابيز
+    if (!activeSegmentCache[sessionId]) {
+        return null;
+    }
+    return activeSegmentCache[sessionId];
+}
+
+// ============================================================
+// ✅ الدفعة المقدمة (Prepayment) — العميل يدفع قبل ما يقعد على
+// الجهاز، أو يزوّد الدفعة أثناء الجلسة. كل دفعة بتتسجل كصف مستقل
+// في session_prepayments (نفس فكرة session_segments/session_orders)
+// وبيتم جمعها وخصمها من الإجمالي في صفحة دفع نهاية الجلسة فقط.
+// ============================================================
+async function addPrepayment(sessionId, amount, note) {
+    assertBusinessContext();
+    const value = assertPositiveNumber(amount, 'Prepayment amount');
+    if (value <= 0) throw new Error('Prepayment amount must be greater than zero');
+
+    const { data, error } = await supabaseClient.from('session_prepayments').insert({
+        session_id: sessionId,
+        business_id: business.id,
+        amount: value,
+        note: note || null,
+        created_by_device: getDeviceId()
+    }).select().single();
+    if (error) throw error;
+
+    // ✅ إبطال الكاش عشان يتجاب تاني
+    sessionPrepaymentsCache[sessionId] = null;
+    
+    // ✅ تحديث واجهة الجلسة الحالية عشان تظهر الدفعة الجديدة
+    if (activeStationId && sessions[activeStationId] && sessions[activeStationId].id === sessionId) {
+        setTimeout(() => {
+            refreshStationSheetContent(activeStationId);
+        }, 300);
+    }
+    
+    return data;
+}
+
+async function getSessionPrepayments(sessionId) {
+    // ✅ لو في كاش، نجيب من الكاش
+    if (sessionPrepaymentsCache[sessionId] !== undefined && sessionPrepaymentsCache[sessionId] !== null) {
+        return sessionPrepaymentsCache[sessionId];
+    }
+    try {
+        const { data, error } = await supabaseClient
+            .from('session_prepayments')
+            .select('*')
+            .eq('session_id', sessionId)
+            .order('created_at', { ascending: true });
+        if (error) {
+            // لو الجدول لسه مش متعمل في قاعدة البيانات، منسيبش الشاشة تقفل
+            console.warn('session_prepayments unavailable:', error.message);
+            sessionPrepaymentsCache[sessionId] = [];
+            return [];
+        }
+        sessionPrepaymentsCache[sessionId] = data || [];
+        return sessionPrepaymentsCache[sessionId];
+    } catch (e) {
+        console.warn('Error loading prepayments:', e);
+        sessionPrepaymentsCache[sessionId] = [];
+        return [];
+    }
+}
+
+async function getPrepaidTotal(sessionId) {
+    const list = await getSessionPrepayments(sessionId);
+    const total = list.reduce((sum, p) => sum + Number(p.amount || 0), 0);
+    return Math.round(total * 100) / 100;
+}
+
+// شاشة إضافة دفعة مقدمة أثناء الجلسة (زر "إضافة دفعة مقدمة")
+function openPrepaymentSheet(stationId) {
+    const session = sessions[stationId];
+    if (!session) {
+        showToast(t('الجلسة غير موجودة', 'Session not found'), 'error');
+        return;
+    }
+    const body = document.getElementById('prepaymentSheetBody');
+    if (!body) return;
+
+    body.innerHTML = `
+        <div style="text-align:center;margin-bottom:12px;">
+            <div style="font-size:13px;color:var(--text-dim);">${t('إضافة دفعة مقدمة على الجلسة', 'Add a prepayment to this session')}</div>
+        </div>
+        <div class="field">
+            <label>${t('المبلغ (جنيه)', 'Amount (EGP)')}</label>
+            <input type="number" id="prepaymentAmountInput" class="mono" min="0.5" step="0.5" placeholder="0" autofocus>
+        </div>
+        <button class="btn btn-prepay btn-block" onclick="confirmAddPrepayment('${session.id}','${stationId}')">
+            <i class="fa-solid fa-check"></i> ${t('تأكيد الدفعة', 'Confirm Prepayment')}
+        </button>
+        <button class="btn btn-ghost btn-block" style="margin-top:8px;" onclick="closeSheet('prepaymentOverlay')">${t('إلغاء', 'Cancel')}</button>
+        <div class="error-text" id="prepaymentError"></div>
+    `;
+    openSheet('prepaymentOverlay');
+}
+
+async function confirmAddPrepayment(sessionId, stationId) {
+    const input = document.getElementById('prepaymentAmountInput');
+    const errEl = document.getElementById('prepaymentError');
+    if (errEl) errEl.textContent = '';
+    const amount = parseFloat(input ? input.value : '');
+
+    if (!amount || amount <= 0) {
+        if (errEl) errEl.textContent = t('أدخل مبلغ صحيح أكبر من صفر', 'Enter a valid amount greater than zero');
+        return;
+    }
+
+    try {
+        await addPrepayment(sessionId, amount, t('أثناء الجلسة', 'During session'));
+        showToast(t('تم تسجيل الدفعة المقدمة', 'Prepayment recorded'), 'success');
+        closeSheet('prepaymentOverlay');
+        if (stationId) {
+            await refreshStationSheetContent(stationId);
+        }
+    } catch (e) {
+        console.error('Error adding prepayment:', e);
+        if (errEl) errEl.textContent = t('فشل تسجيل الدفعة، حاول تاني', 'Failed to save the prepayment, try again');
+    }
+}
+
+// ============================================================
+// ✅ CLOCK SYNC — تصحيح فرق ساعة الجهاز عن وقت السيرفر
+// المشكلة: كل جهاز (لابتوب/موبايل) بيحسب "الوقت المنقضي" بالمقارنة
+// بساعته المحلية هو. لو ساعة الموبايل متأخرة عن اللحظة اللي اتسجل
+// فيها started_at (اللي جت من جهاز تاني)، الفرق بيبقى سالب فيتقفل
+// على 00:00 ويفضل واقف. الحل: نجيب وقت حقيقي مرجعي مرة عند الدخول
+// ونحسب فرق ثابت (offset) ونستخدمه بدل ما نعتمد على ساعة الجهاز لوحدها.
+//
+// ملحوظة: بنجيب الوقت من محتوى الرد (JSON body) مش من الـ response
+// header، لإن المتصفح بيمنع قراءة هيدر Date في الطلبات cross-origin
+// إلا لو السيرفر يسمح بيه صراحة (Supabase مش بيسمح) — فالاعتماد على
+// الـ header كان بيرجع فاضي دايمًا والتصحيح مكانش بيشتغل فعليًا.
+// ============================================================
+let serverClockOffsetMs = 0;
+
+async function fetchWithTimeout(url, ms) {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), ms);
+    try {
+        return await fetch(url, { signal: controller.signal });
+    } finally {
+        clearTimeout(timeoutId);
+    }
+}
+
+async function syncServerClock() {
+    // ✅ المصدر الأول (الأوثق): وقت Supabase بتاعنا نفسه عن طريق RPC
+    // ده بيعتمد على نفس الاتصال اللي التطبيق أصلاً بينجح يكلمه في كل حتة
+    // تانية (مش على API خارجي ممكن يتحجب من الشبكة/الإضافات زي worldtimeapi)
+    try {
+        const { data, error } = await supabaseClient.rpc('get_server_time');
+        if (!error && data) {
+            const serverTime = new Date(data).getTime();
+            if (!isNaN(serverTime)) {
+                serverClockOffsetMs = serverTime - Date.now();
+                return;
+            }
+        }
+    } catch (e) {
+        // متاح لو الدالة get_server_time لسه متعملتش في قاعدة البيانات، بنكمل على المصادر الاحتياطية
+    }
+    // مصدر احتياطي أول
+    try {
+        const res = await fetchWithTimeout('https://worldtimeapi.org/api/timezone/Etc/UTC', 4000);
+        const data = await res.json();
+        if (data && data.unixtime) {
+            serverClockOffsetMs = (data.unixtime * 1000) - Date.now();
+            return;
+        }
+    } catch (e) {
+        // متوقع لو الدومين ده محجوب على الشبكة الحالية، بنكمل على المصدر التاني
+    }
+    // مصدر احتياطي تاني
+    try {
+        const res = await fetchWithTimeout('https://timeapi.io/api/Time/current/zone?timeZone=UTC', 4000);
+        const data = await res.json();
+        if (data && data.dateTime) {
+            const serverTime = new Date(data.dateTime + 'Z').getTime();
+            if (!isNaN(serverTime)) serverClockOffsetMs = serverTime - Date.now();
+        }
+    } catch (e) {
+        // كل المصادر فشلت (غالباً الشبكة الحالية بتحجب الدومينات الخارجية دي) —
+        // بنسيب serverClockOffsetMs = 0 (يعتمد على ساعة الجهاز) من غير ما نضرب
+        // console.warn عشان ده سيناريو متوقع ومش خطأ حقيقي في التطبيق
+        console.info('Clock sync: using local device time (external time sources unreachable).');
+    }
+}
+
+function nowCorrected() {
+    return Date.now() + serverClockOffsetMs;
 }
 
 async function preloadActiveSegments(sessionIds) {
@@ -1108,13 +951,27 @@ async function calculateTotalAmounts(sessionId) {
         .eq('session_id', sessionId);
     const ordersTotal = (orders || []).reduce((sum, o) => sum + (Number(o.quantity) * Number(o.unit_price)), 0);
     
+    // ✅ جلب الدفعات المقدمة من الكاش أو الداتابيز
+    let prepaidTotal = 0;
+    try {
+        prepaidTotal = await getPrepaidTotal(sessionId);
+    } catch (e) {
+        console.warn('Error getting prepaid total:', e);
+        prepaidTotal = 0;
+    }
+    
+    const grandTotal = Math.round((singleTotal + multiTotal + ordersTotal) * 100) / 100;
+    
     return {
         singleTotal: Math.round(singleTotal * 100) / 100,
         multiTotal: Math.round(multiTotal * 100) / 100,
         singleDuration: singleDuration,
         multiDuration: multiDuration,
         ordersTotal: ordersTotal,
-        grandTotal: Math.round((singleTotal + multiTotal + ordersTotal) * 100) / 100
+        prepaidTotal: prepaidTotal,
+        // الباقي على العميل بعد خصم أي دفعة مقدمة (قبل خصم أي discount هيتحسب في صفحة الدفع)
+        dueAfterPrepayment: Math.max(0, Math.round((grandTotal - prepaidTotal) * 100) / 100),
+        grandTotal: grandTotal
     };
 }
 
@@ -1156,6 +1013,8 @@ function getCurrentSegmentEstimateFast(sessionId) {
     return { amount, hours, segment: activeSeg };
 }
 
+// قيمة الجزء الحالي المكتسبة فعليًا (على أساس الوقت المنقضي دايمًا، سواء تصاعدي أو تنازلي)
+// نفس المعادلة المستخدمة عند إغلاق الجزء فعليًا في calculateSegmentAmountFromTimes
 function getCurrentSegmentEarnedAmount(sessionId) {
     const activeSeg = getActiveSegmentFast(sessionId);
     if (!activeSeg) return 0;
@@ -1191,7 +1050,6 @@ function subscribeRealtime() {
         .on('postgres_changes', { event: '*', schema: 'public', table: 'session_orders', filter: 'business_id=eq.' + business.id }, handleOrderChange)
         .on('postgres_changes', { event: '*', schema: 'public', table: 'stations', filter: 'business_id=eq.' + business.id }, handleStationChange)
         .on('postgres_changes', { event: '*', schema: 'public', table: 'session_segments', filter: 'business_id=eq.' + business.id }, handleSegmentChange)
-        .on('postgres_changes', { event: '*', schema: 'public', table: 'qr_orders', filter: 'business_id=eq.' + business.id }, handleQrOrderChange)
         .subscribe();
 }
 
@@ -1202,7 +1060,6 @@ function stopRealtimeAndTimers() {
         if (countdownTimers[key]) clearInterval(countdownTimers[key]);
         delete countdownTimers[key];
     });
-    stopQrOrderReminders();
 }
 
 function handleSessionChange(payload) {
@@ -1465,292 +1322,11 @@ function renderStationsGrid() {
             timerDisplay = `<div class="station-rate">${t('Single', 'Single')} ${money(st.single_rate || 20)} / ${t('Multi', 'Multi')} ${money(st.multi_rate || 30)} ${t('ج/ساعة', 'EGP/hr')}</div>`;
         }
         
-        const hasQrOrder = !!(qrOrders[st.id] && qrOrders[st.id].length);
-        const qrBadge = hasQrOrder
-            ? `<div class="qr-order-badge" onclick="event.stopPropagation(); openQrOrdersSheet('${st.id}')" title="${t('طلب من العميل', 'Customer order')}"><i class="fa-solid fa-exclamation"></i></div>`
-            : '';
-
-        const qrStationBtn = qrOrderingEnabled
-            ? `<button class="qr-station-btn" onclick="event.stopPropagation(); openStationQrSheet('${st.id}')" title="${t('كود QR لطلب العميل', 'Customer order QR code')}"><i class="fa-solid fa-qrcode"></i></button>`
-            : '';
-
-        return `<div class="station-card ${occupied ? 'occupied' : ''} ${hasQrOrder ? 'has-qr-order' : ''}" onclick="openStationSheet('${st.id}')">
-            ${qrBadge}
-            ${qrStationBtn}
+        return `<div class="station-card ${occupied ? 'occupied' : ''}" onclick="openStationSheet('${st.id}')">
             <div><div class="station-num">${displayName}</div><div class="station-status">${statusText} ${modeBadge} ${timerBadge}</div></div>
             ${timerDisplay}
         </div>`;
     }).join('');
-}
-
-// ============================================================
-// STATION SHEET
-// ============================================================
-async function openStationSheet(stationId) {
-    activeStationId = stationId;
-    const st = stations.find(s => s.id === stationId);
-    const session = sessions[stationId];
-    const displayName = st.name ? st.name : t('جهاز', 'Device') + ' ' + st.number;
-    document.getElementById('stationSheetTitle').textContent = displayName;
-    const body = document.getElementById('stationSheetBody');
-
-    await markStationQrOrdersSeen(stationId);
-
-    body.innerHTML = '';
-
-    if (!session) {
-        currentOrderSessionId = null;
-        const singleRate = st.single_rate || 20;
-        const multiRate = st.multi_rate || 30;
-        body.innerHTML = `
-            <div class="section-title">${t('اختر وضع اللعب', 'Select Gameplay Mode')}</div>
-            <div class="mode-selector" id="modeSelector">
-                <div class="mode-option selected-single" data-mode="single" onclick="selectStartMode('single')">
-                    <span class="mode-icon">🎮</span>
-                    <div class="mode-name">${t('Single', 'Single')}</div>
-                    <div class="mode-rate">${money(singleRate)} ${t('ج/ساعة', 'EGP/hr')}</div>
-                </div>
-                <div class="mode-option" data-mode="multi" onclick="selectStartMode('multi')">
-                    <span class="mode-icon">👥</span>
-                    <div class="mode-name">${t('Multi', 'Multi')}</div>
-                    <div class="mode-rate">${money(multiRate)} ${t('ج/ساعة', 'EGP/hr')}</div>
-                </div>
-            </div>
-            <input type="hidden" id="selectedStartMode" value="single">
-            
-            <div class="section-title">${t('نوع التايمر', 'Timer Type')}</div>
-            <div class="timer-selector" id="timerSelector">
-                <div class="timer-option selected-up" data-timer="countup" onclick="selectTimerType('countup')">
-                    <span class="timer-icon">⬆️</span>
-                    <div class="timer-name">${t('تصاعدي', 'Count Up')}</div>
-                    <div class="timer-desc">${t('يحسب الوقت الفعلي', 'Counts actual time')}</div>
-                </div>
-                <div class="timer-option" data-timer="countdown" onclick="selectTimerType('countdown')">
-                    <span class="timer-icon">⬇️</span>
-                    <div class="timer-name">${t('تنازلي', 'Count Down')}</div>
-                    <div class="timer-desc">${t('يعد تنازلي من مدة محددة', 'Counts down from set duration')}</div>
-                </div>
-            </div>
-            <input type="hidden" id="selectedTimerType" value="countup">
-            
-            <div id="durationSelector" style="display:none;">
-                <div class="section-title">${t('المدة بالساعات', 'Duration in Hours')}</div>
-                <div class="field">
-                    <label data-ar="أدخل المدة بالساعات (مثال: 1.5 = ساعة ونص)" data-en="Enter duration in hours (e.g., 1.5 = 1 hour 30 min)">${t('المدة بالساعات', 'Duration in Hours')}</label>
-                    <input type="number" id="durationInput" class="mono" step="0.25" min="0.25" value="1" placeholder="مثال: 1.5" oninput="updateDurationDisplay()">
-                </div>
-                <div style="font-size:12px;color:var(--text-dim);margin-top:4px;">
-                    ${t('يمكنك إدخال أي رقم عشري (0.25 = 15 دقيقة، 1.5 = ساعة ونص، 2.25 = ساعتين وربع)', 'You can enter any decimal (0.25 = 15 min, 1.5 = 1.5 hours, 2.25 = 2 hours 15 min)')}
-                </div>
-                <div style="font-size:14px;color:var(--text);margin-top:8px;text-align:center;">
-                    <span style="color:var(--text-dim);">${t('المدة المختارة:', 'Selected duration:')}</span>
-                    <span id="durationDisplay" style="font-weight:700;color:var(--amber);">1 ${t('ساعة', 'hour')}</span>
-                </div>
-            </div>
-            <input type="hidden" id="selectedDuration" value="3600">
-
-            <div class="section-title">${t('دفع مقدماً (اختياري)', 'Advance Payment (optional)')}</div>
-            <div class="field">
-                <label data-ar="لو العميل دفع مبلغ مقدماً، اكتبه هنا وهيتخصم من حسابه عند إنهاء الجلسة" data-en="If the customer paid in advance, enter it here — it will be deducted from their bill when the session ends">${t('المبلغ المدفوع مقدماً (جنيه)', 'Amount Paid in Advance (EGP)')}</label>
-                <input type="number" id="prepaidAmountInput" class="mono" min="0" step="0.5" value="0" placeholder="0">
-            </div>
-
-            <button class="btn btn-amber btn-block" onclick="startSessionWithMode('${stationId}')">
-                <i class="fa-solid fa-play"></i> ${t('بدء الجلسة', 'Start Session')}
-            </button>
-            <div class="error-text" id="startSessionError"></div>
-        `;
-        
-        setTimeout(() => {
-            if (document.getElementById('durationInput')) {
-                updateDurationDisplay();
-            }
-        }, 100);
-        openSheet('stationOverlay');
-
-        await renderQrOrdersInSheet(stationId, body);
-        return;
-    }
-
-    currentOrderSessionId = session.id;
-
-    const segments = await getSessionSegments(session.id);
-    let activeSeg = segments.find(s => !s.ended_at);
-
-    if (!activeSeg && session._pausedRemaining) {
-        const st2 = stations.find(s => s.id === stationId);
-        const mode = session.current_mode || 'single';
-        const rate = mode === 'single' ? (st2.single_rate || 20) : (st2.multi_rate || 30);
-        const timerType = 'countdown';
-        const durationSeconds = session._pausedRemaining;
-        delete session._pausedRemaining;
-        
-        await createSegment(session.id, mode, new Date().toISOString(), rate, timerType, durationSeconds);
-        activeSeg = await getActiveSegment(session.id);
-        activeSegmentCache[session.id] = activeSeg;
-    }
-
-    const totals = await calculateTotalAmounts(session.id);
-    const currentEstimate = await getCurrentSegmentEstimate(session.id);
-    
-    const currentMode = activeSeg ? activeSeg.mode : (session.current_mode || 'single');
-    const currentRate = activeSeg ? activeSeg.rate : (st.single_rate || 20);
-    const modeLabel = currentMode === 'single' ? t('Single', 'Single') : t('Multi', 'Multi');
-    const modeBadgeClass = currentMode === 'single' ? 'badge-mode-single' : 'badge-mode-multi';
-    const switchLabel = currentMode === 'single' ? t('تحويل إلى Multi', 'Switch to Multi') : t('تحويل إلى Single', 'Switch to Single');
-    const switchMode = currentMode === 'single' ? 'multi' : 'single';
-    const switchRate = switchMode === 'single' ? (st.single_rate || 20) : (st.multi_rate || 30);
-    
-    const timerType = activeSeg ? (activeSeg.timer_type || 'countup') : 'countup';
-    const timerLabel = timerType === 'countdown' ? t('تنازلي', 'Countdown') : t('تصاعدي', 'Count Up');
-    const timerBadgeClass = timerType === 'countdown' ? 'badge-timer-down' : 'badge-timer-up';
-    const isCountdown = timerType === 'countdown';
-
-    const { data: orders } = await supabaseClient.from('session_orders').select('*').eq('session_id', session.id).order('created_at');
-    activeSessionOrders = orders || [];
-
-    const activeSegStart = activeSeg ? activeSeg.started_at : session.started_at;
-    const liveEarnedNow = activeSeg ? Math.round((Math.max(0, (nowCorrected() - new Date(activeSeg.started_at)) / 3600000) * Number(activeSeg.rate)) * 100) / 100 : 0;
-    const liveGrandTotal = Math.round((totals.grandTotal + liveEarnedNow) * 100) / 100;
-
-    body.innerHTML = `
-        <div style="text-align:center;margin-bottom:12px;">
-            <div style="display:flex;justify-content:center;gap:8px;align-items:center;flex-wrap:wrap;">
-                <span class="badge ${modeBadgeClass}" style="font-size:13px;padding:4px 14px;">${modeLabel}</span>
-                <span class="badge ${timerBadgeClass}" style="font-size:11px;padding:3px 10px;">${timerLabel}</span>
-                <span class="badge badge-teal" style="font-size:13px;padding:4px 14px;">${money(currentRate)} ${t('ج/ساعة', 'EGP/hr')}</span>
-            </div>
-        </div>
-        <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:12px;">
-            <div class="stat-card" style="padding:10px;">
-                <div class="stat-label" style="font-size:10px;">${isCountdown ? t('الوقت المتبقي', 'Time Remaining') : t('إجمالي الجلسة', 'Total Session')}</div>
-                <div class="station-timer mono ${isCountdown ? 'countdown' : ''}" style="font-size:22px;" id="activeSessionTimer" data-start="${session.started_at}" data-station-id="${stationId}">${isCountdown ? formatCountdown(getRemainingSeconds(activeSeg)) : formatElapsed(new Date(session.started_at))}</div>
-            </div>
-            <div class="stat-card" style="padding:10px;border-color:${currentMode === 'single' ? 'var(--amber-dim)' : 'var(--teal-dim)'};">
-                <div class="stat-label" style="font-size:10px;">${t('الجزء الحالي', 'Current Segment')}</div>
-                <div class="station-timer mono" style="font-size:22px;color:${currentMode === 'single' ? 'var(--amber)' : 'var(--teal)'};" id="currentSegTimer" data-start="${activeSegStart}">${formatElapsed(new Date(activeSegStart))}</div>
-            </div>
-        </div>
-        <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:12px;">
-            <div style="background:var(--bg-sunken);border-radius:var(--radius-sm);padding:8px;text-align:center;">
-                <div style="font-size:10px;color:var(--text-dim);">${isCountdown ? t('قيمة الوقت المتبقي', 'Remaining Value') : t('قيمة الجزء الحالي', 'Current Segment Value')}</div>
-                <div class="mono" style="font-size:18px;font-weight:700;color:${currentMode === 'single' ? 'var(--amber)' : 'var(--teal)'};" id="currentSegAmount">${moneyDec(currentEstimate.amount)}</div>
-            </div>
-            <div style="background:var(--bg-sunken);border-radius:var(--radius-sm);padding:8px;text-align:center;">
-                <div style="font-size:10px;color:var(--text-dim);">${t('الإجمالي الكلي', 'Grand Total')}</div>
-                <div class="mono" style="font-size:18px;font-weight:700;color:var(--amber);" id="overallTotalAmount" data-base-total="${totals.grandTotal}">${moneyDec(liveGrandTotal)}</div>
-            </div>
-        </div>
-
-        <div class="section-title">${t('دفع مقدماً', 'Advance Payment')}</div>
-        <div style="background:var(--bg-sunken);border-radius:var(--radius-sm);padding:10px;margin-bottom:12px;">
-            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
-                <span style="font-size:12px;color:var(--text-dim);">${t('المدفوع مقدماً حالياً', 'Currently Paid in Advance')}</span>
-                <span class="mono" id="currentPrepaidDisplay" style="font-weight:700;color:var(--teal);">${moneyDec(Number(session.prepaid_amount) || 0)} ${t('ج', 'EGP')}</span>
-            </div>
-            <div style="display:flex;gap:8px;">
-                <input type="number" id="addPrepaidInput" class="mono" min="0" step="0.5" placeholder="${t('أضف مبلغ', 'Add amount')}" style="flex:1;">
-                <button class="btn btn-teal" style="flex-shrink:0;" onclick="addPrepaidAmount('${stationId}')">
-                    <i class="fa-solid fa-plus"></i> ${t('إضافة', 'Add')}
-                </button>
-            </div>
-        </div>
-        
-        ${segments.filter(s => s.ended_at).length > 0 ? `
-        <div class="segment-breakdown">
-            <div style="font-size:11px;color:var(--text-dim);font-weight:600;margin-bottom:4px;">${t('تفصيل الأجزاء السابقة', 'Previous Segments')}</div>
-            ${segments.filter(s => s.ended_at).map(s => {
-                const start2 = new Date(s.started_at);
-                const end = new Date(s.ended_at);
-                const mins = Math.round((end - start2) / 60000);
-                const amt = (s.amount !== null && s.amount !== undefined) ? Number(s.amount) : calculateSegmentAmountFromTimes(s.started_at, s.ended_at, s.rate);
-                const modeClass = s.mode === 'single' ? 'seg-mode-single' : 'seg-mode-multi';
-                const modeLabel2 = s.mode === 'single' ? t('Single', 'Single') : t('Multi', 'Multi');
-                const segTimerType = s.timer_type || 'countup';
-                const timerLabel2 = segTimerType === 'countdown' ? '⬇️' : '⬆️';
-                return `<div class="segment-row"><span class="seg-label"><span class="${modeClass}">●</span> ${modeLabel2} ${mins}${t('د', 'min')} ${timerLabel2} @ ${money(s.rate)}</span><span class="seg-value ${modeClass}">${moneyDec(amt)}</span></div>`;
-            }).join('')}
-            <div class="segment-divider"></div>
-            <div class="segment-row"><span class="seg-label">${t('إجمالي Single', 'Single Total')}</span><span class="seg-value seg-mode-single">${moneyDec(totals.singleTotal)}</span></div>
-            <div class="segment-row"><span class="seg-label">${t('إجمالي Multi', 'Multi Total')}</span><span class="seg-value seg-mode-multi">${moneyDec(totals.multiTotal)}</span></div>
-            <div class="segment-row"><span class="seg-label">${t('الطلبات', 'Orders')}</span><span class="seg-value">${moneyDec(totals.ordersTotal)}</span></div>
-            <div class="segment-row segment-total"><span class="seg-label">${t('الإجمالي الكلي', 'Grand Total')}</span><span class="seg-value" style="color:var(--amber);">${moneyDec(totals.grandTotal)}</span></div>
-        </div>
-        ` : ''}
-        
-        <div class="section-title">${t('إضافة طلب', 'Add Order')}</div>
-        <div id="menuQuickAdd" style="margin-bottom:12px;"></div>
-        
-        <div id="qrOrdersInSessionSheet"></div>
-
-        <div class="section-title">${t('الطلبات', 'Orders')}</div>
-        <div class="panel" id="stationOrdersList"></div>
-        
-        <div style="margin-top:16px;display:flex;flex-direction:column;gap:8px;">
-            <button class="btn btn-amber btn-block" onclick="handleSwitchMode('${session.id}','${switchMode}','${st.id}')" id="switchModeBtn">
-                <i class="fa-solid fa-arrows-rotate"></i> ${switchLabel} (${money(switchRate)} ${t('ج/ساعة', 'EGP/hr')})
-            </button>
-            
-            <div style="display:flex;gap:8px;">
-                <button class="btn btn-transfer" style="flex:1;" onclick="openTransferSheet('${stationId}')">
-                    <i class="fa-solid fa-exchange"></i> ${t('نقل الجلسة', 'Transfer Session')}
-                </button>
-                <button class="btn btn-cancel" style="flex:1;" onclick="confirmCancelSession('${stationId}')">
-                    <i class="fa-solid fa-xmark"></i> ${t('إلغاء الجلسة', 'Cancel Session')}
-                </button>
-            </div>
-            <button class="btn btn-ghost" onclick="closeSheet('stationOverlay')">${t('رجوع', 'Back')}</button>
-            <button class="btn btn-teal btn-block" onclick="showEndSessionPayment('${stationId}')"><i class="fa-solid fa-stop"></i> ${t('إنهاء الجلسة', 'End Session')}</button>
-        </div>
-        <div class="error-text" id="stationSheetError"></div>
-    `;
-    
-    renderMenuQuickAdd();
-    renderStationOrdersSection();
-    
-    await renderQrOrdersInSheet(stationId, body);
-
-    openSheet('stationOverlay');
-}
-
-async function renderQrOrdersInSheet(stationId, bodyElement) {
-    const { data: qrOrdersForStation } = await supabaseClient
-        .from('qr_orders')
-        .select('*')
-        .eq('station_id', stationId)
-        .in('status', ['pending', 'seen'])
-        .order('created_at', { ascending: true });
-
-    const container = bodyElement.querySelector('#qrOrdersInSessionSheet');
-    const target = container || bodyElement;
-    const insertMode = container ? null : 'beforeend';
-
-    if (qrOrdersForStation && qrOrdersForStation.length > 0) {
-        let qrHtml = `<div class="section-title">${t('🔔 طلبات محتاجة تحضير (اتضافت للفاتورة تلقائيًا)', '🔔 Orders needing prep (already on the bill)')}</div>`;
-        qrOrdersForStation.forEach(o => {
-            const total = (o.items || []).reduce((s, it) => s + Number(it.price) * Number(it.qty), 0);
-            const itemsText = (o.items || []).map(it => `${it.name} ×${it.qty}`).join('، ');
-            qrHtml += `
-                <div style="background:var(--bg-sunken);border-radius:var(--radius-sm);padding:8px;margin-bottom:8px;">
-                    <div style="display:flex;justify-content:space-between;font-size:13px;">
-                        <span>${escapeHtml(itemsText)}</span>
-                        <span class="mono">${money(total)} ${t('ج', 'EGP')}</span>
-                    </div>
-                    ${o.note ? `<div style="font-size:11px;color:var(--text-dim);">${escapeHtml(o.note)}</div>` : ''}
-                    <div style="margin-top:6px;">
-                        <button class="btn btn-amber btn-sm" onclick="deliverQrOrder('${o.id}')">${t('تم التحضير', 'Prepared')}</button>
-                    </div>
-                </div>
-            `;
-        });
-        if (insertMode) {
-            target.insertAdjacentHTML(insertMode, qrHtml);
-        } else {
-            target.innerHTML = qrHtml;
-        }
-    } else if (container) {
-        container.innerHTML = '';
-    }
 }
 
 // ============================================================
@@ -1842,13 +1418,11 @@ function renderSettingsStations() {
         el.innerHTML = `<div class="empty"><i class="fa-solid fa-gamepad"></i>${t('مفيش أجهزة — ضيف أول جهاز', 'No devices — add your first device')}</div>`;
         return;
     }
-    const qrEnabled = qrOrderingEnabled;
     el.innerHTML = stations.map(st => {
         const displayName = st.name ? st.name : t('جهاز', 'Device') + ' ' + st.number;
         return `<div class="list-row">
             <div><div class="row-title">${escapeHtml(displayName)}</div><div class="row-sub">${t('رقم', 'No.')} ${st.number} — ${t('Single', 'Single')} ${money(st.single_rate || 20)} / ${t('Multi', 'Multi')} ${money(st.multi_rate || 30)} ${t('ج/ساعة', 'EGP/hr')}</div></div>
             <div class="row-actions">
-                ${qrEnabled ? `<button class="btn btn-teal btn-sm" onclick="openStationQrSheet('${st.id}')" title="${t('كود QR للطلب', 'Order QR code')}"><i class="fa-solid fa-qrcode"></i></button>` : ''}
                 <button class="btn btn-ghost btn-sm" onclick="editStation('${st.id}')"><i class="fa-solid fa-pen"></i></button>
                 <button class="btn btn-danger-sm" onclick="deleteStationById('${st.id}')"><i class="fa-solid fa-trash"></i></button>
             </div>
@@ -2090,6 +1664,14 @@ async function addOrderItem(sessionId, menuItemId) {
 
             if (error) throw error;
         } else {
+            // IMPORTANT:
+            // Do NOT use .select().single() here.
+            // If INSERT is allowed by RLS but SELECT is not,
+            // .insert().select().single() reports a false failure.
+            //
+            // We also send business_id when the column exists in the
+            // current V2 schema. If an older database does not have it,
+            // retry once without business_id.
             let insertPayload = {
                 business_id: business.id,
                 session_id: sessionId,
@@ -2109,6 +1691,7 @@ async function addOrderItem(sessionId, menuItemId) {
                 /column/i.test(error.message || '')
             )) {
                 delete insertPayload.business_id;
+
                 ({ error } = await supabaseClient
                     .from('session_orders')
                     .insert(insertPayload));
@@ -2117,6 +1700,7 @@ async function addOrderItem(sessionId, menuItemId) {
             if (error) throw error;
         }
 
+        // Reload from DB so the UI has the real row/id.
         const { data: refreshedOrders, error: reloadError } = await supabaseClient
             .from('session_orders')
             .select('*')
@@ -2124,6 +1708,8 @@ async function addOrderItem(sessionId, menuItemId) {
             .order('created_at');
 
         if (reloadError) {
+            // The insert succeeded, but the current RLS SELECT policy
+            // may prevent reading the row back. Do not claim INSERT failed.
             console.error('Order was inserted, but reload failed:', reloadError);
             showToast(
                 t('تم حفظ الطلب، لكن صلاحية قراءة الطلبات تحتاج مراجعة في Supabase.', 'Order was saved, but the SELECT permission for orders needs review in Supabase.'),
@@ -2147,8 +1733,12 @@ async function addOrderItem(sessionId, menuItemId) {
 
     } catch (e) {
         console.error('Error adding order:', e);
+
         const code = e?.code || '';
+        const message = e?.message || String(e);
+
         let userMessage = t('فشل إضافة الطلب', 'Failed to add order');
+
         if (code === '23503') {
             userMessage = t(
                 'فشل الطلب: الصنف أو الجلسة غير موجودة في قاعدة البيانات.',
@@ -2170,7 +1760,14 @@ async function addOrderItem(sessionId, menuItemId) {
                 'Order failed: a CHECK constraint in session_orders rejected the value.'
             );
         }
-        console.error('Supabase order error details:', { code, message: e?.message, details: e?.details, hint: e?.hint });
+
+        console.error('Supabase order error details:', {
+            code,
+            message,
+            details: e?.details,
+            hint: e?.hint
+        });
+
         showToast(userMessage, 'error');
     }
 }
@@ -2178,7 +1775,6 @@ async function addOrderItem(sessionId, menuItemId) {
 async function removeOrderItem(orderId) {
     const order = activeSessionOrders.find(o => o.id === orderId);
     if (!order) return;
-    const sessionId = order.session_id;
     if (order.quantity > 1) {
         await supabaseClient.from('session_orders').update({ quantity: order.quantity - 1 }).eq('id', orderId);
         order.quantity -= 1;
@@ -2187,16 +1783,6 @@ async function removeOrderItem(orderId) {
         activeSessionOrders = activeSessionOrders.filter(o => o.id !== orderId);
     }
     renderStationOrdersSection();
-
-    if (sessionId) {
-        const totals = await calculateTotalAmounts(sessionId);
-        activeSessionBaseTotal = totals.grandTotal;
-        const totalEl = document.getElementById('overallTotalAmount');
-        if (totalEl) {
-            const { amount } = getCurrentSegmentEstimateFast(sessionId);
-            totalEl.textContent = moneyDec(Math.round((totals.grandTotal + amount) * 100) / 100);
-        }
-    }
 }
 
 // ============================================================
@@ -2298,13 +1884,26 @@ async function confirmTransfer() {
     
     try {
         const currentMode = sourceSession.current_mode || 'single';
-        const currentRate = Number(sourceSession.rate) || (currentMode === 'multi' ? Number(targetStation.multi_rate) : Number(targetStation.single_rate));
+        // ✅ ناخد سعر الجهاز المستهدف الحالي دايماً (مش سعر الجلسة القديم)
+        const currentRate = currentMode === 'multi' ? Number(targetStation.multi_rate) : Number(targetStation.single_rate);
         const { error: updateError } = await supabaseClient.from('sessions')
             .update({ station_id: targetStationId, rate: currentRate })
             .eq('id', sourceSession.id)
             .eq('business_id', business.id)
             .eq('status', 'active');
         if (updateError) throw updateError;
+
+        // ✅ لازم نحدث سعر الجزء (segment) النشط كمان، لأن حساب المبلغ فعلياً بيعتمد عليه مش على sessions.rate
+        const activeSeg = getActiveSegmentFast(sourceSession.id);
+        if (activeSeg && Number(activeSeg.rate) !== currentRate) {
+            const { error: segError } = await supabaseClient.from('session_segments')
+                .update({ rate: currentRate })
+                .eq('id', activeSeg.id);
+            if (segError) throw segError;
+            activeSeg.rate = currentRate;
+            activeSegmentCache[sourceSession.id] = activeSeg;
+        }
+        sessionSegmentsCache[sourceSession.id] = null;
 
         delete sessions[sourceStationId];
         sessions[targetStationId] = { ...sourceSession, station_id: targetStationId, rate: currentRate };
@@ -2441,8 +2040,347 @@ function updateDurationDisplay() {
 }
 
 // ============================================================
-// START SESSION WITH MODE
+// STATION SHEET (Session Management)
 // ============================================================
+async function openStationSheet(stationId) {
+    activeStationId = stationId;
+    const st = stations.find(s => s.id === stationId);
+    const session = sessions[stationId];
+    const displayName = st.name ? st.name : t('جهاز', 'Device') + ' ' + st.number;
+    document.getElementById('stationSheetTitle').textContent = displayName;
+    const body = document.getElementById('stationSheetBody');
+
+    body.innerHTML = '';
+
+    if (!session) {
+        currentOrderSessionId = null;
+        const singleRate = st.single_rate || 20;
+        const multiRate = st.multi_rate || 30;
+        body.innerHTML = `
+            <div class="section-title">${t('اختر وضع اللعب', 'Select Gameplay Mode')}</div>
+            <div class="mode-selector" id="modeSelector">
+                <div class="mode-option selected-single" data-mode="single" onclick="selectStartMode('single')">
+                    <span class="mode-icon">🎮</span>
+                    <div class="mode-name">${t('Single', 'Single')}</div>
+                    <div class="mode-rate">${money(singleRate)} ${t('ج/ساعة', 'EGP/hr')}</div>
+                </div>
+                <div class="mode-option" data-mode="multi" onclick="selectStartMode('multi')">
+                    <span class="mode-icon">👥</span>
+                    <div class="mode-name">${t('Multi', 'Multi')}</div>
+                    <div class="mode-rate">${money(multiRate)} ${t('ج/ساعة', 'EGP/hr')}</div>
+                </div>
+            </div>
+            <input type="hidden" id="selectedStartMode" value="single">
+            
+            <div class="section-title">${t('نوع التايمر', 'Timer Type')}</div>
+            <div class="timer-selector" id="timerSelector">
+                <div class="timer-option selected-up" data-timer="countup" onclick="selectTimerType('countup')">
+                    <span class="timer-icon">⬆️</span>
+                    <div class="timer-name">${t('تصاعدي', 'Count Up')}</div>
+                    <div class="timer-desc">${t('يحسب الوقت الفعلي', 'Counts actual time')}</div>
+                </div>
+                <div class="timer-option" data-timer="countdown" onclick="selectTimerType('countdown')">
+                    <span class="timer-icon">⬇️</span>
+                    <div class="timer-name">${t('تنازلي', 'Count Down')}</div>
+                    <div class="timer-desc">${t('يعد تنازلي من مدة محددة', 'Counts down from set duration')}</div>
+                </div>
+            </div>
+            <input type="hidden" id="selectedTimerType" value="countup">
+            
+            <div id="durationSelector" style="display:none;">
+                <div class="section-title">${t('المدة بالساعات', 'Duration in Hours')}</div>
+                <div class="field">
+                    <label data-ar="أدخل المدة بالساعات (مثال: 1.5 = ساعة ونص)" data-en="Enter duration in hours (e.g., 1.5 = 1 hour 30 min)">${t('المدة بالساعات', 'Duration in Hours')}</label>
+                    <input type="number" id="durationInput" class="mono" step="0.25" min="0.25" value="1" placeholder="مثال: 1.5" oninput="updateDurationDisplay()">
+                </div>
+                <div style="font-size:12px;color:var(--text-dim);margin-top:4px;">
+                    ${t('يمكنك إدخال أي رقم عشري (0.25 = 15 دقيقة، 1.5 = ساعة ونص، 2.25 = ساعتين وربع)', 'You can enter any decimal (0.25 = 15 min, 1.5 = 1.5 hours, 2.25 = 2 hours 15 min)')}
+                </div>
+                <div style="font-size:14px;color:var(--text);margin-top:8px;text-align:center;">
+                    <span style="color:var(--text-dim);">${t('المدة المختارة:', 'Selected duration:')}</span>
+                    <span id="durationDisplay" style="font-weight:700;color:var(--amber);">1 ${t('ساعة', 'hour')}</span>
+                </div>
+            </div>
+            <input type="hidden" id="selectedDuration" value="3600">
+            
+            <div class="section-title">${t('دفعة مقدمة (اختياري)', 'Prepayment (optional)')}</div>
+            <div class="field">
+                <label data-ar="لو العميل دفع فلوس قبل ما يقعد على الجهاز" data-en="If the customer paid before sitting at the device">${t('المبلغ المدفوع مقدماً (جنيه)', 'Amount Prepaid (EGP)')}</label>
+                <input type="number" id="prepaymentInput" class="mono" min="0" step="0.5" value="0" placeholder="0">
+            </div>
+            
+            <button class="btn btn-amber btn-block" onclick="startSessionWithMode('${stationId}')">
+                <i class="fa-solid fa-play"></i> ${t('بدء الجلسة', 'Start Session')}
+            </button>
+            <div class="error-text" id="startSessionError"></div>
+        `;
+        
+        setTimeout(() => {
+            if (document.getElementById('durationInput')) {
+                updateDurationDisplay();
+            }
+        }, 100);
+        openSheet('stationOverlay');
+        return;
+    }
+
+    currentOrderSessionId = session.id;
+
+    // ✅ تحديث الكاش عشان نجيب أحدث بيانات
+    sessionSegmentsCache[session.id] = null;
+    activeSegmentCache[session.id] = null;
+
+    const segments = await getSessionSegments(session.id);
+    let activeSeg = segments.find(s => !s.ended_at);
+
+    if (!activeSeg && session._pausedRemaining) {
+        const st2 = stations.find(s => s.id === stationId);
+        const mode = session.current_mode || 'single';
+        const rate = mode === 'single' ? (st2.single_rate || 20) : (st2.multi_rate || 30);
+        const timerType = 'countdown';
+        const durationSeconds = session._pausedRemaining;
+        delete session._pausedRemaining;
+        
+        await createSegment(session.id, mode, new Date().toISOString(), rate, timerType, durationSeconds);
+        activeSeg = await getActiveSegment(session.id);
+        activeSegmentCache[session.id] = activeSeg;
+    }
+
+    const totals = await calculateTotalAmounts(session.id);
+    const currentEstimate = await getCurrentSegmentEstimate(session.id);
+    
+    const currentMode = activeSeg ? activeSeg.mode : (session.current_mode || 'single');
+    const currentRate = activeSeg ? activeSeg.rate : (st.single_rate || 20);
+    const modeLabel = currentMode === 'single' ? t('Single', 'Single') : t('Multi', 'Multi');
+    const modeBadgeClass = currentMode === 'single' ? 'badge-mode-single' : 'badge-mode-multi';
+    const switchLabel = currentMode === 'single' ? t('تحويل إلى Multi', 'Switch to Multi') : t('تحويل إلى Single', 'Switch to Single');
+    const switchMode = currentMode === 'single' ? 'multi' : 'single';
+    const switchRate = switchMode === 'single' ? (st.single_rate || 20) : (st.multi_rate || 30);
+    
+    const timerType = activeSeg ? (activeSeg.timer_type || 'countup') : 'countup';
+    const timerLabel = timerType === 'countdown' ? t('تنازلي', 'Countdown') : t('تصاعدي', 'Count Up');
+    const timerBadgeClass = timerType === 'countdown' ? 'badge-timer-down' : 'badge-timer-up';
+    const isCountdown = timerType === 'countdown';
+
+    const { data: orders } = await supabaseClient.from('session_orders').select('*').eq('session_id', session.id).order('created_at');
+    activeSessionOrders = orders || [];
+
+    const activeSegStart = activeSeg ? activeSeg.started_at : session.started_at;
+    const liveEarnedNow = activeSeg ? Math.round((Math.max(0, (nowCorrected() - new Date(activeSeg.started_at)) / 3600000) * Number(activeSeg.rate)) * 100) / 100 : 0;
+    const liveGrandTotal = Math.round((totals.grandTotal + liveEarnedNow) * 100) / 100;
+
+    body.innerHTML = `
+        <div style="text-align:center;margin-bottom:12px;">
+            <div style="display:flex;justify-content:center;gap:8px;align-items:center;flex-wrap:wrap;">
+                <span class="badge ${modeBadgeClass}" style="font-size:13px;padding:4px 14px;">${modeLabel}</span>
+                <span class="badge ${timerBadgeClass}" style="font-size:11px;padding:3px 10px;">${timerLabel}</span>
+                <span class="badge badge-teal" style="font-size:13px;padding:4px 14px;">${money(currentRate)} ${t('ج/ساعة', 'EGP/hr')}</span>
+            </div>
+        </div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:12px;">
+            <div class="stat-card" style="padding:10px;">
+                <div class="stat-label" style="font-size:10px;">${isCountdown ? t('الوقت المتبقي', 'Time Remaining') : t('إجمالي الجلسة', 'Total Session')}</div>
+                <div class="station-timer mono ${isCountdown ? 'countdown' : ''}" style="font-size:22px;" id="activeSessionTimer" data-start="${session.started_at}" data-station-id="${stationId}">${isCountdown ? formatCountdown(getRemainingSeconds(activeSeg)) : formatElapsed(new Date(session.started_at))}</div>
+            </div>
+            <div class="stat-card" style="padding:10px;border-color:${currentMode === 'single' ? 'var(--amber-dim)' : 'var(--teal-dim)'};">
+                <div class="stat-label" style="font-size:10px;">${t('الجزء الحالي', 'Current Segment')}</div>
+                <div class="station-timer mono" style="font-size:22px;color:${currentMode === 'single' ? 'var(--amber)' : 'var(--teal)'};" id="currentSegTimer" data-start="${activeSegStart}">${formatElapsed(new Date(activeSegStart))}</div>
+            </div>
+        </div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:12px;">
+            <div style="background:var(--bg-sunken);border-radius:var(--radius-sm);padding:8px;text-align:center;">
+                <div style="font-size:10px;color:var(--text-dim);">${isCountdown ? t('قيمة الوقت المتبقي', 'Remaining Value') : t('قيمة الجزء الحالي', 'Current Segment Value')}</div>
+                <div class="mono" style="font-size:18px;font-weight:700;color:${currentMode === 'single' ? 'var(--amber)' : 'var(--teal)'};" id="currentSegAmount">${moneyDec(currentEstimate.amount)}</div>
+            </div>
+            <div style="background:var(--bg-sunken);border-radius:var(--radius-sm);padding:8px;text-align:center;">
+                <div style="font-size:10px;color:var(--text-dim);">${t('الإجمالي الكلي', 'Grand Total')}</div>
+                <div class="mono" style="font-size:18px;font-weight:700;color:var(--amber);" id="overallTotalAmount" data-base-total="${totals.grandTotal}">${moneyDec(liveGrandTotal)}</div>
+            </div>
+        </div>
+        <div style="display:flex;justify-content:space-between;align-items:center;background:var(--bg-sunken);border-radius:var(--radius-sm);padding:8px 12px;margin-bottom:12px;border:1px dashed ${totals.prepaidTotal > 0 ? 'var(--teal-dim)' : 'var(--border)'};">
+            <span style="font-size:12px;color:var(--text-dim);"><i class="fa-solid fa-money-bill-wave"></i> ${t('مدفوع مقدماً', 'Prepaid')}</span>
+            <span class="mono" style="font-size:15px;font-weight:700;color:${totals.prepaidTotal > 0 ? 'var(--teal)' : 'var(--text-faint)'};">${moneyDec(totals.prepaidTotal)} ${t('ج', 'EGP')}</span>
+        </div>
+        
+        ${segments.filter(s => s.ended_at).length > 0 ? `
+        <div class="segment-breakdown">
+            <div style="font-size:11px;color:var(--text-dim);font-weight:600;margin-bottom:4px;">${t('تفصيل الأجزاء السابقة', 'Previous Segments')}</div>
+            ${segments.filter(s => s.ended_at).map(s => {
+                const start2 = new Date(s.started_at);
+                const end = new Date(s.ended_at);
+                const mins = Math.round((end - start2) / 60000);
+                const amt = (s.amount !== null && s.amount !== undefined) ? Number(s.amount) : calculateSegmentAmountFromTimes(s.started_at, s.ended_at, s.rate);
+                const modeClass = s.mode === 'single' ? 'seg-mode-single' : 'seg-mode-multi';
+                const modeLabel2 = s.mode === 'single' ? t('Single', 'Single') : t('Multi', 'Multi');
+                const segTimerType = s.timer_type || 'countup';
+                const timerLabel2 = segTimerType === 'countdown' ? '⬇️' : '⬆️';
+                return `<div class="segment-row"><span class="seg-label"><span class="${modeClass}">●</span> ${modeLabel2} ${mins}${t('د', 'min')} ${timerLabel2} @ ${money(s.rate)}</span><span class="seg-value ${modeClass}">${moneyDec(amt)}</span></div>`;
+            }).join('')}
+            <div class="segment-divider"></div>
+            <div class="segment-row"><span class="seg-label">${t('إجمالي Single', 'Single Total')}</span><span class="seg-value seg-mode-single">${moneyDec(totals.singleTotal)}</span></div>
+            <div class="segment-row"><span class="seg-label">${t('إجمالي Multi', 'Multi Total')}</span><span class="seg-value seg-mode-multi">${moneyDec(totals.multiTotal)}</span></div>
+            <div class="segment-row"><span class="seg-label">${t('الطلبات', 'Orders')}</span><span class="seg-value">${moneyDec(totals.ordersTotal)}</span></div>
+            <div class="segment-row segment-total"><span class="seg-label">${t('الإجمالي الكلي', 'Grand Total')}</span><span class="seg-value" style="color:var(--amber);">${moneyDec(totals.grandTotal)}</span></div>
+        </div>
+        ` : ''}
+        
+        <div class="section-title">${t('إضافة طلب', 'Add Order')}</div>
+        <div id="menuQuickAdd" style="margin-bottom:12px;"></div>
+        
+        <div class="section-title">${t('الطلبات', 'Orders')}</div>
+        <div class="panel" id="stationOrdersList"></div>
+        
+        <div style="margin-top:16px;display:flex;flex-direction:column;gap:8px;">
+            <button class="btn btn-amber btn-block" onclick="handleSwitchMode('${session.id}','${switchMode}','${st.id}')" id="switchModeBtn">
+                <i class="fa-solid fa-arrows-rotate"></i> ${switchLabel} (${money(switchRate)} ${t('ج/ساعة', 'EGP/hr')})
+            </button>
+            
+            <button class="btn btn-prepay btn-block" onclick="openPrepaymentSheet('${stationId}')">
+                <i class="fa-solid fa-money-bill-wave"></i> ${t('إضافة دفعة مقدمة', 'Add Prepayment')}
+            </button>
+            <div style="display:flex;gap:8px;">
+                <button class="btn btn-transfer" style="flex:1;" onclick="openTransferSheet('${stationId}')">
+                    <i class="fa-solid fa-exchange"></i> ${t('نقل الجلسة', 'Transfer Session')}
+                </button>
+                <button class="btn btn-cancel" style="flex:1;" onclick="confirmCancelSession('${stationId}')">
+                    <i class="fa-solid fa-xmark"></i> ${t('إلغاء الجلسة', 'Cancel Session')}
+                </button>
+            </div>
+            <button class="btn btn-ghost" onclick="closeSheet('stationOverlay')">${t('رجوع', 'Back')}</button>
+            <button class="btn btn-teal btn-block" onclick="showEndSessionPayment('${stationId}')"><i class="fa-solid fa-stop"></i> ${t('إنهاء الجلسة', 'End Session')}</button>
+        </div>
+        <div class="error-text" id="stationSheetError"></div>
+    `;
+    
+    renderMenuQuickAdd();
+    renderStationOrdersSection();
+    openSheet('stationOverlay');
+}
+
+function normalizeMenuCategory(category) {
+    const value = String(category || '').trim().toLowerCase();
+    const map = {
+        'مشروبات باردة': 'cold_drinks',
+        'cold drinks': 'cold_drinks',
+        'cold_drinks': 'cold_drinks',
+        'مشروبات ساخنة': 'hot_drinks',
+        'hot drinks': 'hot_drinks',
+        'hot_drinks': 'hot_drinks',
+        'أكل': 'food',
+        'اكل': 'food',
+        'food': 'food',
+        'أخرى': 'other',
+        'اخري': 'other',
+        'other': 'other'
+    };
+    return map[value] || 'other';
+}
+
+function menuCategoryLabel(category) {
+    const key = normalizeMenuCategory(category);
+    const labels = {
+        cold_drinks: t('🧊 مشروبات باردة', '🧊 Cold Drinks'),
+        hot_drinks: t('☕ مشروبات ساخنة', '☕ Hot Drinks'),
+        food: t('🍔 أكل', '🍔 Food'),
+        other: t('📦 أخرى', '📦 Other')
+    };
+    return labels[key];
+}
+
+function renderMenuQuickAdd() {
+    const container = document.getElementById('menuQuickAdd');
+    if (!container) return;
+    
+    if (menuItems.length === 0) {
+        container.innerHTML = `<span style="color:var(--text-faint);font-size:13px;">${t('مفيش أصناف — ضيفها من الإعدادات', 'No items — add them from settings')}</span>`;
+        return;
+    }
+    
+    const grouped = {};
+    menuItems.forEach(item => {
+        const category = normalizeMenuCategory(item.category);
+        if (!grouped[category]) grouped[category] = [];
+        grouped[category].push(item);
+    });
+    
+    let html = '';
+    const categoryNames = Object.keys(grouped);
+    
+    for (let i = 0; i < categoryNames.length; i++) {
+        const category = categoryNames[i];
+        const items = grouped[category];
+        const isOpen = (i === 0);
+        if (categoryToggleState[category] === undefined) {
+            categoryToggleState[category] = isOpen;
+        }
+        const open = categoryToggleState[category];
+        
+        html += `<div class="menu-category-group">`;
+        html += `<div class="menu-category-toggle" onclick="toggleCategory('${escapeHtml(category)}')">`;
+        html += `<span class="cat-title">${escapeHtml(menuCategoryLabel(category))}</span>`;
+        html += `<i class="fa-solid fa-chevron-down cat-arrow ${open ? 'open' : ''}"></i>`;
+        html += `</div>`;
+        html += `<div class="menu-category-items ${open ? 'open' : ''}" data-category="${escapeHtml(category)}">`;
+        items.forEach(item => {
+            const sessionId =
+                currentOrderSessionId ||
+                (activeStationId && sessions[activeStationId] ? sessions[activeStationId].id : '') ||
+                (activeSessionOrders.length > 0 ? activeSessionOrders[0].session_id : '');
+            html += `<button class="btn btn-ghost btn-sm" onclick="addOrderItem('${sessionId}','${item.id}')">${escapeHtml(item.name)} - ${money(item.price)}</button>`;
+        });
+        html += `</div></div>`;
+    }
+    
+    container.innerHTML = html;
+}
+
+function toggleCategory(category) {
+    categoryToggleState[category] = !categoryToggleState[category];
+    const isOpen = categoryToggleState[category];
+    
+    const container = document.getElementById('menuQuickAdd');
+    if (!container) return;
+    const toggles = container.querySelectorAll('.menu-category-toggle');
+    toggles.forEach(toggle => {
+        const titleEl = toggle.querySelector('.cat-title');
+        if (titleEl && titleEl.textContent.trim() === menuCategoryLabel(category)) {
+            const arrow = toggle.querySelector('.cat-arrow');
+            if (arrow) {
+                arrow.classList.toggle('open', isOpen);
+            }
+        }
+    });
+    
+    const itemsContainer = container.querySelector(`.menu-category-items[data-category="${category}"]`);
+    if (itemsContainer) {
+        itemsContainer.classList.toggle('open', isOpen);
+    }
+}
+
+function renderStationOrdersSection() {
+    const el = document.getElementById('stationOrdersList');
+    if (!el) return;
+    el.innerHTML = activeSessionOrders.length === 0
+        ? `<div class="empty"><i class="fa-solid fa-utensils"></i>${t('مفيش طلبات على الجلسة دي', 'No orders on this session')}</div>`
+        : activeSessionOrders.map(o => `<div class="list-row">
+            <div><div class="row-title">${escapeHtml(o.item_name)}</div><div class="row-sub">${o.quantity} × ${money(o.unit_price)}</div></div>
+            <div style="display:flex;align-items:center;gap:10px;">
+                <div class="row-value">${money(o.quantity * o.unit_price)}</div>
+                <button class="btn btn-ghost btn-sm" style="padding:6px 10px;" onclick="removeOrderItem('${o.id}')" title="${t('حذف/إنقاص', 'Remove/Decrease')}"><i class="fa-solid fa-minus"></i></button>
+            </div>
+        </div>`).join('');
+}
+
+function selectStartMode(mode) {
+    document.querySelectorAll('.mode-option').forEach(el => {
+        el.classList.remove('selected-single', 'selected-multi');
+        if (el.dataset.mode === mode) {
+            el.classList.add(mode === 'single' ? 'selected-single' : 'selected-multi');
+        }
+    });
+    document.getElementById('selectedStartMode').value = mode;
+}
+
 async function startSessionWithMode(stationId) {
     const mode = document.getElementById('selectedStartMode').value;
     const timerType = document.getElementById('selectedTimerType').value;
@@ -2462,12 +2400,9 @@ async function startSessionWithMode(stationId) {
     }
     
     const now = new Date(nowCorrected()).toISOString();
-
-    const prepaidInput = document.getElementById('prepaidAmountInput');
-    const prepaidAmount = prepaidInput ? Math.max(0, parseFloat(prepaidInput.value) || 0) : 0;
-
+    
     try {
-        const sessionPayload = {
+        const { data: session, error } = await supabaseClient.from('sessions').insert({
             business_id: business.id, 
             station_id: stationId, 
             rate: rate,
@@ -2475,32 +2410,38 @@ async function startSessionWithMode(stationId) {
             started_by_device: getDeviceId(),
             current_mode: mode,
             timer_type: timerType
-        };
-
-        let { data: session, error } = await supabaseClient.from('sessions').insert({
-            ...sessionPayload,
-            prepaid_amount: prepaidAmount
         }).select().single();
-
-        if (error && /column .* does not exist/i.test(error.message || '')) {
-            console.warn('prepaid_amount column missing — starting session without it:', error.message);
-            ({ data: session, error } = await supabaseClient.from('sessions').insert(sessionPayload).select().single());
-            if (!error && prepaidAmount > 0) {
-                session.prepaid_amount = prepaidAmount;
-            }
-        }
         if (error) { throw error; }
         
         await createSegment(session.id, mode, now, rate, timerType, durationSeconds);
         
+        // ✅ تسجيل الجلسة في الـ sessions قبل ما نضيف الدفعة المقدمة
         sessions[stationId] = session;
         renderStationsGrid();
         closeSheet('stationOverlay');
+        
         const timerLabel = timerType === 'countdown' ? t('تنازلي', 'Countdown') : t('تصاعدي', 'Count Up');
         const durationDisplay = timerType === 'countdown' ? ` (${hours} ${t('ساعة', 'hour')})` : '';
-        showToast(t(`اتبدأت الجلسة - ${mode === 'single' ? 'Single' : 'Multi'} (${timerLabel}${durationDisplay})`, `Session started - ${mode === 'single' ? 'Single' : 'Multi'} (${timerLabel}${durationDisplay})`), 'success');
+        
+        // ✅ لو العميل دفع مقدماً قبل ما يقعد، نسجل الدفعة دي على الجلسة الجديدة
+        const prepayInput = document.getElementById('prepaymentInput');
+        const prepayAmount = prepayInput ? (parseFloat(prepayInput.value) || 0) : 0;
+        
+        if (prepayAmount > 0) {
+            try {
+                await addPrepayment(session.id, prepayAmount, t('قبل الجلسة', 'Before session'));
+                showToast(t(`اتبدأت الجلسة - ${mode === 'single' ? 'Single' : 'Multi'} (${timerLabel}${durationDisplay}) + دفعة مقدمة ${moneyDec(prepayAmount)} ج`, `Session started - ${mode === 'single' ? 'Single' : 'Multi'} (${timerLabel}${durationDisplay}) + Prepayment ${moneyDec(prepayAmount)} EGP`), 'success');
+            } catch (e) {
+                console.warn('Error saving prepayment on start:', e);
+                showToast(t(`اتبدأت الجلسة - ${mode === 'single' ? 'Single' : 'Multi'} (${timerLabel}${durationDisplay}) لكن فشل تسجيل الدفعة المقدمة`, `Session started - ${mode === 'single' ? 'Single' : 'Multi'} (${timerLabel}${durationDisplay}) but failed to save prepayment`), 'error');
+            }
+        } else {
+            showToast(t(`اتبدأت الجلسة - ${mode === 'single' ? 'Single' : 'Multi'} (${timerLabel}${durationDisplay})`, `Session started - ${mode === 'single' ? 'Single' : 'Multi'} (${timerLabel}${durationDisplay})`), 'success');
+        }
+        
         renderDashboard();
-        setTimeout(() => openStationSheet(stationId), 300);
+        // ✅ نفتح شيت الجلسة بعد تسجيل الدفعة المقدمة عشان تظهر صح
+        setTimeout(() => openStationSheet(stationId), 400);
     } catch (e) {
         console.error('Error starting session:', e);
         errEl.textContent = t('فشل بدء الجلسة', 'Failed to start session');
@@ -2508,7 +2449,7 @@ async function startSessionWithMode(stationId) {
 }
 
 // ============================================================
-// END SESSION WITH PAYMENT
+// END SESSION WITH PAYMENT - مع خيار تمديد الوقت للجلسات التنازلية
 // ============================================================
 function showEndSessionPayment(stationId) {
     endSessionStationId = stationId;
@@ -2518,6 +2459,219 @@ function showEndSessionPayment(stationId) {
     if (!session) { endingSessionInProgress = false; return; }
 
     (async () => {
+        const activeSeg = await getActiveSegment(session.id);
+        
+        // ✅ لو الجلسة تنازلية والوقت خلص أو باقي أقل من 5 ثواني، نعرض خيار التمديد
+        if (activeSeg && activeSeg.timer_type === 'countdown' && activeSeg.duration_seconds) {
+            const remaining = getRemainingSeconds(activeSeg);
+            // لو الوقت خلص (0) أو أقل من 5 ثواني، نعرض خيار التمديد
+            if (remaining <= 5) {
+                showExtendOrEndOptions(stationId, session, activeSeg);
+                return;
+            }
+        }
+        
+        // ✅ باقي الكود القديم (لو الجلسة تصاعدية أو فيها وقت باقي)
+        await proceedToEndSession(stationId, session);
+    })();
+}
+
+// ============================================================
+// ✅ عرض خيارات التمديد أو إنهاء الجلسة (للجلسات التنازلية المنتهية)
+// ============================================================
+function showExtendOrEndOptions(stationId, session, activeSeg) {
+    // ✅ لو الدالة استُدعيت من زرار "رجوع" (بدون session/activeSeg)، نجيبهم من الكاش المحلي
+    if (!session) session = sessions[stationId];
+    if (!session) {
+        showToast(t('الجلسة غير موجودة', 'Session not found'), 'error');
+        return;
+    }
+    if (!activeSeg) activeSeg = getActiveSegmentFast(session.id);
+    if (!activeSeg) {
+        showToast(t('لا يوجد جزء نشط للجلسة', 'No active segment found'), 'error');
+        return;
+    }
+
+    const st = stations.find(s => s.id === stationId);
+    const stationName = st ? (st.name || t('جهاز', 'Device') + ' ' + st.number) : t('جهاز', 'Device');
+    
+    const body = document.getElementById('stationSheetBody');
+    if (!body) return;
+    
+    // حساب إجمالي الجلسة حتى الآن
+    const start = new Date(activeSeg.started_at);
+    const now = new Date(nowCorrected());
+    const elapsedSeconds = Math.min((now - start) / 1000, activeSeg.duration_seconds || 0);
+    const hoursUsed = elapsedSeconds / 3600;
+    const currentAmount = Math.round((hoursUsed * Number(activeSeg.rate)) * 100) / 100;
+    
+    body.innerHTML = `
+        <div style="text-align:center;margin:20px 0;">
+            <div style="font-size:48px;margin-bottom:8px;">⏰</div>
+            <div style="font-size:22px;font-weight:800;color:var(--amber);">${t('انتهى الوقت!', 'Time\'s up!')}</div>
+            <div style="font-size:14px;color:var(--text-dim);margin-top:4px;">
+                ${t('جهاز', 'Device')} <strong>${escapeHtml(stationName)}</strong>
+            </div>
+            <div style="font-size:13px;color:var(--text-dim);margin-top:4px;">
+                ${t('المدة المستخدمة', 'Time used')}: ${formatElapsed(start)} 
+                (${moneyDec(hoursUsed)} ${t('ساعة', 'hr')})
+            </div>
+            <div style="font-size:16px;font-weight:700;color:var(--amber);margin-top:6px;">
+                ${t('المبلغ المستحق حتى الآن', 'Amount due so far')}: ${moneyDec(currentAmount)} ${t('ج', 'EGP')}
+            </div>
+        </div>
+        
+        <div style="display:flex;flex-direction:column;gap:10px;margin-top:16px;">
+            <button class="btn btn-amber btn-block" onclick="showExtendTimeSheet('${stationId}')" style="font-size:16px;padding:16px;">
+                <i class="fa-solid fa-clock"></i> ${t('🔄 تمديد الوقت', 'Extend Time')}
+            </button>
+            <button class="btn btn-teal btn-block" onclick="proceedToEndSession('${stationId}', null)" style="font-size:16px;padding:16px;">
+                <i class="fa-solid fa-stop"></i> ${t('💰 إنهاء الجلسة والدفع', 'End Session & Pay')}
+            </button>
+        </div>
+        <div class="error-text" id="extendError"></div>
+    `;
+}
+
+// ============================================================
+// ✅ عرض شاشة إضافة وقت إضافي للجلسة التنازلية
+// ============================================================
+function showExtendTimeSheet(stationId) {
+    const session = sessions[stationId];
+    if (!session) return;
+    
+    const activeSeg = getActiveSegmentFast(session.id);
+    if (!activeSeg) {
+        showToast(t('لا يوجد جزء نشط للجلسة', 'No active segment found'), 'error');
+        return;
+    }
+    
+    const st = stations.find(s => s.id === stationId);
+    const stationName = st ? (st.name || t('جهاز', 'Device') + ' ' + st.number) : t('جهاز', 'Device');
+    
+    // حساب الوقت المستخدم حتى الآن
+    const start = new Date(activeSeg.started_at);
+    const now = new Date(nowCorrected());
+    const elapsedSeconds = Math.min((now - start) / 1000, activeSeg.duration_seconds || 0);
+    const hoursUsed = elapsedSeconds / 3600;
+    const currentAmount = Math.round((hoursUsed * Number(activeSeg.rate)) * 100) / 100;
+    
+    const body = document.getElementById('stationSheetBody');
+    if (!body) return;
+    
+    body.innerHTML = `
+        <div style="text-align:center;margin:12px 0;">
+            <div style="font-size:28px;margin-bottom:4px;">⏱️</div>
+            <div style="font-size:18px;font-weight:700;">${t('تمديد الوقت', 'Extend Time')}</div>
+            <div style="font-size:13px;color:var(--text-dim);">
+                ${escapeHtml(stationName)} — ${t('المستخدم', 'Used')}: ${formatElapsed(start)} (${moneyDec(hoursUsed)} ${t('ساعة', 'hr')})
+            </div>
+            <div style="font-size:13px;color:var(--text-dim);">
+                ${t('المبلغ المستحق حتى الآن', 'Amount due so far')}: ${moneyDec(currentAmount)} ${t('ج', 'EGP')}
+            </div>
+        </div>
+        
+        <div class="field">
+            <label data-ar="أضف وقت إضافي (بالساعات)" data-en="Add extra time (in hours)">${t('أضف وقت إضافي (بالساعات)', 'Add extra time (in hours)')}</label>
+            <input type="number" id="extendHoursInput" class="mono" step="0.25" min="0.25" value="1" placeholder="مثال: 1.5">
+        </div>
+        <div style="font-size:12px;color:var(--text-dim);margin:-8px 0 12px;text-align:center;">
+            ${t('0.25 = 15 دقيقة، 0.5 = 30 دقيقة، 1 = ساعة، 2 = ساعتين', '0.25 = 15 min, 0.5 = 30 min, 1 = 1 hour, 2 = 2 hours')}
+        </div>
+        
+        <div style="display:flex;gap:8px;margin-top:8px;">
+            <button class="btn btn-ghost" style="flex:1;" onclick="showExtendOrEndOptions('${stationId}', null, null)">
+                <i class="fa-solid fa-arrow-right"></i> ${t('رجوع', 'Back')}
+            </button>
+            <button class="btn btn-amber" style="flex:2;" onclick="confirmExtendTime('${stationId}')">
+                <i class="fa-solid fa-check"></i> ${t('تأكيد التمديد', 'Confirm Extend')}
+            </button>
+        </div>
+        <div class="error-text" id="extendTimeError"></div>
+    `;
+}
+
+// ============================================================
+// ✅ تأكيد تمديد الوقت للجلسة التنازلية
+// ============================================================
+async function confirmExtendTime(stationId) {
+    const session = sessions[stationId];
+    if (!session) {
+        showToast(t('الجلسة غير موجودة', 'Session not found'), 'error');
+        return;
+    }
+    
+    const activeSeg = getActiveSegmentFast(session.id);
+    if (!activeSeg) {
+        showToast(t('لا يوجد جزء نشط للجلسة', 'No active segment found'), 'error');
+        return;
+    }
+    
+    const input = document.getElementById('extendHoursInput');
+    const errEl = document.getElementById('extendTimeError');
+    if (errEl) errEl.textContent = '';
+    
+    const extraHours = parseFloat(input ? input.value : '');
+    if (!extraHours || extraHours <= 0) {
+        if (errEl) errEl.textContent = t('أدخل مدة صحيحة أكبر من صفر', 'Enter a valid duration greater than zero');
+        return;
+    }
+    
+    const extraSeconds = Math.round(extraHours * 3600);
+    if (extraSeconds < 60) {
+        if (errEl) errEl.textContent = t('المدة يجب أن تكون دقيقة على الأقل', 'Duration must be at least 1 minute');
+        return;
+    }
+    
+    try {
+        // ✅ 1. نحسب الوقت المستخدم حتى الآن في الجزء الحالي
+        const start = new Date(activeSeg.started_at);
+        const now = new Date(nowCorrected());
+        const elapsedSeconds = Math.min((now - start) / 1000, activeSeg.duration_seconds || 0);
+        const hoursUsed = elapsedSeconds / 3600;
+        const currentAmount = Math.round((hoursUsed * Number(activeSeg.rate)) * 100) / 100;
+        
+        // ✅ 2. نقفل الجزء الحالي بالمبلغ المستحق
+        await closeSegment(activeSeg.id, now.toISOString(), currentAmount);
+        
+        // ✅ 3. نفتح جزء جديد بنفس الوضع والمعدل مع المدة الجديدة (الوقت المتبقي القديم + الوقت الإضافي)
+        const remainingOld = Math.max(0, (activeSeg.duration_seconds || 0) - elapsedSeconds);
+        const newDuration = remainingOld + extraSeconds;
+        
+        const mode = activeSeg.mode || 'single';
+        const rate = activeSeg.rate || (mode === 'single' ? 20 : 30);
+        const timerType = 'countdown';
+        
+        await createSegment(session.id, mode, now.toISOString(), rate, timerType, newDuration);
+        
+        // ✅ 4. تحديث الكاش
+        activeSegmentCache[session.id] = null;
+        sessionSegmentsCache[session.id] = null;
+        
+        // ✅ 5. نعمل ريفريش للشاشة
+        showToast(t(`✅ تم تمديد الوقت ${extraHours} ساعة`, `✅ Time extended by ${extraHours} hours`), 'success');
+        
+        // ✅ 6. نحدث واجهة الجلسة
+        await refreshStationSheetContent(stationId);
+        
+    } catch (e) {
+        console.error('Error extending time:', e);
+        if (errEl) errEl.textContent = t('فشل تمديد الوقت: ' + e.message, 'Failed to extend time: ' + e.message);
+        showToast(t('فشل تمديد الوقت', 'Failed to extend time'), 'error');
+    }
+}
+
+// ============================================================
+// ✅ متابعة إنهاء الجلسة (الجزء القديم من showEndSessionPayment)
+// ============================================================
+async function proceedToEndSession(stationId, sessionParam) {
+    const session = sessionParam || sessions[stationId];
+    if (!session) { 
+        endingSessionInProgress = false;
+        return; 
+    }
+    
+    try {
         const activeSeg = await getActiveSegment(session.id);
         if (activeSeg && !activeSeg.ended_at) {
             const now = new Date(nowCorrected()).toISOString();
@@ -2568,13 +2722,7 @@ function showEndSessionPayment(stationId) {
         currentEndSessionTotals = totals;
         endSessionDiscount = 0;
         endSessionAmountPaid = null;
-        endSessionPrepaidAmount = Math.max(0, Number(session.prepaid_amount) || 0);
-
-        const prepaidHtml = endSessionPrepaidAmount > 0 ? `
-            <div style="display:flex;justify-content:space-between;align-items:center;padding:6px 0;font-size:13px;color:var(--teal);">
-                <span>${t('مدفوع مقدماً', 'Paid in Advance')}</span>
-                <span class="mono" style="font-weight:700;">- ${moneyDec(endSessionPrepaidAmount)} ${t('ج', 'EGP')}</span>
-            </div>` : '';
+        endSessionPrepaidTotal = totals.prepaidTotal || 0;
         
         let paymentHtml = `
             <div style="text-align:center;margin:12px 0;">
@@ -2585,6 +2733,7 @@ function showEndSessionPayment(stationId) {
                 <div class="segment-row"><span class="seg-label">${t('إجمالي Single', 'Single Total')}</span><span class="seg-value seg-mode-single">${moneyDec(totals.singleTotal)}</span></div>
                 <div class="segment-row"><span class="seg-label">${t('إجمالي Multi', 'Multi Total')}</span><span class="seg-value seg-mode-multi">${moneyDec(totals.multiTotal)}</span></div>
                 <div class="segment-row"><span class="seg-label">${t('الطلبات', 'Orders')}</span><span class="seg-value">${moneyDec(totals.ordersTotal)}</span></div>
+                ${endSessionPrepaidTotal > 0 ? `<div class="segment-row"><span class="seg-label" style="color:var(--teal);"><i class="fa-solid fa-money-bill-wave"></i> ${t('مدفوع مقدماً', 'Prepaid')}</span><span class="seg-value" style="color:var(--teal);">- ${moneyDec(endSessionPrepaidTotal)}</span></div>` : ''}
             </div>
             ${ordersHtml}
             <div class="section-title">${t('الخصم والدفع', 'Discount & Payment')}</div>
@@ -2593,18 +2742,19 @@ function showEndSessionPayment(stationId) {
                     <label style="display:block;font-size:12px;color:var(--text-dim);margin-bottom:4px;">${t('خصم (جنيه)', 'Discount (EGP)')}</label>
                     <input type="number" id="discountInput" class="mono" min="0" step="0.5" value="0" placeholder="0" oninput="updatePaymentCalculation()" style="width:100%;">
                 </div>
-                ${prepaidHtml}
                 <div style="display:flex;justify-content:space-between;align-items:center;padding:8px 0;font-weight:700;border-top:1px solid var(--border);border-bottom:1px solid var(--border);margin-bottom:10px;">
-                    <span>${t('المتبقي المطلوب دفعه', 'Remaining Due Now')}</span>
-                    <span class="mono" id="finalTotalDisplay" style="color:var(--amber);font-size:16px;">${moneyDec(Math.max(0, totals.grandTotal - endSessionPrepaidAmount))}</span>
+                    <span>${t('الإجمالي بعد الخصم', 'Total After Discount')}</span>
+                    <span class="mono" id="finalTotalDisplay" style="color:var(--amber);font-size:16px;">${moneyDec(totals.grandTotal)}</span>
                 </div>
-                <div id="prepaidCreditRow" style="display:none;justify-content:space-between;align-items:center;padding:0 0 10px;font-weight:700;color:var(--teal);">
-                    <span>${t('باقي للعميل من المقدم', 'Remaining Credit for Customer')}</span>
-                    <span class="mono" id="prepaidCreditAmount" style="font-size:16px;"></span>
+                ${endSessionPrepaidTotal > 0 ? `
+                <div style="display:flex;justify-content:space-between;align-items:center;padding:0 0 10px;font-weight:700;">
+                    <span style="color:var(--teal);">${t('المتبقي بعد خصم الدفعة المقدمة', 'Remaining After Prepayment')}</span>
+                    <span class="mono" id="remainingDueDisplay" style="color:var(--teal);font-size:16px;">${moneyDec(Math.max(0, totals.grandTotal - endSessionPrepaidTotal))}</span>
                 </div>
+                ` : ''}
                 <div style="margin-bottom:8px;">
-                    <label style="display:block;font-size:12px;color:var(--text-dim);margin-bottom:4px;">${t('العميل دفع كام دلوقتي', 'Amount Paid by Customer Now')}</label>
-                    <input type="number" id="amountPaidInput" class="mono" min="0" step="0.5" placeholder="${moneyDec(Math.max(0, totals.grandTotal - endSessionPrepaidAmount))}" oninput="updatePaymentCalculation()" style="width:100%;">
+                    <label style="display:block;font-size:12px;color:var(--text-dim);margin-bottom:4px;">${t('العميل دفع كام دلوقتي', 'Amount Customer Is Paying Now')}</label>
+                    <input type="number" id="amountPaidInput" class="mono" min="0" step="0.5" placeholder="${moneyDec(Math.max(0, totals.grandTotal - endSessionPrepaidTotal))}" oninput="updatePaymentCalculation()" style="width:100%;">
                 </div>
                 <div id="changeDueRow" style="display:none;justify-content:space-between;align-items:center;padding:8px 0 2px;font-weight:700;">
                     <span id="changeDueLabel"></span>
@@ -2654,7 +2804,12 @@ function showEndSessionPayment(stationId) {
         });
         
         selectedPaymentMethod = null;
-    })();
+        
+    } catch (e) {
+        console.error('Error in proceedToEndSession:', e);
+        endingSessionInProgress = false;
+        showToast(t('حصل خطأ، حاول تاني.', 'Error, try again.'), 'error');
+    }
 }
 
 // ============================================================
@@ -2685,7 +2840,7 @@ function selectPaymentMethod(pmId) {
 }
 
 // ============================================================
-// UPDATE PAYMENT CALCULATION
+// ✅ حساب الخصم والباقي أثناء الدفع
 // ============================================================
 function updatePaymentCalculation() {
     if (!currentEndSessionTotals) return;
@@ -2697,23 +2852,15 @@ function updatePaymentCalculation() {
         discount = grandTotal;
         discountInput.value = discount;
     }
-    const totalAfterDiscount = Math.round((grandTotal - discount) * 100) / 100;
-
-    const prepaid = endSessionPrepaidAmount || 0;
-    const dueNow = Math.round((totalAfterDiscount - prepaid) * 100) / 100;
-    const finalTotal = Math.max(0, dueNow);
-
+    const finalTotal = Math.round((grandTotal - discount) * 100) / 100;
     const finalTotalEl = document.getElementById('finalTotalDisplay');
     if (finalTotalEl) finalTotalEl.textContent = moneyDec(finalTotal);
 
-    const prepaidCreditRow = document.getElementById('prepaidCreditRow');
-    const prepaidCreditAmount = document.getElementById('prepaidCreditAmount');
-    if (dueNow < 0) {
-        if (prepaidCreditRow) prepaidCreditRow.style.display = 'flex';
-        if (prepaidCreditAmount) prepaidCreditAmount.textContent = moneyDec(Math.abs(dueNow)) + ' ' + t('ج', 'EGP');
-    } else {
-        if (prepaidCreditRow) prepaidCreditRow.style.display = 'none';
-    }
+    // ✅ المتبقي على العميل فعلياً دلوقتي = الإجمالي بعد الخصم ناقص أي دفعة مقدمة
+    const prepaid = Math.min(endSessionPrepaidTotal || 0, finalTotal);
+    const remainingDue = Math.max(0, Math.round((finalTotal - prepaid) * 100) / 100);
+    const remainingDueEl = document.getElementById('remainingDueDisplay');
+    if (remainingDueEl) remainingDueEl.textContent = moneyDec(remainingDue);
 
     const paidInput = document.getElementById('amountPaidInput');
     const paidVal = paidInput ? paidInput.value.trim() : '';
@@ -2726,7 +2873,7 @@ function updatePaymentCalculation() {
         endSessionAmountPaid = null;
     } else {
         const paid = Math.max(0, parseFloat(paidVal) || 0);
-        const diff = Math.round((paid - finalTotal) * 100) / 100;
+        const diff = Math.round((paid - remainingDue) * 100) / 100;
         if (changeRow) changeRow.style.display = 'flex';
         if (diff >= 0) {
             if (changeLabel) changeLabel.textContent = t('الباقي للعميل', 'Change Due to Customer');
@@ -2742,7 +2889,7 @@ function updatePaymentCalculation() {
 }
 
 // ============================================================
-// CANCEL END SESSION
+// CANCEL END SESSION (Back button)
 // ============================================================
 function cancelEndSession() {
     const stationId = endSessionStationId || activeStationId;
@@ -2799,6 +2946,9 @@ async function confirmEndSessionWithPayment() {
             payment_method: selectedPaymentMethod
         };
 
+        // بنحاول نحفظ الخصم والمبلغ المدفوع كمان؛ لو الأعمدة دي لسه مش
+        // مضافة في قاعدة البيانات (discount / amount_paid)، بنرجع نحفظ
+        // بدونها عشان قفل الجلسة ميفشلش خالص.
         let { error } = await supabaseClient.from('sessions').update({
             ...basePayload,
             discount: discountAmount,
@@ -2818,6 +2968,8 @@ async function confirmEndSessionWithPayment() {
         }
         
         const savedStationId = stationId;
+        
+        // نثبّت قيمة الخصم النهائية (بعد أي clamp) عشان الإيصال يعرضها صح
         endSessionDiscount = discountAmount;
         
         delete sessions[stationId];
@@ -2830,9 +2982,6 @@ async function confirmEndSessionWithPayment() {
         if (document.getElementById('view-shift').classList.contains('active')) {
             await renderShiftView();
         }
-        
-        // إرسال تنبيه واتساب بعد إقفال الجلسة (إذا كانت الجلسة هي آخر جلسة في الشيفت)
-        // سيتم إرسال التنبيه في confirmCloseShift بدلاً من هنا
         
         setTimeout(() => {
             printReceipt();
@@ -2945,48 +3094,18 @@ function printReceipt() {
                         <span>${moneyDec(Math.max(0, Math.round((totals.grandTotal - endSessionDiscount) * 100) / 100))} ${t('ج', 'EGP')}</span>
                     </div>
                 </div>
-                ${endSessionPrepaidAmount > 0 ? `
-                <div style="font-size: 13px; margin-bottom: 4px;">
-                    <div style="display:flex;justify-content:space-between;padding:2px 0;">
-                        <span>${t('مدفوع مقدماً', 'Paid in Advance')}</span>
-                        <span>- ${moneyDec(endSessionPrepaidAmount)} ${t('ج', 'EGP')}</span>
-                    </div>
-                    <div style="display:flex;justify-content:space-between;padding:2px 0;font-weight:700;border-top:1px dashed #ccc;margin-top:2px;padding-top:4px;">
-                        <span>${t('المتبقي المطلوب', 'Remaining Due')}</span>
-                        <span>${moneyDec(Math.max(0, Math.round((totals.grandTotal - endSessionDiscount - endSessionPrepaidAmount) * 100) / 100))} ${t('ج', 'EGP')}</span>
-                    </div>
-                </div>
-                ` : ''}
-                ${(() => {
-                    const dueNow = Math.max(0, Math.round((totals.grandTotal - endSessionDiscount - endSessionPrepaidAmount) * 100) / 100);
-                    const creditFromPrepaid = Math.round((totals.grandTotal - endSessionDiscount - endSessionPrepaidAmount) * 100) / 100 < 0
-                        ? Math.abs(Math.round((totals.grandTotal - endSessionDiscount - endSessionPrepaidAmount) * 100) / 100)
-                        : 0;
-                    if (creditFromPrepaid > 0) {
-                        return `
-                <div style="font-size: 13px; margin-bottom: 8px;">
-                    <div style="display:flex;justify-content:space-between;padding:2px 0;font-weight:700;color:#1a8a6b;">
-                        <span>${t('باقي للعميل من المقدم', 'Remaining Credit for Customer')}</span>
-                        <span>${moneyDec(creditFromPrepaid)} ${t('ج', 'EGP')}</span>
-                    </div>
-                </div>`;
-                    }
-                    if (endSessionAmountPaid !== null && endSessionAmountPaid !== undefined) {
-                        const diff = Math.round((endSessionAmountPaid - dueNow) * 100) / 100;
-                        return `
+                ${endSessionAmountPaid !== null && endSessionAmountPaid !== undefined ? `
                 <div style="font-size: 13px; margin-bottom: 8px;">
                     <div style="display:flex;justify-content:space-between;padding:2px 0;">
-                        <span>${t('دفع العميل دلوقتي', 'Amount Paid Now')}</span>
+                        <span>${t('دفع العميل', 'Amount Paid')}</span>
                         <span>${moneyDec(endSessionAmountPaid)} ${t('ج', 'EGP')}</span>
                     </div>
                     <div style="display:flex;justify-content:space-between;padding:2px 0;font-weight:700;">
-                        <span>${diff >= 0 ? t('الباقي للعميل', 'Change Due') : t('باقي على العميل', 'Remaining Owed')}</span>
-                        <span>${moneyDec(Math.abs(diff))} ${t('ج', 'EGP')}</span>
+                        <span>${endSessionAmountPaid >= (totals.grandTotal - endSessionDiscount) ? t('الباقي للعميل', 'Change Due') : t('باقي على العميل', 'Remaining Owed')}</span>
+                        <span>${moneyDec(Math.abs(Math.round((endSessionAmountPaid - (totals.grandTotal - endSessionDiscount)) * 100) / 100))} ${t('ج', 'EGP')}</span>
                     </div>
-                </div>`;
-                    }
-                    return '';
-                })()}
+                </div>
+                ` : ''}
                 <div style="font-size: 13px; margin: 8px 0;">
                     <div style="display:flex;justify-content:space-between;padding:2px 0;">
                         <span>${t('طريقة الدفع', 'Payment Method')}</span>
@@ -3122,44 +3241,6 @@ async function getShiftTotals(shift) {
     }
 }
 
-// ============================================================
-// SHIFT - تحسين الأداء (جلب إيرادات ومصروفات كل الشيفتات دفعة واحدة)
-// ============================================================
-
-async function fetchShiftsAggregated(shiftIds, businessId) {
-    if (!shiftIds || shiftIds.length === 0) return {};
-
-    const { data: sessionsData } = await supabaseClient
-        .from('sessions')
-        .select('shift_id, amount')
-        .eq('business_id', businessId)
-        .eq('status', 'completed')
-        .in('shift_id', shiftIds);
-
-    const { data: expensesData } = await supabaseClient
-        .from('expenses')
-        .select('shift_id, amount')
-        .in('shift_id', shiftIds);
-
-    const result = {};
-    shiftIds.forEach(id => {
-        const sessionsAmt = (sessionsData || [])
-            .filter(s => s.shift_id === id)
-            .reduce((sum, s) => sum + Number(s.amount || 0), 0);
-
-        const expensesAmt = (expensesData || [])
-            .filter(e => e.shift_id === id)
-            .reduce((sum, e) => sum + Number(e.amount || 0), 0);
-
-        result[id] = {
-            revenue: sessionsAmt,
-            expenses: expensesAmt,
-            profit: sessionsAmt - expensesAmt
-        };
-    });
-    return result;
-}
-
 async function renderShiftView() {
     if (!currentShift) {
         document.getElementById('shiftSummary').innerHTML = `
@@ -3171,7 +3252,7 @@ async function renderShiftView() {
         `;
         return;
     }
-
+    
     const totals = await getShiftTotals(currentShift);
     document.getElementById('shiftSummary').innerHTML = `
         <div class="list-row"><div class="row-title">${t('وقت الفتح', 'Opened At')}</div><div class="row-value mono">${new Date(currentShift.opened_at).toLocaleTimeString(currentLang === 'ar' ? 'ar-EG' : 'en-US')}</div></div>
@@ -3203,8 +3284,9 @@ async function renderShiftView() {
         .eq('business_id', business.id)
         .eq('status', 'closed')
         .order('closed_at', { ascending: false });
-
+    
     const now = new Date();
+    
     if (shiftFilter === 'weekly') {
         const weekAgo = new Date(now);
         weekAgo.setDate(weekAgo.getDate() - 7);
@@ -3214,24 +3296,30 @@ async function renderShiftView() {
         const yearSelect = document.getElementById('yearSelect');
         const selectedMonth = parseInt(monthSelect ? monthSelect.value : now.getMonth());
         const selectedYear = parseInt(yearSelect ? yearSelect.value : now.getFullYear());
+        
         const startDate = new Date(selectedYear, selectedMonth, 1);
         const endDate = new Date(selectedYear, selectedMonth + 1, 1);
+        
         query = query
             .gte('closed_at', startDate.toISOString())
             .lt('closed_at', endDate.toISOString());
     }
-
-    const { data: pastShifts } = await query.limit(50);
+    
+    // ✅ Limit to last 30 shifts for performance
+    const { data: pastShifts } = await query.limit(30);
+    
     const histEl = document.getElementById('shiftHistory');
-
+    
     if (!pastShifts || pastShifts.length === 0) {
         let filterLabel = '';
-        if (shiftFilter === 'all') filterLabel = t('كل الشيفتات', 'All shifts');
-        else if (shiftFilter === 'weekly') filterLabel = t('الآسبوع الماضي', 'Last week');
-        else {
+        if (shiftFilter === 'all') {
+            filterLabel = t('كل الشيفتات', 'All shifts');
+        } else if (shiftFilter === 'weekly') {
+            filterLabel = t('الآسبوع الماضي', 'Last week');
+        } else if (shiftFilter === 'monthly') {
             const monthSelect = document.getElementById('monthSelect');
             const yearSelect = document.getElementById('yearSelect');
-            const monthNames = currentLang === 'ar'
+            const monthNames = currentLang === 'ar' 
                 ? ['يناير', 'فبراير', 'مارس', 'أبريل', 'مايو', 'يونيو', 'يوليو', 'أغسطس', 'سبتمبر', 'أكتوبر', 'نوفمبر', 'ديسمبر']
                 : ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
             const monthName = monthNames[parseInt(monthSelect ? monthSelect.value : new Date().getMonth())];
@@ -3242,28 +3330,35 @@ async function renderShiftView() {
         return;
     }
 
-    const shiftIds = pastShifts.map(s => s.id);
-    const aggregated = await fetchShiftsAggregated(shiftIds, business.id);
-
+    // ✅ Load all shift totals in parallel for better performance
+    const shiftPromises = pastShifts.map(shift => getShiftTotals(shift));
+    const shiftTotalsResults = await Promise.all(shiftPromises);
+    
     let historyHtml = '';
-    for (const shift of pastShifts) {
-        const agg = aggregated[shift.id] || { revenue: 0, expenses: 0, profit: 0 };
+    for (let i = 0; i < pastShifts.length; i++) {
+        const shift = pastShifts[i];
+        const shiftTotals = shiftTotalsResults[i];
         const dateStr = new Date(shift.closed_at).toLocaleDateString(currentLang === 'ar' ? 'ar-EG' : 'en-US');
         const timeStr = new Date(shift.closed_at).toLocaleTimeString(currentLang === 'ar' ? 'ar-EG' : 'en-US', { hour: '2-digit', minute: '2-digit' });
+        const revLabel = t('إيراد', 'Revenue');
+        const expLabel = t('مصروفات', 'Expenses');
+        const netLabel = t('صافي الدخل', 'Net Income');
+        
+        // ✅ Show who closed the shift with a small orange badge
         const closedBy = shift.closed_by || t('غير معروف', 'Unknown');
-
+        const closedByBadge = `<span class="badge badge-amber" style="font-size:9px;padding:1px 8px;">👤 ${escapeHtml(closedBy)}</span>`;
+        
         historyHtml += `
             <div class="list-row" style="flex-direction:column;align-items:stretch;padding:12px 4px;border-bottom:1px solid var(--border);cursor:pointer;" onclick="viewShiftDetails('${shift.id}')">
                 <div style="display:flex;justify-content:space-between;width:100%;margin-bottom:6px;">
-                    <div class="row-title" style="display:flex;align-items:center;gap:8px;">
-                        <span class="closed-by-dot" style="display:inline-block;width:10px;height:10px;border-radius:50%;background:var(--amber);flex-shrink:0;" title="${t('مُغلق بواسطة', 'Closed by')} ${escapeHtml(closedBy)}"></span>
+                    <div class="row-title" style="display:flex;align-items:center;gap:8px;font-size:13px;">
                         ${dateStr} - ${timeStr}
-                        <span style="font-size:11px;font-weight:400;color:var(--text-dim);">${escapeHtml(closedBy)}</span>
+                        ${closedByBadge}
                     </div>
                     <div style="display:flex;gap:8px;align-items:center;">
                         <div style="display:flex;gap:12px;font-size:12px;color:var(--text-dim);">
-                            <span>${t('إيراد', 'Revenue')} <span class="mono" style="color:var(--text);">${money(agg.revenue)}</span></span>
-                            <span>${t('مصروفات', 'Expenses')} <span class="mono" style="color:var(--text);">${money(agg.expenses)}</span></span>
+                            <span>${revLabel} <span class="mono" style="color:var(--text);">${money(shiftTotals.revenue)}</span></span>
+                            <span>${expLabel} <span class="mono" style="color:var(--text);">${money(shiftTotals.expenses)}</span></span>
                         </div>
                         <button class="btn btn-danger-sm" onclick="event.stopPropagation(); deleteShift('${shift.id}')" title="${t('حذف الشيفت', 'Delete shift')}" style="padding:4px 8px;font-size:11px;">
                             <i class="fa-solid fa-xmark"></i>
@@ -3271,8 +3366,8 @@ async function renderShiftView() {
                     </div>
                 </div>
                 <div style="display:flex;justify-content:space-between;width:100%;">
-                    <div style="font-size:12px;color:var(--text-faint);">${t('صافي الدخل', 'Net Income')}</div>
-                    <div class="mono" style="font-weight:700;color:var(--amber);">${money(agg.profit)} ${t('ج', 'EGP')}</div>
+                    <div style="font-size:12px;color:var(--text-faint);">${netLabel}</div>
+                    <div class="mono" style="font-weight:700;color:var(--amber);">${money(shiftTotals.profit)} ${t('ج', 'EGP')}</div>
                 </div>
             </div>
         `;
@@ -3384,11 +3479,9 @@ async function viewShiftDetails(shiftId) {
     const totals = await getShiftTotals(shift);
     const openedStr = new Date(shift.opened_at).toLocaleString(currentLang === 'ar' ? 'ar-EG' : 'en-US');
     const closedStr = shift.closed_at ? new Date(shift.closed_at).toLocaleString(currentLang === 'ar' ? 'ar-EG' : 'en-US') : '—';
-    const closedBy = shift.closed_by || t('غير معروف', 'Unknown');
     const extraRows = `
         <div class="list-row"><div class="row-title">${t('وقت الفتح', 'Opened At')}</div><div class="row-value mono">${openedStr}</div></div>
-        <div class="list-row"><div class="row-title">${t('وقت الإقفال', 'Closed At')}</div><div class="row-value mono">${closedStr}</div></div>
-        <div class="list-row"><div class="row-title">${t('مُغلق بواسطة', 'Closed by')}</div><div class="row-value mono">${escapeHtml(closedBy)}</div></div>`;
+        <div class="list-row"><div class="row-title">${t('وقت الإقفال', 'Closed At')}</div><div class="row-value mono">${closedStr}</div></div>`;
     document.getElementById('shiftDetailsSummary').innerHTML = buildShiftBreakdownHtml(totals, extraRows);
     openSheet('shiftDetailsOverlay');
 }
@@ -3397,21 +3490,23 @@ async function confirmCloseShift() {
     if (!currentShift) return;
     const totals = await getShiftTotals(currentShift);
     const closedAt = new Date().toISOString();
-    const closedBy = currentUser?.name || currentUser?.type || t('غير معروف', 'Unknown');
-
+    
+    // ✅ Get the name of who's closing the shift
+    const closedByName = currentUser ? (currentUser.name || currentUser.type || t('غير معروف', 'Unknown')) : t('غير معروف', 'Unknown');
+    
     const { data, error } = await supabaseClient
         .from('shifts')
-        .update({
-            status: 'closed',
-            closed_at: closedAt,
-            total_revenue: totals.revenue,
-            total_expenses: totals.expenses,
-            total_profit: totals.profit,
-            closed_by: closedBy
+        .update({ 
+            status: 'closed', 
+            closed_at: closedAt, 
+            total_revenue: totals.revenue, 
+            total_expenses: totals.expenses, 
+            total_profit: totals.profit, 
+            closed_by: closedByName
         })
         .eq('id', currentShift.id)
         .select();
-
+    
     if (error) {
         showToast(t('فشل إقفال الشيفت: ' + error.message, 'Failed to close shift: ' + error.message), 'error');
         console.error('Error closing shift:', error);
@@ -3422,17 +3517,12 @@ async function confirmCloseShift() {
         showToast(t('فشل إقفال الشيفت: قاعدة البيانات رفضت الحفظ (تحقق من صلاحيات RLS على جدول shifts)', 'Failed to close shift: database rejected the save (check RLS permissions on the shifts table)'), 'error');
         return;
     }
-
+    
     closeSheet('closeShiftOverlay');
     showToast(t('تم إقفال الشيفت', 'Shift closed'), 'success');
     await loadOrOpenShift();
-    renderShiftView();
+    renderShiftView(); 
     renderDashboard();
-
-    // إرسال تنبيه واتساب لإقفال الشيفت
-    if (typeof sendShiftClosedAlert === 'function') {
-        await sendShiftClosedAlert(currentShift, totals);
-    }
 }
 
 // ============================================================
@@ -3444,6 +3534,12 @@ function renderSettings() {
         <div class="list-row"><div class="row-title">${t('حالة الجهاز', 'Device Status')}</div><div class="badge ${deviceRecord.revoked ? 'badge-red' : 'badge-teal'}">${deviceRecord.revoked ? t('موقوف', 'Suspended') : t('نشط', 'Active')}</div></div>
         <div class="list-row"><div class="row-title">${t('تاريخ الانتهاء', 'Expiry Date')}</div><div class="row-value mono">${expiry ? expiry.toLocaleDateString(currentLang === 'ar' ? 'ar-EG' : 'en-US') : '—'}</div></div>`;
 
+    // ============================================================
+    // ✅ TOGGLE PIN SECTION — مبني بالكامل من الـ JS عشان يشتغل من غير
+    // ما نحتاج نضيف عناصر ثابتة في الـ HTML يدويًا.
+    // بنستخدم wrapper بـ id ثابت عشان لو renderSettings() اتنادت تاني
+    // (بعد إضافة موظف/صنف مثلاً) منكررش القسم من جديد كل مرة.
+    // ============================================================
     const pinToggleHtml = `
         <div class="list-row" style="cursor:pointer;" onclick="toggleSettingsPin()">
             <div class="row-title">${t('تغيير PIN المالك', 'Change Owner PIN')}</div>
@@ -3510,24 +3606,17 @@ function renderSettings() {
                 </div>
             </div>`).join('');
     
+    // ✅ تحديث حالة الـ Toggle (PIN)
     const pinSection = document.getElementById('settingsChangePin');
     const chevron = document.getElementById('settingsPinChevron');
     if (pinSection && chevron) {
         pinSection.style.display = settingsPinExpanded ? 'block' : 'none';
         chevron.style.transform = settingsPinExpanded ? 'rotate(180deg)' : 'rotate(0deg)';
     }
-
-    const qrToggle = document.getElementById('qrOrderingToggle');
-    if (qrToggle) {
-        qrToggle.checked = qrOrderingEnabled;
-    }
-
-    // عرض إعدادات واتساب
-    renderWhatsappSettingsUI();
 }
 
 // ============================================================
-// CHANGE OWNER PIN
+// 🔐 تغيير PIN المالك (جديد)
 // ============================================================
 async function changeOwnerPin() {
     const currentPin = document.getElementById('currentPinInput').value.trim();
@@ -3540,11 +3629,13 @@ async function changeOwnerPin() {
         return; 
     }
     
+    // 🔍 التحقق من PIN الحالي
     if (currentPin !== business.owner_pin) { 
         errEl.textContent = t('❌ PIN الحالي غير صحيح.', '❌ Current PIN is incorrect.'); 
         return; 
     }
     
+    // ✅ التحقق من PIN الجديد
     if (!/^\d{4,6}$/.test(newPin)) { 
         errEl.textContent = t('❌ PIN الجديد لازم يكون 4-6 أرقام.', '❌ New PIN must be 4-6 digits.'); 
         return; 
@@ -3558,7 +3649,10 @@ async function changeOwnerPin() {
         
         if (error) throw error;
 
+        // ✅ تحديث المتغير المحلي
         business.owner_pin = newPin;
+        
+        // 🧹 تنظيف الحقول
         document.getElementById('currentPinInput').value = '';
         document.getElementById('newPinInput').value = '';
         
@@ -3570,7 +3664,7 @@ async function changeOwnerPin() {
 }
 
 // ============================================================
-// CREATE BUSINESS FROM SETUP
+// 🏢 إنشاء نشاط جديد من صفحة الدخول (جديد)
 // ============================================================
 function openCreateBusinessSheetFromSetup() {
     ['newBizCodeSetup', 'newBizNameSetup', 'newBizPhoneSetup'].forEach(id => document.getElementById(id).value = '');
@@ -3584,7 +3678,7 @@ async function submitCreateBusinessFromSetup() {
     const name = document.getElementById('newBizNameSetup').value.trim();
     const phone = document.getElementById('newBizPhoneSetup').value.trim();
     const total_stations = parseInt(document.getElementById('newBizStationsSetup').value) || 4;
-    const owner_pin = '0000';
+    const owner_pin = '0000'; // ✅ PIN افتراضي
     const err = document.getElementById('createBizErrorSetup');
 
     if (!code || !name) { 
@@ -3613,6 +3707,8 @@ async function submitCreateBusinessFromSetup() {
         
         closeSheet('createBusinessSheetFromSetup');
         showToast(t('✅ تم إنشاء النشاط! استخدم الكود لتسجيل الدخول.', '✅ Business created! Use the code to login.'), 'success');
+        
+        // 🚀 محاولة الدخول التلقائي
         document.getElementById('setupBusinessCode').value = code;
         handleSetupContinue();
     } catch (e) {
@@ -3621,19 +3717,11 @@ async function submitCreateBusinessFromSetup() {
     }
 }
 
-// ============================================================
-// MENU ITEMS CRUD
-// ============================================================
 function openMenuItemSheet() {
     document.getElementById('menuItemId').value = '';
     document.getElementById('menuItemName').value = '';
     document.getElementById('menuItemPrice').value = '';
-    document.getElementById('menuItemDesc').value = '';
-    document.getElementById('menuItemImageInput').value = '';
-    document.getElementById('menuItemImagePreview').style.display = 'none';
-    document.getElementById('menuItemImageData').value = '';
     document.getElementById('menuItemCategory').value = 'cold_drinks';
-    document.getElementById('menuItemActive').checked = true;
     document.getElementById('menuDeleteBtn').style.display = 'none';
     document.getElementById('menuItemError').textContent = '';
     document.getElementById('menuItemSheetTitle').textContent = t('إضافة صنف للقائمة', 'Add Menu Item');
@@ -3646,16 +3734,7 @@ function editMenuItem(itemId) {
     document.getElementById('menuItemId').value = item.id;
     document.getElementById('menuItemName').value = item.name;
     document.getElementById('menuItemPrice').value = item.price;
-    document.getElementById('menuItemDesc').value = item.description || '';
-    document.getElementById('menuItemImageData').value = item.image_url || '';
-    if (item.image_url) {
-        document.getElementById('menuItemImagePreviewImg').src = item.image_url;
-        document.getElementById('menuItemImagePreview').style.display = 'block';
-    } else {
-        document.getElementById('menuItemImagePreview').style.display = 'none';
-    }
     document.getElementById('menuItemCategory').value = normalizeMenuCategory(item.category);
-    document.getElementById('menuItemActive').checked = item.active !== false;
     document.getElementById('menuDeleteBtn').style.display = 'flex';
     document.getElementById('menuItemError').textContent = '';
     document.getElementById('menuItemSheetTitle').textContent = t('تعديل صنف', 'Edit Item');
@@ -3666,10 +3745,7 @@ async function submitMenuItem() {
     const id = document.getElementById('menuItemId').value;
     const name = document.getElementById('menuItemName').value.trim();
     const price = parseFloat(document.getElementById('menuItemPrice').value);
-    const description = document.getElementById('menuItemDesc').value.trim();
-    const image_data = document.getElementById('menuItemImageData').value || null;
     const category = normalizeMenuCategory(document.getElementById('menuItemCategory').value);
-    const active = document.getElementById('menuItemActive').checked;
     const errEl = document.getElementById('menuItemError');
     errEl.textContent = '';
     
@@ -3683,20 +3759,18 @@ async function submitMenuItem() {
             business_id: business.id,
             name: name,
             price: price,
-            description: description,
-            image_url: image_data,
             category: category,
-            active: active,
+            active: true,
             created_at: new Date().toISOString()
         };
         
         let result;
         if (id) {
-            result = await updateMenuItemInDB(id, { name, price, description, image_url: image_data, category, active });
+            result = await updateMenuItemInDB(id, { name, price, category });
             if (result) {
                 const idx = menuItems.findIndex(item => item.id === id);
                 if (idx !== -1) {
-                    menuItems[idx] = { ...menuItems[idx], name, price, description, image_url: image_data, category, active };
+                    menuItems[idx] = { ...menuItems[idx], name, price, category };
                 }
                 showToast(t('تم تحديث الصنف', 'Item updated'), 'success');
             } else {
@@ -3716,9 +3790,6 @@ async function submitMenuItem() {
         renderSettings();
         renderMenuQuickAdd();
         renderStationOrdersSection();
-        if (document.getElementById('customerPage').classList.contains('active')) {
-            loadCustomerData();
-        }
     } catch (e) {
         console.error('Error in submitMenuItem:', e);
         let errorMsg = e.message || 'Unknown error';
@@ -3740,9 +3811,6 @@ async function deleteMenuItemById(itemId) {
             renderSettings();
             renderMenuQuickAdd();
             renderStationOrdersSection();
-            if (document.getElementById('customerPage').classList.contains('active')) {
-                loadCustomerData();
-            }
         } else {
             throw new Error('Delete failed');
         }
@@ -3759,9 +3827,6 @@ async function deleteMenuItem() {
     await deleteMenuItemById(id);
 }
 
-// ============================================================
-// EMPLOYEE CRUD
-// ============================================================
 function openEmployeeSheet() {
     document.getElementById('employeeName').value = '';
     document.getElementById('employeePin').value = '';
@@ -3769,91 +3834,25 @@ function openEmployeeSheet() {
     document.getElementById('permStations').checked = true;
     document.getElementById('permShift').checked = false;
     document.getElementById('permSettings').checked = false;
-    document.getElementById('permCancelSession').checked = false;
-    document.getElementById('permTransferSession').checked = true;
-    document.getElementById('permExpenses').checked = false;
-    document.getElementById('permReports').checked = false;
-    document.getElementById('permDeleteShift').checked = false;
-    document.getElementById('permMenu').checked = false;
-    document.getElementById('permEmployees').checked = false;
-    document.getElementById('permPrices').checked = false;
-    document.getElementById('employeeDeleteBtn').style.display = 'none';
-    document.getElementById('employeeSheetTitle').textContent = t('إضافة موظف', 'Add Employee');
     openSheet('employeeOverlay');
 }
-
-function editEmployee(employeeId) {
-    const emp = employees.find(e => e.id === employeeId);
-    if (!emp) return;
-    const perms = emp.permissions || {};
-    document.getElementById('employeeName').value = emp.name || '';
-    document.getElementById('employeePin').value = emp.pin || '';
-    document.getElementById('employeeError').textContent = '';
-    document.getElementById('permStations').checked = !!perms.stations;
-    document.getElementById('permShift').checked = !!perms.shift;
-    document.getElementById('permSettings').checked = !!perms.settings;
-    document.getElementById('permCancelSession').checked = !!perms.cancel_session;
-    document.getElementById('permTransferSession').checked = !!perms.transfer_session;
-    document.getElementById('permExpenses').checked = !!perms.expenses;
-    document.getElementById('permReports').checked = !!perms.reports;
-    document.getElementById('permDeleteShift').checked = !!perms.delete_shift;
-    document.getElementById('permMenu').checked = !!perms.menu;
-    document.getElementById('permEmployees').checked = !!perms.employees;
-    document.getElementById('permPrices').checked = !!perms.prices;
-    document.getElementById('employeeDeleteBtn').style.display = 'flex';
-    document.getElementById('employeeSheetTitle').textContent = t('تعديل موظف', 'Edit Employee');
-    openSheet('employeeOverlay');
-}
-
 async function submitEmployee() {
-    const id = document.getElementById('employeeId').value;
     const name = document.getElementById('employeeName').value.trim();
     const pin = document.getElementById('employeePin').value.trim();
     if (!name || !/^\d{4,6}$/.test(pin)) { document.getElementById('employeeError').textContent = t('اكتب اسم و PIN من 4 لـ 6 أرقام.', 'Enter name and 4-6 digit PIN.'); return; }
     const permissions = {
         stations: document.getElementById('permStations').checked,
         shift: document.getElementById('permShift').checked,
-        settings: document.getElementById('permSettings').checked,
-        cancel_session: document.getElementById('permCancelSession').checked,
-        transfer_session: document.getElementById('permTransferSession').checked,
-        expenses: document.getElementById('permExpenses').checked,
-        reports: document.getElementById('permReports').checked,
-        delete_shift: document.getElementById('permDeleteShift').checked,
-        menu: document.getElementById('permMenu').checked,
-        employees: document.getElementById('permEmployees').checked,
-        prices: document.getElementById('permPrices').checked
+        settings: document.getElementById('permSettings').checked
     };
-
-    try {
-        if (id) {
-            const { data, error } = await supabaseClient.from('employees').update({ name, pin, permissions }).eq('id', id).eq('business_id', business.id).select();
-            if (error || !data || data.length === 0) {
-                document.getElementById('employeeError').textContent = t('فشل تحديث الموظف، حاول تاني.', 'Failed to update employee, try again.');
-                console.error('Error updating employee:', error);
-                return;
-            }
-            closeSheet('employeeOverlay'); showToast(t('تم تحديث الموظف', 'Employee updated'), 'success');
-        } else {
-            const { data, error } = await supabaseClient.from('employees').insert({ business_id: business.id, name, pin, permissions }).select();
-            if (error || !data || data.length === 0) {
-                document.getElementById('employeeError').textContent = t('فشل حفظ الموظف، حاول تاني.', 'Failed to save employee, try again.');
-                console.error('Error adding employee:', error);
-                return;
-            }
-            closeSheet('employeeOverlay'); showToast(t('تمت إضافة الموظف', 'Employee added'), 'success');
-        }
-        await loadEmployees(); renderSettings();
-    } catch (e) {
+    const { data, error } = await supabaseClient.from('employees').insert({ business_id: business.id, name, pin, permissions }).select();
+    if (error || !data || data.length === 0) {
         document.getElementById('employeeError').textContent = t('فشل حفظ الموظف، حاول تاني.', 'Failed to save employee, try again.');
-        console.error('Error in submitEmployee:', e);
+        console.error('Error adding employee:', error);
+        return;
     }
-}
-
-async function deleteEmployeeFromSheet() {
-    const id = document.getElementById('employeeId').value;
-    if (!id) return;
-    closeSheet('employeeOverlay');
-    await deleteEmployee(id);
+    closeSheet('employeeOverlay'); showToast(t('تمت إضافة الموظف', 'Employee added'), 'success');
+    await loadEmployees(); renderSettings();
 }
 
 async function deleteEmployee(employeeId) {
@@ -3870,173 +3869,170 @@ async function deleteEmployee(employeeId) {
     }
 }
 
+function escapeHtml(str) { 
+    if (!str) return '';
+    const d = document.createElement('div'); 
+    d.textContent = str; 
+    return d.innerHTML; 
+}
+
 // ============================================================
-// HELPERS
+// SESSION RECOVERY
 // ============================================================
-function normalizeMenuCategory(category) {
-    const value = String(category || '').trim().toLowerCase();
-    const map = {
-        'مشروبات باردة': 'cold_drinks',
-        'cold drinks': 'cold_drinks',
-        'cold_drinks': 'cold_drinks',
-        'مشروبات ساخنة': 'hot_drinks',
-        'hot drinks': 'hot_drinks',
-        'hot_drinks': 'hot_drinks',
-        'أكل': 'food',
-        'اكل': 'food',
-        'food': 'food',
-        'أخرى': 'other',
-        'اخري': 'other',
-        'other': 'other'
-    };
-    return map[value] || 'other';
-}
+async function recoverActiveSession() {
+    if (!business) return;
+    const { data: activeSessions } = await supabaseClient
+        .from('sessions')
+        .select('*')
+        .eq('business_id', business.id)
+        .eq('status', 'active');
 
-function menuCategoryLabel(category) {
-    const key = normalizeMenuCategory(category);
-    const labels = {
-        cold_drinks: t('🧊 مشروبات باردة', '🧊 Cold Drinks'),
-        hot_drinks: t('☕ مشروبات ساخنة', '☕ Hot Drinks'),
-        food: t('🍔 أكل', '🍔 Food'),
-        other: t('📦 أخرى', '📦 Other')
-    };
-    return labels[key];
-}
-
-function renderMenuQuickAdd() {
-    const container = document.getElementById('menuQuickAdd');
-    if (!container) return;
-    
-    if (menuItems.length === 0) {
-        container.innerHTML = `<span style="color:var(--text-faint);font-size:13px;">${t('مفيش أصناف — ضيفها من الإعدادات', 'No items — add them from settings')}</span>`;
-        return;
-    }
-    
-    const grouped = {};
-    menuItems.forEach(item => {
-        const category = normalizeMenuCategory(item.category);
-        if (!grouped[category]) grouped[category] = [];
-        grouped[category].push(item);
-    });
-    
-    let html = '';
-    const categoryNames = Object.keys(grouped);
-    
-    for (let i = 0; i < categoryNames.length; i++) {
-        const category = categoryNames[i];
-        const items = grouped[category];
-        const isOpen = (i === 0);
-        if (categoryToggleState[category] === undefined) {
-            categoryToggleState[category] = isOpen;
+    if (activeSessions && activeSessions.length > 0) {
+        activeSessions.forEach(s => { sessions[s.station_id] = s; });
+        await preloadActiveSegments(activeSessions.map(s => s.id));
+        const missing = activeSessions.filter(s => !getActiveSegmentFast(s.id));
+        if (missing.length > 0) {
+            await Promise.all(missing.map(s => {
+                const st = stations.find(st => st.id === s.station_id);
+                const mode = s.current_mode || 'single';
+                const rate = mode === 'single' ? (st?.single_rate || 20) : (st?.multi_rate || 30);
+                return createSegment(s.id, mode, s.started_at, rate, s.timer_type || 'countup', 0);
+            }));
         }
-        const open = categoryToggleState[category];
-        
-        html += `<div class="menu-category-group">`;
-        html += `<div class="menu-category-toggle" onclick="toggleCategory('${escapeHtml(category)}')">`;
-        html += `<span class="cat-title">${escapeHtml(menuCategoryLabel(category))}</span>`;
-        html += `<i class="fa-solid fa-chevron-down cat-arrow ${open ? 'open' : ''}"></i>`;
-        html += `</div>`;
-        html += `<div class="menu-category-items ${open ? 'open' : ''}" data-category="${escapeHtml(category)}">`;
-        items.forEach(item => {
-            const sessionId =
-                currentOrderSessionId ||
-                (activeStationId && sessions[activeStationId] ? sessions[activeStationId].id : '') ||
-                (activeSessionOrders.length > 0 ? activeSessionOrders[0].session_id : '');
-            html += `<button class="btn btn-ghost btn-sm" onclick="addOrderItem('${sessionId}','${item.id}')">${escapeHtml(item.name)} - ${money(item.price)}</button>`;
-        });
-        html += `</div></div>`;
-    }
-    
-    container.innerHTML = html;
-}
-
-function toggleCategory(category) {
-    categoryToggleState[category] = !categoryToggleState[category];
-    const isOpen = categoryToggleState[category];
-    
-    const container = document.getElementById('menuQuickAdd');
-    if (!container) return;
-    const toggles = container.querySelectorAll('.menu-category-toggle');
-    toggles.forEach(toggle => {
-        const titleEl = toggle.querySelector('.cat-title');
-        if (titleEl && titleEl.textContent.trim() === menuCategoryLabel(category)) {
-            const arrow = toggle.querySelector('.cat-arrow');
-            if (arrow) {
-                arrow.classList.toggle('open', isOpen);
-            }
-        }
-    });
-    
-    const itemsContainer = container.querySelector(`.menu-category-items[data-category="${category}"]`);
-    if (itemsContainer) {
-        itemsContainer.classList.toggle('open', isOpen);
+        renderStationsGrid();
+        renderDashboard();
     }
 }
 
-function renderStationOrdersSection() {
-    const el = document.getElementById('stationOrdersList');
-    if (!el) return;
-    el.innerHTML = activeSessionOrders.length === 0
-        ? `<div class="empty"><i class="fa-solid fa-utensils"></i>${t('مفيش طلبات على الجلسة دي', 'No orders on this session')}</div>`
-        : activeSessionOrders.map(o => `<div class="list-row">
-            <div><div class="row-title">${escapeHtml(o.item_name)}</div><div class="row-sub">${o.quantity} × ${money(o.unit_price)}</div></div>
-            <div style="display:flex;align-items:center;gap:10px;">
-                <div class="row-value">${money(o.quantity * o.unit_price)}</div>
-                <button class="btn btn-ghost btn-sm" style="padding:6px 10px;" onclick="removeOrderItem('${o.id}')" title="${t('حذف/إنقاص', 'Remove/Decrease')}"><i class="fa-solid fa-minus"></i></button>
-            </div>
-        </div>`).join('');
-}
-
-function selectStartMode(mode) {
-    document.querySelectorAll('.mode-option').forEach(el => {
-        el.classList.remove('selected-single', 'selected-multi');
-        if (el.dataset.mode === mode) {
-            el.classList.add(mode === 'single' ? 'selected-single' : 'selected-multi');
-        }
-    });
-    document.getElementById('selectedStartMode').value = mode;
-}
-
 // ============================================================
-// ADD PREPAID AMOUNT
+// REFRESH STATION SHEET CONTENT
 // ============================================================
-async function addPrepaidAmount(stationId) {
+async function refreshStationSheetContent(stationId) {
+    const st = stations.find(s => s.id === stationId);
     const session = sessions[stationId];
-    if (!session) return;
+    if (!session || !st) return;
+    
+    // ✅ تحديث الكاش عشان نجيب أحدث بيانات
+    sessionSegmentsCache[session.id] = null;
+    activeSegmentCache[session.id] = null;
+    
+    const body = document.getElementById('stationSheetBody');
+    if (!body) return;
+    
+    const segments = await getSessionSegments(session.id);
+    const activeSeg = segments.find(s => !s.ended_at);
+    const totals = await calculateTotalAmounts(session.id);
+    const currentEstimate = await getCurrentSegmentEstimate(session.id);
+    
+    const currentMode = activeSeg ? activeSeg.mode : (session.current_mode || 'single');
+    const currentRate = activeSeg ? activeSeg.rate : (st.single_rate || 20);
+    const modeLabel = currentMode === 'single' ? t('Single', 'Single') : t('Multi', 'Multi');
+    const modeBadgeClass = currentMode === 'single' ? 'badge-mode-single' : 'badge-mode-multi';
+    const switchLabel = currentMode === 'single' ? t('تحويل إلى Multi', 'Switch to Multi') : t('تحويل إلى Single', 'Switch to Single');
+    const switchMode = currentMode === 'single' ? 'multi' : 'single';
+    const switchRate = switchMode === 'single' ? (st.single_rate || 20) : (st.multi_rate || 30);
+    
+    const timerType = activeSeg ? (activeSeg.timer_type || 'countup') : 'countup';
+    const timerLabel = timerType === 'countdown' ? t('تنازلي', 'Countdown') : t('تصاعدي', 'Count Up');
+    const timerBadgeClass = timerType === 'countdown' ? 'badge-timer-down' : 'badge-timer-up';
+    const isCountdown = timerType === 'countdown';
 
-    const input = document.getElementById('addPrepaidInput');
-    const addAmount = Math.max(0, parseFloat(input && input.value) || 0);
-    if (addAmount <= 0) {
-        showToast(t('اكتب مبلغ أكبر من صفر', 'Enter an amount greater than zero'), 'warning');
-        return;
-    }
+    const { data: orders } = await supabaseClient.from('session_orders').select('*').eq('session_id', session.id).order('created_at');
+    activeSessionOrders = orders || [];
 
-    const currentPrepaid = Number(session.prepaid_amount) || 0;
-    const newPrepaid = Math.round((currentPrepaid + addAmount) * 100) / 100;
-
-    try {
-        const { error } = await supabaseClient.from('sessions').update({ prepaid_amount: newPrepaid }).eq('id', session.id);
-
-        if (error && /column .* does not exist/i.test(error.message || '')) {
-            console.warn('prepaid_amount column missing — cannot save advance payment:', error.message);
-            showToast(t('عمود المبلغ المقدم غير موجود في قاعدة البيانات، ضيفه الأول', 'Advance payment column missing in database — add it first'), 'error');
-            return;
-        }
-        if (error) { throw error; }
-
-        session.prepaid_amount = newPrepaid;
-        if (input) input.value = '';
-        showToast(t(`تمت إضافة ${moneyDec(addAmount)} ج مقدماً`, `Added ${moneyDec(addAmount)} EGP in advance`), 'success');
-
-        await refreshStationSheetContent(stationId);
-    } catch (e) {
-        console.error('Error adding prepaid amount:', e);
-        showToast(t('فشلت إضافة المبلغ المقدم', 'Failed to add advance payment'), 'error');
-    }
+    const activeSegStart = activeSeg ? activeSeg.started_at : session.started_at;
+    const liveEarnedNow = activeSeg ? Math.round((Math.max(0, (nowCorrected() - new Date(activeSeg.started_at)) / 3600000) * Number(activeSeg.rate)) * 100) / 100 : 0;
+    const liveGrandTotal = Math.round((totals.grandTotal + liveEarnedNow) * 100) / 100;
+    
+    body.innerHTML = `
+        <div style="text-align:center;margin-bottom:12px;">
+            <div style="display:flex;justify-content:center;gap:8px;align-items:center;flex-wrap:wrap;">
+                <span class="badge ${modeBadgeClass}" style="font-size:13px;padding:4px 14px;">${modeLabel}</span>
+                <span class="badge ${timerBadgeClass}" style="font-size:11px;padding:3px 10px;">${timerLabel}</span>
+                <span class="badge badge-teal" style="font-size:13px;padding:4px 14px;">${money(currentRate)} ${t('ج/ساعة', 'EGP/hr')}</span>
+            </div>
+        </div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:12px;">
+            <div class="stat-card" style="padding:10px;">
+                <div class="stat-label" style="font-size:10px;">${isCountdown ? t('الوقت المتبقي', 'Time Remaining') : t('إجمالي الجلسة', 'Total Session')}</div>
+                <div class="station-timer mono ${isCountdown ? 'countdown' : ''}" style="font-size:22px;" id="activeSessionTimer" data-start="${session.started_at}" data-station-id="${stationId}">${isCountdown ? formatCountdown(getRemainingSeconds(activeSeg)) : formatElapsed(new Date(session.started_at))}</div>
+            </div>
+            <div class="stat-card" style="padding:10px;border-color:${currentMode === 'single' ? 'var(--amber-dim)' : 'var(--teal-dim)'};">
+                <div class="stat-label" style="font-size:10px;">${t('الجزء الحالي', 'Current Segment')}</div>
+                <div class="station-timer mono" style="font-size:22px;color:${currentMode === 'single' ? 'var(--amber)' : 'var(--teal)'};" id="currentSegTimer" data-start="${activeSegStart}">${formatElapsed(new Date(activeSegStart))}</div>
+            </div>
+        </div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:12px;">
+            <div style="background:var(--bg-sunken);border-radius:var(--radius-sm);padding:8px;text-align:center;">
+                <div style="font-size:10px;color:var(--text-dim);">${isCountdown ? t('قيمة الوقت المتبقي', 'Remaining Value') : t('قيمة الجزء الحالي', 'Current Segment Value')}</div>
+                <div class="mono" style="font-size:18px;font-weight:700;color:${currentMode === 'single' ? 'var(--amber)' : 'var(--teal)'};" id="currentSegAmount">${moneyDec(currentEstimate.amount)}</div>
+            </div>
+            <div style="background:var(--bg-sunken);border-radius:var(--radius-sm);padding:8px;text-align:center;">
+                <div style="font-size:10px;color:var(--text-dim);">${t('الإجمالي الكلي', 'Grand Total')}</div>
+                <div class="mono" style="font-size:18px;font-weight:700;color:var(--amber);" id="overallTotalAmount" data-base-total="${totals.grandTotal}">${moneyDec(liveGrandTotal)}</div>
+            </div>
+        </div>
+        <div style="display:flex;justify-content:space-between;align-items:center;background:var(--bg-sunken);border-radius:var(--radius-sm);padding:8px 12px;margin-bottom:12px;border:1px dashed ${totals.prepaidTotal > 0 ? 'var(--teal-dim)' : 'var(--border)'};">
+            <span style="font-size:12px;color:var(--text-dim);"><i class="fa-solid fa-money-bill-wave"></i> ${t('مدفوع مقدماً', 'Prepaid')}</span>
+            <span class="mono" style="font-size:15px;font-weight:700;color:${totals.prepaidTotal > 0 ? 'var(--teal)' : 'var(--text-faint)'};">${moneyDec(totals.prepaidTotal)} ${t('ج', 'EGP')}</span>
+        </div>
+        
+        ${segments.filter(s => s.ended_at).length > 0 ? `
+        <div class="segment-breakdown">
+            <div style="font-size:11px;color:var(--text-dim);font-weight:600;margin-bottom:4px;">${t('تفصيل الأجزاء السابقة', 'Previous Segments')}</div>
+            ${segments.filter(s => s.ended_at).map(s => {
+                const start2 = new Date(s.started_at);
+                const end = new Date(s.ended_at);
+                const mins = Math.round((end - start2) / 60000);
+                const amt = (s.amount !== null && s.amount !== undefined) ? Number(s.amount) : calculateSegmentAmountFromTimes(s.started_at, s.ended_at, s.rate);
+                const modeClass = s.mode === 'single' ? 'seg-mode-single' : 'seg-mode-multi';
+                const modeLabel2 = s.mode === 'single' ? t('Single', 'Single') : t('Multi', 'Multi');
+                const segTimerType = s.timer_type || 'countup';
+                const timerLabel2 = segTimerType === 'countdown' ? '⬇️' : '⬆️';
+                return `<div class="segment-row"><span class="seg-label"><span class="${modeClass}">●</span> ${modeLabel2} ${mins}${t('د', 'min')} ${timerLabel2} @ ${money(s.rate)}</span><span class="seg-value ${modeClass}">${moneyDec(amt)}</span></div>`;
+            }).join('')}
+            <div class="segment-divider"></div>
+            <div class="segment-row"><span class="seg-label">${t('إجمالي Single', 'Single Total')}</span><span class="seg-value seg-mode-single">${moneyDec(totals.singleTotal)}</span></div>
+            <div class="segment-row"><span class="seg-label">${t('إجمالي Multi', 'Multi Total')}</span><span class="seg-value seg-mode-multi">${moneyDec(totals.multiTotal)}</span></div>
+            <div class="segment-row"><span class="seg-label">${t('الطلبات', 'Orders')}</span><span class="seg-value">${moneyDec(totals.ordersTotal)}</span></div>
+            <div class="segment-row segment-total"><span class="seg-label">${t('الإجمالي الكلي', 'Grand Total')}</span><span class="seg-value" style="color:var(--amber);">${moneyDec(totals.grandTotal)}</span></div>
+        </div>
+        ` : ''}
+        
+        <div class="section-title">${t('إضافة طلب', 'Add Order')}</div>
+        <div id="menuQuickAdd" style="margin-bottom:12px;"></div>
+        
+        <div class="section-title">${t('الطلبات', 'Orders')}</div>
+        <div class="panel" id="stationOrdersList"></div>
+        
+        <div style="margin-top:16px;display:flex;flex-direction:column;gap:8px;">
+            <button class="btn btn-amber btn-block" onclick="handleSwitchMode('${session.id}','${switchMode}','${st.id}')" id="switchModeBtn">
+                <i class="fa-solid fa-arrows-rotate"></i> ${switchLabel} (${money(switchRate)} ${t('ج/ساعة', 'EGP/hr')})
+            </button>
+            
+            <button class="btn btn-prepay btn-block" onclick="openPrepaymentSheet('${stationId}')">
+                <i class="fa-solid fa-money-bill-wave"></i> ${t('إضافة دفعة مقدمة', 'Add Prepayment')}
+            </button>
+            <div style="display:flex;gap:8px;">
+                <button class="btn btn-transfer" style="flex:1;" onclick="openTransferSheet('${stationId}')">
+                    <i class="fa-solid fa-exchange"></i> ${t('نقل الجلسة', 'Transfer Session')}
+                </button>
+                <button class="btn btn-cancel" style="flex:1;" onclick="confirmCancelSession('${stationId}')">
+                    <i class="fa-solid fa-xmark"></i> ${t('إلغاء الجلسة', 'Cancel Session')}
+                </button>
+            </div>
+            <button class="btn btn-ghost" onclick="closeSheet('stationOverlay')">${t('رجوع', 'Back')}</button>
+            <button class="btn btn-teal btn-block" onclick="showEndSessionPayment('${stationId}')"><i class="fa-solid fa-stop"></i> ${t('إنهاء الجلسة', 'End Session')}</button>
+        </div>
+        <div class="error-text" id="stationSheetError"></div>
+    `;
+    
+    renderMenuQuickAdd();
+    renderStationOrdersSection();
 }
 
 // ============================================================
-// SWITCH MODE
+// SWITCH MODE - UPDATED (يدعم التنازلي مع مراعاة الوقت)
 // ============================================================
 async function handleSwitchMode(sessionId, newMode, stationId) {
     if (pendingSwitch) return;
@@ -4121,673 +4117,3 @@ async function handleSwitchMode(sessionId, newMode, stationId) {
         if (btn) btn.disabled = false;
     }
 }
-
-// ============================================================
-// SESSION RECOVERY & REFRESH
-// ============================================================
-async function recoverActiveSession() {
-    if (!business) return;
-    const { data: activeSessions } = await supabaseClient
-        .from('sessions')
-        .select('*')
-        .eq('business_id', business.id)
-        .eq('status', 'active');
-
-    if (activeSessions && activeSessions.length > 0) {
-        activeSessions.forEach(s => { sessions[s.station_id] = s; });
-        await preloadActiveSegments(activeSessions.map(s => s.id));
-        const missing = activeSessions.filter(s => !getActiveSegmentFast(s.id));
-        if (missing.length > 0) {
-            await Promise.all(missing.map(s => {
-                const st = stations.find(st => st.id === s.station_id);
-                const mode = s.current_mode || 'single';
-                const rate = mode === 'single' ? (st?.single_rate || 20) : (st?.multi_rate || 30);
-                return createSegment(s.id, mode, s.started_at, rate, s.timer_type || 'countup', 0);
-            }));
-        }
-        renderStationsGrid();
-        renderDashboard();
-    }
-}
-
-async function refreshStationSheetContent(stationId) {
-    if (activeStationId === stationId) {
-        await openStationSheet(stationId);
-    }
-}
-
-// ============================================================
-// CUSTOMER PAGE FUNCTIONS - شاشة العميل
-// ============================================================
-
-let customerCart = [];
-let customerBusiness = null;
-let customerMenuItems = [];
-let customerCategories = [];
-let currentCustomerFilter = 'all';
-let customerBusinessId = null;
-let customerStations = [];
-let customerActiveStationIds = new Set();
-
-function initCustomerPage() {
-    const params = new URLSearchParams(window.location.search);
-    if (params.get('customer') === 'true') {
-        document.getElementById('setupScreen').classList.remove('active');
-        document.getElementById('mainApp').classList.remove('active');
-        document.getElementById('customerPage').classList.add('active');
-        loadCustomerData();
-    }
-}
-
-async function loadCustomerData() {
-    const urlBizId = new URLSearchParams(window.location.search).get('biz');
-    const bizId = urlBizId || localStorage.getItem('platepro_business_id');
-    
-    if (!bizId) {
-        document.getElementById('customerBizName').textContent = '❌ رابط غير صحيح';
-        document.getElementById('customerMenuItems').innerHTML = `
-            <div class="empty" style="padding:40px 16px;">
-                <i class="fa-solid fa-triangle-exclamation" style="font-size:40px;color:var(--danger);"></i>
-                <div style="font-size:16px; font-weight:700; margin-top:8px;">رابط غير صحيح</div>
-                <div style="font-size:13px; color:var(--text-muted);">تأكد من الرابط المستخدم</div>
-            </div>
-        `;
-        return;
-    }
-    
-    customerBusinessId = bizId;
-    
-    if (!supabaseClient) {
-        document.getElementById('customerBizName').textContent = '⚠️ خطأ في الاتصال';
-        document.getElementById('customerMenuItems').innerHTML = `
-            <div class="empty" style="padding:40px 16px;">
-                <i class="fa-solid fa-wifi" style="font-size:40px;color:var(--warning);"></i>
-                <div style="font-size:16px; font-weight:700; margin-top:8px;">خطأ في الاتصال</div>
-                <div style="font-size:13px; color:var(--text-muted);">تأكد من اتصال الإنترنت</div>
-            </div>
-        `;
-        return;
-    }
-    
-    try {
-        const { data: biz, error: bizError } = await supabaseClient
-            .from('businesses')
-            .select('*')
-            .eq('id', bizId)
-            .maybeSingle();
-        
-        if (bizError || !biz) {
-            document.getElementById('customerBizName').textContent = '❌ نشاط غير موجود';
-            document.getElementById('customerMenuItems').innerHTML = `
-                <div class="empty" style="padding:40px 16px;">
-                    <i class="fa-solid fa-store-slash" style="font-size:40px;color:var(--danger);"></i>
-                    <div style="font-size:16px; font-weight:700; margin-top:8px;">النشاط غير موجود</div>
-                    <div style="font-size:13px; color:var(--text-muted);">تأكد من الكود المستخدم</div>
-                </div>
-            `;
-            return;
-        }
-        
-        customerBusiness = biz;
-        localStorage.setItem('platepro_business_id', biz.id);
-        document.getElementById('customerBizName').textContent = biz.name;
-        document.title = biz.name + ' - Menu';
-        
-        const savedLogo = localStorage.getItem('platepro_logo');
-        if (savedLogo) {
-            const logoContainer = document.getElementById('customerLogoContainer');
-            logoContainer.innerHTML = `<img src="${savedLogo}" class="logo-img" alt="Logo">`;
-        }
-        
-        const { data: stationsData } = await supabaseClient
-            .from('stations')
-            .select('*')
-            .eq('business_id', bizId)
-            .order('number');
-        customerStations = stationsData || [];
-
-        const { data: activeSessionsData } = await supabaseClient
-            .from('sessions')
-            .select('station_id')
-            .eq('business_id', bizId)
-            .eq('status', 'active');
-        customerActiveStationIds = new Set((activeSessionsData || []).map(s => s.station_id));
-        
-        const [itemsRes, catsRes] = await Promise.all([
-            supabaseClient.from('menu_items')
-                .select('*')
-                .eq('business_id', bizId)
-                .eq('active', true)
-                .order('created_at'),
-            supabaseClient.from('menu_categories')
-                .select('*')
-                .eq('business_id', bizId)
-                .eq('active', true)
-                .order('sort_order')
-        ]);
-        
-        customerMenuItems = itemsRes.data || [];
-        customerCategories = catsRes.data || [];
-        
-        renderCustomerStations();
-        renderCustomerCategories();
-        renderCustomerItems();
-        
-        console.log('✅ Customer data loaded successfully');
-        
-    } catch (e) {
-        console.error('Error loading customer data:', e);
-        document.getElementById('customerBizName').textContent = '⚠️ خطأ في التحميل';
-        document.getElementById('customerMenuItems').innerHTML = `
-            <div class="empty" style="padding:40px 16px;">
-                <i class="fa-solid fa-circle-exclamation" style="font-size:40px;color:var(--danger);"></i>
-                <div style="font-size:16px; font-weight:700; margin-top:8px;">⚠️ حدث خطأ</div>
-                <div style="font-size:13px; color:var(--text-muted);">حاول تحديث الصفحة</div>
-            </div>
-        `;
-    }
-}
-
-function renderCustomerStations() {
-    const select = document.getElementById('customerStationSelect');
-    if (!select) return;
-    
-    const params = new URLSearchParams(window.location.search);
-    const stationIdFromUrl = params.get('station');
-    
-    if (customerStations.length === 0) {
-        select.innerHTML = `<option value="">⚠️ مفيش أجهزة متاحة حالياً</option>`;
-        return;
-    }
-    
-    let options = `<option value="">-- اختر جهاز --</option>`;
-    customerStations.forEach(st => {
-        const isActive = customerActiveStationIds.has(st.id);
-        const disabled = isActive ? '' : 'disabled style="opacity:0.5;"';
-        const selected = (stationIdFromUrl && st.id === stationIdFromUrl) ? 'selected' : '';
-        const label = st.name ? st.name : `جهاز ${st.number}`;
-        const statusText = isActive ? '' : ' (غير شغال)';
-        options += `<option value="${st.id}" ${selected} ${disabled}>${label}${statusText}</option>`;
-    });
-    select.innerHTML = options;
-}
-
-function renderCustomerCategories() {
-    const container = document.getElementById('customerCategories');
-    if (!container) return;
-    
-    let html = `<button class="btn active" onclick="filterCustomerItems('all')">🍽️ الكل</button>`;
-    customerCategories.forEach(cat => {
-        html += `<button class="btn" onclick="filterCustomerItems('${cat.id}')">
-            <i class="fa-solid ${cat.icon || 'fa-utensils'}"></i> ${escapeHtml(cat.name)}
-        </button>`;
-    });
-    container.innerHTML = html;
-}
-
-function filterCustomerItems(categoryId) {
-    currentCustomerFilter = categoryId;
-    document.querySelectorAll('#customerCategories .btn').forEach(btn => {
-        btn.classList.remove('active');
-    });
-    const btns = document.querySelectorAll('#customerCategories .btn');
-    const idx = categoryId === 'all' ? 0 : customerCategories.findIndex(c => c.id === categoryId) + 1;
-    if (btns[idx]) btns[idx].classList.add('active');
-    renderCustomerItems(categoryId);
-}
-
-function renderCustomerItems(categoryId) {
-    const container = document.getElementById('customerMenuItems');
-    if (!container) return;
-    
-    let items = customerMenuItems;
-    if (categoryId && categoryId !== 'all') {
-        items = items.filter(item => item.category_id === categoryId);
-    }
-    
-    if (!items || items.length === 0) {
-        container.innerHTML = `
-            <div class="empty" style="padding:40px 16px;">
-                <i class="fa-solid fa-utensils" style="font-size:40px;"></i>
-                <div style="font-size:16px; font-weight:700; margin-top:8px;">مفيش أصناف</div>
-                <div style="font-size:13px; color:var(--text-muted);">جاري تحديث المنيو</div>
-            </div>
-        `;
-        return;
-    }
-    
-    container.innerHTML = items.map(item => {
-        let imageHtml = '🍽️';
-        if (item.image_url) {
-            imageHtml = `<img src="${item.image_url}" alt="${escapeHtml(item.name)}" onerror="this.style.display='none';this.parentElement.innerHTML='🍽️'">`;
-        }
-        
-        return `
-            <div class="customer-menu-card">
-                <div class="item-image">${imageHtml}</div>
-                <div class="item-info">
-                    <div class="item-name">${escapeHtml(item.name)}</div>
-                    ${item.description ? `<div class="item-desc">${escapeHtml(item.description)}</div>` : ''}
-                    <div class="item-price">${money(item.price)} ج.م</div>
-                </div>
-                <div class="item-actions">
-                    <button class="btn btn-amber btn-xs" onclick="addToCustomerCart('${item.id}')">
-                        <i class="fa-solid fa-plus"></i>
-                    </button>
-                </div>
-            </div>
-        `;
-    }).join('');
-}
-
-function addToCustomerCart(itemId) {
-    const item = customerMenuItems.find(i => i.id === itemId);
-    if (!item) return;
-    
-    const existing = customerCart.find(i => i.id === itemId);
-    if (existing) {
-        existing.quantity += 1;
-    } else {
-        customerCart.push({ ...item, quantity: 1 });
-    }
-    
-    updateCustomerCartUI();
-    showCustomerToast('✅ تم إضافة ' + item.name);
-}
-
-function removeFromCustomerCart(index) {
-    customerCart.splice(index, 1);
-    updateCustomerCartUI();
-    showCustomerCart();
-}
-
-function updateCustomerCartUI() {
-    const cart = document.getElementById('customerCart');
-    const count = customerCart.reduce((sum, i) => sum + i.quantity, 0);
-    const total = customerCart.reduce((sum, i) => sum + (i.price * i.quantity), 0);
-    
-    document.getElementById('cartCount').textContent = count;
-    document.getElementById('cartTotal').textContent = money(total);
-    
-    if (cart) cart.style.display = count > 0 ? 'block' : 'none';
-}
-
-function showCustomerCart() {
-    const container = document.getElementById('customerCartItems');
-    if (customerCart.length === 0) {
-        container.innerHTML = `<div class="empty">السلة فارغة</div>`;
-        document.getElementById('customerCartTotal').textContent = '0';
-        openSheet('customerCartOverlay');
-        return;
-    }
-    
-    container.innerHTML = customerCart.map((item, index) => `
-        <div class="order-item">
-            <div>
-                <div class="item-name">${escapeHtml(item.name)}</div>
-                <div class="item-details">
-                    ${item.quantity} × ${money(item.price)}
-                    <button class="btn btn-xs" style="background:var(--danger);color:#fff;border:none;border-radius:4px;cursor:pointer;margin-right:8px;" onclick="removeFromCustomerCart(${index})">
-                        <i class="fa-solid fa-minus"></i>
-                    </button>
-                </div>
-            </div>
-            <div class="item-price">${money(item.price * item.quantity)}</div>
-        </div>
-    `).join('');
-    
-    const subtotal = customerCart.reduce((sum, i) => sum + (i.price * i.quantity), 0);
-    document.getElementById('cartSubtotal').textContent = money(subtotal);
-    document.getElementById('customerCartTotal').textContent = money(subtotal);
-    
-    openSheet('customerCartOverlay');
-}
-
-function showCustomerToast(msg) {
-    const el = document.getElementById('customerToast');
-    el.textContent = msg;
-    el.className = 'toast success';
-    el.style.display = 'block';
-    clearTimeout(el._t);
-    el._t = setTimeout(() => { el.style.display = 'none'; }, 2000);
-}
-
-async function submitCustomerOrder() {
-    if (customerCart.length === 0) {
-        document.getElementById('customerCartError').textContent = 'أضف صنف واحد على الأقل';
-        return;
-    }
-    
-    const stationSelect = document.getElementById('customerStationSelect');
-    const stationId = stationSelect.value;
-    
-    if (!stationId) {
-        document.getElementById('customerCartError').textContent = '⚠️ اختر رقم الجهاز أولاً';
-        return;
-    }
-    
-    if (!customerBusiness) {
-        document.getElementById('customerCartError').textContent = '⚠️ بيانات النشاط غير متوفرة';
-        return;
-    }
-    
-    try {
-        const { data: stationData } = await supabaseClient
-            .from('stations')
-            .select('*')
-            .eq('id', stationId)
-            .single();
-        
-        if (!stationData) {
-            document.getElementById('customerCartError').textContent = '⚠️ الجهاز غير موجود';
-            return;
-        }
-        
-        const { data: activeSession, error: sessionErr } = await supabaseClient
-            .from('sessions')
-            .select('*')
-            .eq('station_id', stationId)
-            .eq('status', 'active')
-            .maybeSingle();
-        
-        if (sessionErr || !activeSession) {
-            document.getElementById('customerCartError').textContent = '⚠️ الجهاز ده مش شغال دلوقتي';
-            return;
-        }
-        
-        const { data: existingOrders } = await supabaseClient
-            .from('session_orders')
-            .select('id, menu_item_id, quantity')
-            .eq('session_id', activeSession.id);
-        
-        for (const cartItem of customerCart) {
-            const existing = (existingOrders || []).find(o => String(o.menu_item_id) === String(cartItem.id));
-            if (existing) {
-                await supabaseClient
-                    .from('session_orders')
-                    .update({ quantity: Number(existing.quantity || 0) + Number(cartItem.quantity) })
-                    .eq('id', existing.id);
-            } else {
-                let insertPayload = {
-                    business_id: customerBusiness.id,
-                    session_id: activeSession.id,
-                    menu_item_id: cartItem.id,
-                    item_name: cartItem.name,
-                    unit_price: Number(cartItem.price),
-                    quantity: Number(cartItem.quantity)
-                };
-                let { error: insErr } = await supabaseClient.from('session_orders').insert(insertPayload);
-                if (insErr && /business_id/i.test(insErr.message || '') && /column/i.test(insErr.message || '')) {
-                    delete insertPayload.business_id;
-                    await supabaseClient.from('session_orders').insert(insertPayload);
-                }
-            }
-        }
-        
-        try {
-            const { error: qrErr } = await supabaseClient.from('qr_orders').insert({
-                business_id: customerBusiness.id,
-                station_id: stationId,
-                items: customerCart.map(item => ({
-                    id: item.id,
-                    name: item.name,
-                    price: item.price,
-                    qty: item.quantity
-                })),
-                note: '📱 طلب من العميل عبر QR (اتضاف للفاتورة تلقائيًا)',
-                status: 'pending'
-            });
-            if (qrErr) console.error('⚠️ فشل تسجيل تنبيه الطلب (qr_orders):', qrErr);
-        } catch (qrEx) {
-            console.error('⚠️ خطأ غير متوقع أثناء تسجيل تنبيه الطلب:', qrEx);
-        }
-        
-        customerCart = [];
-        updateCustomerCartUI();
-        closeSheet('customerCartOverlay');
-        
-        showCustomerToast('✅ تم إرسال الطلب بنجاح!');
-        document.getElementById('customerCartError').textContent = '';
-        document.getElementById('customerCart').style.display = 'none';
-        
-        console.log('✅ Order created successfully!');
-        
-    } catch (e) {
-        console.error('Error submitting order:', e);
-        document.getElementById('customerCartError').textContent = '⚠️ فشل إرسال الطلب، حاول تاني';
-    }
-}
-
-// ============================================================
-// QR CODE GENERATION
-// ============================================================
-
-function getOrderPageUrl(station) {
-    const baseUrl = window.location.origin + window.location.pathname;
-    const bizId = business ? business.id : localStorage.getItem('platepro_business_id');
-    return baseUrl + '?customer=true&biz=' + encodeURIComponent(bizId) + '&station=' + encodeURIComponent(station.id);
-}
-
-function openStationQrSheet(stationId) {
-    const st = stations.find(s => s.id === stationId);
-    if (!st) return;
-    
-    const displayName = st.name ? st.name : t('جهاز', 'Device') + ' ' + st.number;
-    document.getElementById('stationQrTitle').textContent = displayName;
-    
-    const url = getOrderPageUrl(st);
-    const qrImg = 'https://api.qrserver.com/v1/create-qr-code/?size=300x300&margin=8&data=' + encodeURIComponent(url);
-    
-    document.getElementById('stationQrBody').innerHTML = `
-        ${!qrOrderingEnabled ? `<div class="empty" style="margin-bottom:10px;color:var(--red);"><i class="fa-solid fa-triangle-exclamation"></i>${t('خدمة الطلب عبر QR متوقفة حاليًا — فعّلها من الإعدادات.', 'QR ordering is currently disabled — enable it from Settings.')}</div>` : ''}
-        <div class="qr-code-box"><img src="${qrImg}" alt="QR"></div>
-        <div class="qr-link-box">${escapeHtml(url)}</div>
-        <div style="display:flex;gap:8px;margin-top:12px;">
-            <button class="btn btn-ghost btn-block" onclick="navigator.clipboard.writeText('${url}').then(()=>showToast(t('تم نسخ الرابط','Link copied'),'success'))">
-                <i class="fa-solid fa-copy"></i> ${t('نسخ الرابط', 'Copy link')}
-            </button>
-            <button class="btn btn-teal btn-block" onclick="window.open('${url}','_blank')">
-                <i class="fa-solid fa-up-right-from-square"></i> ${t('فتح الصفحة', 'Open page')}
-            </button>
-        </div>
-        <button class="btn btn-amber btn-block" style="margin-top:8px;" onclick="printStationQr('${st.id}')">
-            <i class="fa-solid fa-print"></i> ${t('طباعة وحطها على الترابيزة', 'Print for the table')}
-        </button>
-    `;
-    openSheet('stationQrOverlay');
-}
-
-function printStationQr(stationId) {
-    const st = stations.find(s => s.id === stationId);
-    if (!st) return;
-    const displayName = st.name ? st.name : t('جهاز', 'Device') + ' ' + st.number;
-    const url = getOrderPageUrl(st);
-    const qrImg = 'https://api.qrserver.com/v1/create-qr-code/?size=500x500&margin=10&data=' + encodeURIComponent(url);
-    const bizName = business ? business.name : '';
-
-    const printWindow = window.open('', '_blank', 'width=420,height=620');
-    if (!printWindow) {
-        showToast(t('الرجاء السماح للنوافذ المنبثقة', 'Please allow popups'), 'error');
-        return;
-    }
-
-    printWindow.document.write(`
-        <!DOCTYPE html>
-        <html>
-        <head>
-            <title>QR - ${escapeHtml(displayName)}</title>
-            <meta charset="UTF-8">
-            <style>
-                @page { margin: 12px; size: auto; }
-                body { font-family: 'Cairo', Arial, sans-serif; margin: 0; padding: 0; background: #fff; text-align: center; }
-                .wrap { padding: 24px 16px; max-width: 340px; margin: 0 auto; }
-                .biz { font-size: 14px; color: #888; margin-bottom: 4px; }
-                .station { font-size: 26px; font-weight: 800; color: #000; margin-bottom: 16px; }
-                .qr { border: 2px solid #000; border-radius: 16px; padding: 16px; display: inline-block; }
-                .qr img { display: block; width: 260px; height: 260px; }
-                .caption { font-size: 15px; font-weight: 700; margin-top: 16px; color: #000; }
-                @media print { .no-print { display: none; } }
-            </style>
-        </head>
-        <body>
-            <div class="wrap">
-                ${bizName ? `<div class="biz">${escapeHtml(bizName)}</div>` : ''}
-                <div class="station">${escapeHtml(displayName)}</div>
-                <div class="qr"><img src="${qrImg}" alt="QR"></div>
-                <div class="caption">${t('امسح الكود واطلب من هنا 📱', 'Scan to order 📱')}</div>
-                <div class="no-print" style="margin-top:20px;">
-                    <button onclick="window.print()" style="padding:10px 30px;background:#ff8a1e;color:#fff;border:none;border-radius:8px;font-size:16px;cursor:pointer;">
-                        🖨️ ${t('طباعة', 'Print')}
-                    </button>
-                    <button onclick="window.close()" style="padding:10px 30px;background:#666;color:#fff;border:none;border-radius:8px;font-size:16px;cursor:pointer;margin-right:8px;">
-                        ✕ ${t('إغلاق', 'Close')}
-                    </button>
-                </div>
-            </div>
-            <script>
-                setTimeout(() => { window.print(); }, 400);
-            <\/script>
-        </body>
-        </html>
-    `);
-    printWindow.document.close();
-}
-
-// ============================================================
-// TOGGLE QR ORDERING
-// ============================================================
-
-async function toggleQrOrdering(enabled) {
-    try {
-        const { error } = await supabaseClient.from('businesses').update({ qr_ordering_enabled: enabled }).eq('id', business.id);
-        if (error) throw error;
-        business.qr_ordering_enabled = enabled;
-        qrOrderingEnabled = enabled;
-        localStorage.setItem('psr_qr_ordering_enabled', JSON.stringify(enabled));
-        showToast(enabled ? '✅ تم تفعيل الطلب عبر QR' : '❌ تم تعطيل الطلب عبر QR', 'success');
-        renderSettingsStations();
-        renderStationsGrid();
-        const toggle = document.getElementById('qrOrderingToggle');
-        if (toggle) toggle.checked = enabled;
-    } catch (e) {
-        console.error('Error toggling qr ordering:', e);
-        document.getElementById('qrOrderingToggle').checked = !enabled;
-        showToast('⚠️ فشل تغيير الإعداد', 'error');
-    }
-}
-
-// ============================================================
-// HELPERS - ESCAPE & FORMAT
-// ============================================================
-function escapeHtml(str) { 
-    if (!str) return '';
-    const d = document.createElement('div'); 
-    d.textContent = str; 
-    return d.innerHTML; 
-}
-
-function formatHoursDuration(totalSeconds) {
-    const hrs = totalSeconds / 3600;
-    if (hrs >= 1) {
-        return `${moneyDec(hrs)} ${t('ساعة', 'hrs')}`;
-    }
-    const mins = Math.round(totalSeconds / 60);
-    return `${mins} ${t('دقيقة', 'min')}`;
-}
-
-// ============================================================
-// EXPORT FUNCTIONS
-// ============================================================
-window.handleSetupContinue = handleSetupContinue;
-window.handleActivateDevice = handleActivateDevice;
-window.selectLockRole = selectLockRole;
-window.handleUnlock = handleUnlock;
-window.handleEmployeeUnlock = handleEmployeeUnlock;
-window.resetLockRole = resetLockRole;
-window.lockApp = lockApp;
-window.switchBusiness = switchBusiness;
-window.showScreen = showScreen;
-window.toggleLanguage = toggleLanguage;
-window.navigateTo = navigateTo;
-window.openSheet = openSheet;
-window.closeSheet = closeSheet;
-window.openStationSheet = openStationSheet;
-window.openTransferSheet = openTransferSheet;
-window.confirmTransfer = confirmTransfer;
-window.selectTransferTarget = selectTransferTarget;
-window.confirmCancelSession = confirmCancelSession;
-window.selectStartMode = selectStartMode;
-window.startSessionWithMode = startSessionWithMode;
-window.selectTimerType = selectTimerType;
-window.addOrderItem = addOrderItem;
-window.removeOrderItem = removeOrderItem;
-window.showEndSessionPayment = showEndSessionPayment;
-window.cancelEndSession = cancelEndSession;
-window.confirmEndSessionWithPayment = confirmEndSessionWithPayment;
-window.selectPaymentMethod = selectPaymentMethod;
-window.printReceipt = printReceipt;
-window.updatePaymentCalculation = updatePaymentCalculation;
-window.openExpenseSheet = openExpenseSheet;
-window.submitExpense = submitExpense;
-window.openCloseShiftSheet = openCloseShiftSheet;
-window.confirmCloseShift = confirmCloseShift;
-window.viewShiftDetails = viewShiftDetails;
-window.openNewShift = openNewShift;
-window.deleteShift = deleteShift;
-window.setShiftFilter = setShiftFilter;
-window.applyMonthlyFilter = applyMonthlyFilter;
-window.toggleSettingsStations = toggleSettingsStations;
-window.applyBulkRate = applyBulkRate;
-window.openStationManagementSheet = openStationManagementSheet;
-window.editStation = editStation;
-window.submitStationManagement = submitStationManagement;
-window.deleteStation = deleteStation;
-window.openPaymentMethodSheet = openPaymentMethodSheet;
-window.editPaymentMethod = editPaymentMethod;
-window.submitPaymentMethod = submitPaymentMethod;
-window.deletePaymentMethod = deletePaymentMethod;
-window.openMenuItemSheet = openMenuItemSheet;
-window.editMenuItem = editMenuItem;
-window.submitMenuItem = submitMenuItem;
-window.deleteMenuItem = deleteMenuItem;
-window.openEmployeeSheet = openEmployeeSheet;
-window.submitEmployee = submitEmployee;
-window.deleteEmployee = deleteEmployee;
-window.toggleSettingsPin = toggleSettingsPin;
-window.changeOwnerPin = changeOwnerPin;
-window.openCreateBusinessSheetFromSetup = openCreateBusinessSheetFromSetup;
-window.submitCreateBusinessFromSetup = submitCreateBusinessFromSetup;
-window.openQrOrdersSheet = openQrOrdersSheet;
-window.addQrOrderToBill = addQrOrderToBill;
-window.dismissQrOrder = dismissQrOrder;
-window.deliverQrOrder = deliverQrOrder;
-window.openStationQrSheet = openStationQrSheet;
-window.printStationQr = printStationQr;
-window.toggleQrOrdering = toggleQrOrdering;
-window.renderStationsGrid = renderStationsGrid;
-window.renderSettings = renderSettings;
-window.renderDashboard = renderDashboard;
-window.renderShiftView = renderShiftView;
-window.updateTexts = updateTexts;
-window.getDeviceId = getDeviceId;
-window.money = money;
-window.moneyDec = moneyDec;
-window.showToast = showToast;
-window.t = t;
-window.escapeHtml = escapeHtml;
-window.formatElapsed = formatElapsed;
-window.nowCorrected = nowCorrected;
-window.formatHoursDuration = formatHoursDuration;
-window.addToCustomerCart = addToCustomerCart;
-window.removeFromCustomerCart = removeFromCustomerCart;
-window.showCustomerCart = showCustomerCart;
-window.submitCustomerOrder = submitCustomerOrder;
-window.filterCustomerItems = filterCustomerItems;
-window.initCustomerPage = initCustomerPage;
-window.loadCustomerData = loadCustomerData;
-window.renderWhatsappSettingsUI = renderWhatsappSettingsUI;
-
-console.log('✅ DORAK App loaded successfully!');
-console.log('📱 QR ordering per station enabled');
-console.log('🔔 Ring notifications active');
-console.log('📱 WhatsApp notifications module ready');
