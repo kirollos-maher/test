@@ -9,10 +9,10 @@
 <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 <link rel="stylesheet" href="style.css">
-<script src="app.js?v=20260825"></script>
-<script src="analytics.js?v=20260825"></script>
-<script src="alerts.js?v=20260825"></script>
-<script src="whatsapp.js?v=20260825"></script>
+<script src="app.js?v=20260825b"></script>
+<script src="analytics.js?v=20260825b"></script>
+<script src="alerts.js?v=20260825b"></script>
+<script src="whatsapp.js?v=20260825b"></script>
 
 <style>
     /* ✅ DORAK Brand */
@@ -689,6 +689,16 @@
             <input type="hidden" id="menuItemId">
             <div class="field"><label data-ar="اسم الصنف" data-en="Item Name">اسم الصنف</label><input type="text" id="menuItemName"></div>
             <div class="field"><label data-ar="السعر" data-en="Price">السعر</label><input type="number" id="menuItemPrice" class="mono"></div>
+            <div class="field"><label data-ar="الوصف (اختياري)" data-en="Description (optional)">الوصف (اختياري)</label><textarea id="menuItemDesc" rows="2"></textarea></div>
+            <div class="field">
+                <label data-ar="صورة الصنف (اختياري)" data-en="Item Image (optional)">صورة الصنف (اختياري)</label>
+                <input type="file" id="menuItemImageInput" accept="image/*" onchange="handleMenuItemImageChange(this)">
+                <input type="hidden" id="menuItemImageData">
+                <div id="menuItemImagePreview" style="display:none;margin-top:8px;">
+                    <img id="menuItemImagePreviewImg" src="" alt="" style="width:80px;height:80px;object-fit:cover;border-radius:8px;">
+                </div>
+            </div>
+            <div class="field" style="display:flex;align-items:center;gap:12px;"><label style="margin-bottom:0;"><span data-ar="مفعل" data-en="Active">مفعل</span></label><input type="checkbox" id="menuItemActive" checked style="width:auto;"></div>
             <div class="field"><label data-ar="التصنيف" data-en="Category">التصنيف</label>
                 <select id="menuItemCategory">
                     <option value="cold_drinks">🧊 مشروبات باردة</option>
