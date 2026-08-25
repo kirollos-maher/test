@@ -3643,6 +3643,18 @@ function openMenuItemSheet() {
     openSheet('menuItemOverlay');
 }
 
+function handleMenuItemImageChange(input) {
+    const file = input.files && input.files[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = function(e) {
+        document.getElementById('menuItemImageData').value = e.target.result;
+        document.getElementById('menuItemImagePreviewImg').src = e.target.result;
+        document.getElementById('menuItemImagePreview').style.display = 'block';
+    };
+    reader.readAsDataURL(file);
+}
+
 function editMenuItem(itemId) {
     const item = menuItems.find(m => m.id === itemId);
     if (!item) return;
@@ -4750,6 +4762,7 @@ window.editPaymentMethod = editPaymentMethod;
 window.submitPaymentMethod = submitPaymentMethod;
 window.deletePaymentMethod = deletePaymentMethod;
 window.openMenuItemSheet = openMenuItemSheet;
+window.handleMenuItemImageChange = handleMenuItemImageChange;
 window.editMenuItem = editMenuItem;
 window.submitMenuItem = submitMenuItem;
 window.deleteMenuItem = deleteMenuItem;
