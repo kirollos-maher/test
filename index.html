@@ -9,10 +9,10 @@
 <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 <link rel="stylesheet" href="style.css">
-<script src="app.js"></script>
-<script src="analytics.js"></script>
-<script src="alerts.js"></script>
-<script src="whatsapp.js"></script>
+<script src="app.js?v=20260825"></script>
+<script src="analytics.js?v=20260825"></script>
+<script src="alerts.js?v=20260825"></script>
+<script src="whatsapp.js?v=20260825"></script>
 
 <style>
     /* ✅ DORAK Brand */
@@ -282,18 +282,57 @@
     }
 
     /* ✅ WhatsApp Settings */
-    .whatsapp-status-dot {
-        display: inline-block;
-        width: 10px;
-        height: 10px;
-        border-radius: 50%;
-        margin-right: 6px;
+    .whatsapp-option {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        padding: 10px 12px;
+        border-bottom: 1px solid var(--border);
+        cursor: pointer;
+        transition: background 0.2s;
     }
-    .whatsapp-status-dot.enabled {
-        background: var(--green);
+    .whatsapp-option:hover {
+        background: var(--bg-sunken);
     }
-    .whatsapp-status-dot.disabled {
-        background: var(--red);
+    .whatsapp-option:last-child {
+        border-bottom: none;
+    }
+    .whatsapp-option .option-info {
+        flex: 1;
+    }
+    .whatsapp-option .option-title {
+        font-weight: 600;
+        font-size: 13px;
+    }
+    .whatsapp-option .option-desc {
+        font-size: 10px;
+        color: var(--text-dim);
+        margin-top: 2px;
+    }
+    .whatsapp-option input[type="checkbox"] {
+        width: 18px;
+        height: 18px;
+        flex-shrink: 0;
+        cursor: pointer;
+        accent-color: var(--amber);
+    }
+    .whatsapp-status-summary {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        padding: 8px 12px;
+        background: var(--bg-sunken);
+        border-radius: var(--radius-sm);
+        font-size: 11px;
+        color: var(--text-dim);
+        margin-top: 10px;
+    }
+    .whatsapp-status-summary .count {
+        font-weight: 700;
+        color: var(--amber);
+    }
+    .whatsapp-status-summary .warning {
+        color: var(--red);
     }
 </style>
 </head>
