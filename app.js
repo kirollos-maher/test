@@ -381,6 +381,7 @@ function switchBusiness() {
 }
 
 async function tryAutoResume() {
+    if (new URLSearchParams(window.location.search).get('customer') === 'true') return;
     const code = localStorage.getItem('psr_business_code');
     if (!code) return;
     try {
@@ -411,6 +412,8 @@ async function tryAutoResume() {
 // AUTO-ACTIVATE FROM URL
 // ============================================================
 async function tryAutoActivateFromURL() {
+    const params0 = new URLSearchParams(window.location.search);
+    if (params0.get('customer') === 'true') return;
     if (localStorage.getItem('psr_business_code')) return;
     const params = new URLSearchParams(window.location.search);
     const bizCode = params.get('biz');
