@@ -171,6 +171,12 @@ async function init() {
             showError('الخدمة متوقفة حاليًا', 'الطلب عبر QR مش متاح دلوقتي في الصالة دي. تقدر تنادي على الموظف مباشرة.');
             return;
         }
+        const { data: activeSession, error: sessErr } = await supabaseClient.from('sessions').select('id').eq('station_id', station.id).eq('status', 'active').maybeSingle();
+        if (sessErr) { showError('حصل خطأ', 'تعذر التأكد من حالة الجهاز، حاول تاني.'); return; }
+        if (!activeSession) {
+            showError('الجهاز مقفول', 'الجهاز ده مفيش عليه جلسة شغالة دلوقتي، مينفعش تطلب منه. اتأكد إنك ماسح كود الجهاز اللي انت جالس عليه.');
+            return;
+        }
         const { data: items, error: itemsErr } = await supabaseClient.from('menu_items').select('*').eq('business_id', business.id).eq('active', true).order('created_at');
         if (itemsErr) { showError('حصل خطأ', 'تعذر تحميل المنيو، حاول تاني.'); return; }
         menuItems = items || [];
@@ -252,6 +258,13 @@ async function sendOrder() {
     btn.innerHTML = '<i class="fa-solid fa-circle-notch fa-spin"></i> جاري الإرسال…';
     const note = document.getElementById('opNote').value.trim();
     try {
+        const { data: activeSession, error: sessErr } = await supabaseClient.from('sessions').select('id').eq('station_id', station.id).eq('status', 'active').maybeSingle();
+        if (sessErr || !activeSession) {
+            btn.disabled = false;
+            btn.innerHTML = '<i class="fa-solid fa-paper-plane"></i> إرسال الطلب';
+            showToastMsg('الجهاز ده اتقفل، مينفعش تبعت الطلب دلوقتي.');
+            return;
+        }
         const { error } = await supabaseClient.from('qr_orders').insert({
             business_id: business.id,
             station_id: station.id,
