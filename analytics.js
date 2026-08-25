@@ -210,11 +210,11 @@ async function renderAnalytics() {
     if (!body || !business) return;
     body.innerHTML = `<div class="empty"><i class="fa-solid fa-spinner fa-spin"></i>${t('جارِ التحميل...', 'Loading...')}</div>`;
 
-    const { start, end } = getAnalyticsRange();
-    const startIso = start.toISOString();
-    const endIso = end.toISOString();
-
     try {
+        const { start, end } = getAnalyticsRange();
+        const startIso = start.toISOString();
+        const endIso = end.toISOString();
+
         const { sessions, orders, expenses } = await fetchAnalyticsPeriodData(startIso, endIso);
         const a = computeAnalytics(sessions, orders, expenses);
 
