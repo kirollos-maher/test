@@ -93,8 +93,6 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .btn-sm { padding: 8px 14px; font-size: 13px; }
 .btn-danger-sm { background: var(--red); color: #fff; padding: 6px 12px; font-size: 12px; border-radius: var(--radius-sm); border: none; cursor: pointer; }
 .btn-danger-sm:hover { opacity: 0.8; }
-.btn-teal-sm { background: var(--teal); color: #012; padding: 6px 12px; font-size: 12px; border-radius: var(--radius-sm); border: none; cursor: pointer; }
-.btn-teal-sm:hover { opacity: 0.8; }
 .btn-mode-single { background: var(--amber); color: var(--bg); }
 .btn-mode-multi { background: var(--teal); color: var(--bg); }
 .btn-mode-single:hover { box-shadow: 0 6px 24px rgba(255,138,30,0.4); }
