@@ -12,6 +12,14 @@ function formatHoursDuration(totalSeconds) {
     return `${mins} ${t('دقيقة', 'min')}`;
 }
 
+// دالة مساعدة لعرض الساعة بنظام 12 ساعة (صباحاً/مساءً)
+function formatHour12(hour) {
+    const period = hour >= 12 ? t('م', 'PM') : t('ص', 'AM');
+    let h12 = hour % 12;
+    if (h12 === 0) h12 = 12;
+    return `${h12}:00 ${period}`;
+}
+
 let analyticsFilter = 'week';
 
 function setAnalyticsFilter(filter) {
@@ -545,7 +553,7 @@ async function renderAnalytics() {
         html += `<div class="list-row"><div class="row-title">${t('متوسط قيمة الجلسة', 'Avg Session Value')}</div><div class="row-value mono">${money(a.avgSessionValue)}</div></div>`;
         html += `<div class="list-row"><div class="row-title">${t('متوسط مدة الجلسة', 'Avg Session Duration')}</div><div class="row-value mono">${formatHoursDuration(a.avgDurationSeconds)}</div></div>`;
         if (a.busiestHour !== null) {
-            html += `<div class="list-row"><div class="row-title">${t('أكتر وقت زحمة', 'Busiest Hour')}</div><div class="row-value mono">${String(a.busiestHour).padStart(2, '0')}:00</div></div>`;
+            html += `<div class="list-row"><div class="row-title">${t('أكتر وقت زحمة', 'Busiest Hour')}</div><div class="row-value mono">${formatHour12(a.busiestHour)}</div></div>`;
         }
         if (a.bestDay) {
             html += `<div class="list-row"><div class="row-title">${t('أفضل يوم', 'Best Day')}</div><div class="row-value mono">${t(a.bestDay.ar, a.bestDay.en)}</div></div>`;
