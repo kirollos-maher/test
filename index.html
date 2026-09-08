@@ -239,14 +239,6 @@
             <div class="stat-card"><div class="stat-label" data-ar="أجهزة شغالة" data-en="Active Devices">أجهزة شغالة</div><div class="stat-value mono" id="dashActive">0</div></div>
             <div class="stat-card"><div class="stat-label" data-ar="أجهزة متاحة" data-en="Available Devices">أجهزة متاحة</div><div class="stat-value mono" id="dashAvailable">0</div></div>
         </div>
-
-        <!-- ============== AI ANALYTICS SECTION ============== -->
-        <div class="section-title" style="margin-top:20px;">
-            <span data-ar="🤖 تحليلات ذكية" data-en="🤖 AI Insights">🤖 تحليلات ذكية</span>
-        </div>
-        <div id="aiAnalyticsContainer">
-            <div class="empty"><i class="fa-solid fa-spinner fa-spin"></i> <span data-ar="جارِ تحميل التحليلات الذكية..." data-en="Loading AI analytics...">جارِ تحميل التحليلات الذكية...</span></div>
-        </div>
     </div>
 
     <!-- ---------- STATIONS ---------- -->
@@ -300,12 +292,15 @@
 
     <!-- ---------- ANALYTICS ---------- -->
     <div class="view" id="view-analytics">
-        <div class="section-title" data-ar="التحليلات" data-en="Analytics">التحليلات</div>
-        <div class="shift-tabs">
+        <div class="analytics-tabs">
             <button class="analytics-tab" data-filter="today" onclick="setAnalyticsFilter('today')" data-ar="اليوم" data-en="Today">اليوم</button>
             <button class="analytics-tab active" data-filter="week" onclick="setAnalyticsFilter('week')" data-ar="آخر 7 أيام" data-en="Last 7 Days">آخر 7 أيام</button>
             <button class="analytics-tab" data-filter="month" onclick="setAnalyticsFilter('month')" data-ar="آخر 30 يوم" data-en="Last 30 Days">آخر 30 يوم</button>
         </div>
+
+        <div id="aiAnalyticsContainer"></div>
+
+        <div class="section-title" data-ar="التحليلات" data-en="Analytics">التحليلات</div>
         <div id="analyticsBody"></div>
     </div>
 
