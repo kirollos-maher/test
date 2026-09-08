@@ -170,6 +170,128 @@ function computeAnalytics(sessions, orders, expenses) {
     });
     const avgDurationSeconds = durationCount > 0 ? totalDurationSeconds / durationCount : 0;
 
+    // ============================================================
+    // AI ANALYTICS - حسابات ذكاء اصطناعي
+    // ============================================================
+
+    // 1. حساب التوقعات (Forecast) - مبني على متوسط آخر 28 يوم (dailyRevenueMap
+    //    نفسه مبني فعلياً على s.ended_at اللي بيتحسب من نفس دفعة الجلسات المجلوبة
+    //    بحدود nowCorrected() -> نفس مصدر الوقت المستخدم في باقي الموديول، عشان
+    //    نتجنب مشكلة اختلاف الساعة اللي بتحصل في سجل الشيفتات)
+    const sortedDates = Object.keys(dailyRevenueMap).sort();
+    const last28Days = sortedDates.slice(-28);
+    const dailyRevenues = last28Days.map(date => dailyRevenueMap[date] || 0);
+    const avgDailyRevenue = dailyRevenues.length > 0
+        ? dailyRevenues.reduce((a, b) => a + b, 0) / dailyRevenues.length
+        : 0;
+
+    // حساب ثقة التوقع (Standard Error)
+    const variance = dailyRevenues.reduce((a, b) => a + Math.pow(b - avgDailyRevenue, 2), 0) / (dailyRevenues.length || 1);
+    const stdDev = Math.sqrt(variance);
+    const confidenceInterval = stdDev / Math.sqrt(dailyRevenues.length || 1);
+    const confidence = avgDailyRevenue > 0
+        ? Math.max(60, Math.min(95, 95 - (confidenceInterval / avgDailyRevenue * 100) * 2))
+        : 60;
+
+    // 5. تحليل الاتجاه (Trend Detection)
+    function detectTrend(data) {
+        if (data.length < 3) return 'stable';
+        const firstHalf = data.slice(0, Math.floor(data.length / 2));
+        const secondHalf = data.slice(Math.floor(data.length / 2));
+        const avgFirst = firstHalf.reduce((a, b) => a + b, 0) / firstHalf.length;
+        const avgSecond = secondHalf.reduce((a, b) => a + b, 0) / secondHalf.length;
+        if (avgFirst === 0) return 'stable';
+        const diff = ((avgSecond - avgFirst) / avgFirst) * 100;
+        if (diff > 10) return 'increasing';
+        if (diff < -10) return 'decreasing';
+        return 'stable';
+    }
+
+    const forecast = {
+        tomorrow: Math.round(avgDailyRevenue),
+        week: Math.round(avgDailyRevenue * 7),
+        confidence: Math.round(confidence),
+        trend: dailyRevenues.length >= 7 ? detectTrend(dailyRevenues.slice(-7)) : 'stable'
+    };
+
+    // 2. كشف الشذوذ (Anomaly Detection) - جلسات طول مدتها شاذ (Z-score / معيار
+    //    الانحراف عن المتوسط) بناءً على started_at/ended_at الفعليين للجلسة
+    const durations = sessions.map(s => {
+        if (s.started_at && s.ended_at) {
+            return (new Date(s.ended_at) - new Date(s.started_at)) / 1000;
+        }
+        return 0;
+    }).filter(d => d > 0);
+
+    const anomalies = [];
+    if (durations.length > 3) {
+        const meanDuration = durations.reduce((a, b) => a + b, 0) / durations.length;
+        const stdDuration = Math.sqrt(durations.reduce((a, b) => a + Math.pow(b - meanDuration, 2), 0) / durations.length);
+        const threshold = meanDuration + 2 * stdDuration;
+
+        sessions.forEach(s => {
+            if (s.started_at && s.ended_at) {
+                const duration = (new Date(s.ended_at) - new Date(s.started_at)) / 1000;
+                if (duration > threshold && duration > 0) {
+                    const station = stations.find(st => st.id === s.station_id);
+                    const stationName = station ? (station.name || t('جهاز', 'Device') + ' ' + station.number) : t('جهاز محذوف', 'Deleted device');
+                    anomalies.push({
+                        station: stationName,
+                        duration: duration,
+                        threshold: threshold,
+                        amount: s.amount,
+                        type: 'long_session'
+                    });
+                }
+            }
+        });
+    }
+
+    // 3. أفضل أيام الأسبوع (Day Ranking)
+    const dayRanking = [];
+    const dayNames = currentLang === 'ar' ? dayNamesAr : dayNamesEn;
+    for (let i = 0; i < 7; i++) {
+        if (dayRevenue[i] > 0) {
+            dayRanking.push({
+                day: i,
+                name: dayNames[i],
+                revenue: Math.round(dayRevenue[i] * 100) / 100
+            });
+        }
+    }
+    dayRanking.sort((a, b) => b.revenue - a.revenue);
+
+    // 4. العوامل المؤثرة على الإيرادات (Feature Importance) - معامل ارتباط بيرسون
+    const features = {
+        'عدد الأجهزة الشغالة': {
+            values: sessions.map(s => sessions.filter(ss => ss.station_id === s.station_id).length),
+            label: t('عدد الأجهزة الشغالة', 'Active Devices')
+        },
+        'عدد الموظفين': {
+            values: sessions.map(() => (typeof employees !== 'undefined' && employees) ? employees.filter(e => e.active !== false).length : 0),
+            label: t('عدد الموظفين', 'Staff Count')
+        },
+        'اليوم من الأسبوع': {
+            values: sessions.map(s => s.ended_at ? new Date(s.ended_at).getDay() : 0),
+            label: t('اليوم من الأسبوع', 'Day of Week')
+        }
+    };
+
+    const target = sessions.map(s => Number(s.amount) || 0);
+    const featureImportance = {};
+    Object.keys(features).forEach(key => {
+        const correlation = pearsonCorrelation(features[key].values, target);
+        let level = 'ضعيف';
+        if (Math.abs(correlation) >= 0.7) level = 'مرتفع جداً';
+        else if (Math.abs(correlation) >= 0.4) level = 'عالٍ';
+        else if (Math.abs(correlation) >= 0.2) level = 'متوسط';
+        featureImportance[key] = {
+            correlation: Math.round(correlation * 100) / 100,
+            level: level,
+            label: features[key].label
+        };
+    });
+
     return {
         totalRevenue, hoursRevenue, itemsRevenue, totalExpenses, netProfit,
         sessionsCount: sessions.length,
@@ -179,8 +301,32 @@ function computeAnalytics(sessions, orders, expenses) {
         busiestHour, busiestHourCount,
         bestDay: bestDay !== null ? { ar: dayNamesAr[bestDay], en: dayNamesEn[bestDay], revenue: bestDayRevenue } : null,
         avgDurationSeconds,
-        dailyRevenueMap
+        dailyRevenueMap,
+        // AI Analytics
+        ai: {
+            forecast,
+            anomalies,
+            dayRanking,
+            featureImportance,
+            trend: detectTrend(dailyRevenues.slice(-7))
+        }
     };
+}
+
+// ============================================================
+// دالة معامل الارتباط (Pearson Correlation)
+// ============================================================
+function pearsonCorrelation(x, y) {
+    const n = x.length;
+    if (n === 0) return 0;
+    const sumX = x.reduce((a, b) => a + b, 0);
+    const sumY = y.reduce((a, b) => a + b, 0);
+    const sumXY = x.reduce((a, b, i) => a + b * y[i], 0);
+    const sumX2 = x.reduce((a, b) => a + b * b, 0);
+    const sumY2 = y.reduce((a, b) => a + b * b, 0);
+    const numerator = n * sumXY - sumX * sumY;
+    const denominator = Math.sqrt((n * sumX2 - sumX * sumX) * (n * sumY2 - sumY * sumY));
+    return denominator === 0 ? 0 : numerator / denominator;
 }
 
 function buildDailyTrendHtml(dailyRevenueMap, days) {
@@ -205,6 +351,99 @@ function buildDailyTrendHtml(dailyRevenueMap, days) {
     return html;
 }
 
+// ============================================================
+// دالة عرض التحليلات الذكية (AI Analytics)
+// ============================================================
+function renderAIAnalytics(aiData) {
+    const container = document.getElementById('aiAnalyticsContainer');
+    if (!container) return;
+
+    if (!aiData) {
+        container.innerHTML = `<div class="empty"><i class="fa-solid fa-spinner fa-spin"></i> ${t('جارِ تحميل التحليلات الذكية...', 'Loading AI analytics...')}</div>`;
+        return;
+    }
+
+    const { forecast, anomalies, dayRanking, featureImportance, trend } = aiData;
+
+    const trendEmoji = trend === 'increasing' ? '📈' : (trend === 'decreasing' ? '📉' : '➖');
+    const trendText = trend === 'increasing' ? t('صاعد', 'Upward') : (trend === 'decreasing' ? t('هابط', 'Downward') : t('مستقر', 'Stable'));
+
+    let html = '';
+
+    // === توقعات الأيام القادمة ===
+    html += `
+        <div class="ai-analytics-grid" style="margin-bottom:10px;">
+            <div class="stat-card accent">
+                <div class="stat-label">📊 ${t('متوقع غداً', 'Tomorrow Forecast')}</div>
+                <div class="stat-value mono">${money(forecast.tomorrow)} ${t('ج', 'EGP')}</div>
+                <div class="ai-confidence">${t('ثقة', 'Confidence')}: ${forecast.confidence}%</div>
+            </div>
+            <div class="stat-card accent">
+                <div class="stat-label">📅 ${t('متوقع الأسبوع', 'Week Forecast')}</div>
+                <div class="stat-value mono">${money(forecast.week)} ${t('ج', 'EGP')}</div>
+                <div class="ai-confidence">${t('اتجاه', 'Trend')}: ${trendEmoji} ${trendText}</div>
+            </div>
+        </div>
+        <div style="font-size:11px;color:var(--text-faint);padding:0 4px 10px;text-align:center;">
+            ${t('التوقعات مبنية على متوسط آخر 28 يوم', 'Forecast based on last 28 days average')}
+        </div>
+    `;
+
+    // === اكتشافات غير طبيعية ===
+    if (anomalies && anomalies.length > 0) {
+        html += `<div class="section-title" style="margin-top:4px;">⚠️ ${t('اكتشافات غير طبيعية', 'Anomalies Detected')}</div>`;
+        anomalies.forEach(a => {
+            const durationFormatted = formatHoursDuration(a.duration);
+            html += `
+                <div class="ai-anomaly-item">
+                    <div>
+                        <span class="anomaly-icon">🔴</span>
+                        <span class="anomaly-text">${t('جلسة طويلة جداً', 'Very long session')} (${durationFormatted}) ${t('على', 'on')} ${escapeHtml(a.station)}</span>
+                    </div>
+                    <span class="anomaly-badge">${money(a.amount)} ${t('ج', 'EGP')}</span>
+                </div>
+            `;
+        });
+    }
+
+    // === أفضل أيام الأسبوع ===
+    if (dayRanking && dayRanking.length > 0) {
+        html += `<div class="section-title" style="margin-top:8px;">📅 ${t('أفضل أيام الأسبوع', 'Best Days of Week')}</div>`;
+        html += `<div class="ai-day-ranking">`;
+        const maxDayRevenue = dayRanking[0]?.revenue || 1;
+        dayRanking.slice(0, 5).forEach(d => {
+            const pct = Math.max(5, (d.revenue / maxDayRevenue) * 100);
+            html += `
+                <div class="ai-day-item">
+                    <span class="day-name">${d.name}</span>
+                    <div class="day-bar"><div class="bar-fill" style="width:${pct}%;"></div></div>
+                    <span class="day-value">${money(d.revenue)} ${t('ج', 'EGP')}</span>
+                </div>
+            `;
+        });
+        html += `</div>`;
+    }
+
+    // === العوامل المؤثرة على الإيرادات ===
+    if (featureImportance && Object.keys(featureImportance).length > 0) {
+        html += `<div class="section-title" style="margin-top:8px;">📊 ${t('العوامل المؤثرة على الإيرادات', 'Revenue Drivers')}</div>`;
+        const sortedFeatures = Object.entries(featureImportance).sort((a, b) => b[1].correlation - a[1].correlation);
+        sortedFeatures.forEach(([key, value]) => {
+            const levelClass = value.level === 'مرتفع جداً' ? 'very-high' :
+                              (value.level === 'عالٍ' ? 'high' :
+                              (value.level === 'متوسط' ? 'medium' : 'low'));
+            html += `
+                <div class="ai-feature-item">
+                    <span class="feature-name">${value.label || key}</span>
+                    <span class="feature-level ${levelClass}">${value.level}</span>
+                </div>
+            `;
+        });
+    }
+
+    container.innerHTML = html;
+}
+
 async function renderAnalytics() {
     const body = document.getElementById('analyticsBody');
     if (!body || !business) return;
@@ -217,6 +456,11 @@ async function renderAnalytics() {
 
         const { sessions, orders, expenses } = await fetchAnalyticsPeriodData(startIso, endIso);
         const a = computeAnalytics(sessions, orders, expenses);
+
+        // عرض التحليلات الذكية في لوحة التحكم
+        if (a.ai) {
+            renderAIAnalytics(a.ai);
+        }
 
         const forecastEnd = new Date(nowCorrected());
         const forecastStart = new Date(forecastEnd);
@@ -323,6 +567,52 @@ async function renderAnalytics() {
     }
 }
 
+// ============================================================
+// دالة تحديث التحليلات الذكية بشكل دوري (تعمل في الخلفية طول ما
+// الداشبورد مفتوح، بنفس نطاق الفلتر الحالي المختار في صفحة التحليلات)
+// ============================================================
+let aiAnalyticsInterval = null;
+
+async function updateAIAnalyticsOnce() {
+    if (!business) return;
+    try {
+        const { start, end } = getAnalyticsRange();
+        const { sessions, orders, expenses } = await fetchAnalyticsPeriodData(
+            start.toISOString(),
+            end.toISOString()
+        );
+        const a = computeAnalytics(sessions, orders, expenses);
+        if (a.ai) {
+            renderAIAnalytics(a.ai);
+        }
+    } catch (e) {
+        console.warn('AI analytics update failed:', e);
+    }
+}
+
+function startAIAnalyticsUpdater() {
+    if (aiAnalyticsInterval) clearInterval(aiAnalyticsInterval);
+    updateAIAnalyticsOnce();
+    aiAnalyticsInterval = setInterval(() => {
+        const dashView = document.getElementById('view-dashboard');
+        if (business && dashView && dashView.classList.contains('active')) {
+            updateAIAnalyticsOnce();
+        }
+    }, 60000); // تحديث كل دقيقة
+}
+
+// ننتظر لحد ما بيانات النشاط (business) تتحمل قبل ما نبدأ التحديث الدوري
+function initAIAnalyticsAutoStart() {
+    if (typeof business !== 'undefined' && business) {
+        startAIAnalyticsUpdater();
+    } else {
+        setTimeout(initAIAnalyticsAutoStart, 500);
+    }
+}
+window.addEventListener('load', initAIAnalyticsAutoStart);
+
 // تصدير الدوال
 window.setAnalyticsFilter = setAnalyticsFilter;
+window.renderAIAnalytics = renderAIAnalytics;
+window.startAIAnalyticsUpdater = startAIAnalyticsUpdater;
 window.renderAnalytics = renderAnalytics;
