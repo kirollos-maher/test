@@ -372,6 +372,203 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
     background: var(--amber-dim);
 }
 
+/* ---------- analytics filter tabs (نفس شكل شيفت التابس) ---------- */
+.analytics-tab {
+    background: var(--bg-sunken);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    color: var(--text-dim);
+    padding: 8px 16px;
+    font-size: 12px;
+    font-weight: 700;
+    cursor: pointer;
+    transition: all 0.2s var(--ease);
+    flex: 1;
+    text-align: center;
+    min-width: 60px;
+}
+.analytics-tab:hover {
+    border-color: var(--border-strong);
+    color: var(--text);
+}
+.analytics-tab.active {
+    border-color: var(--amber);
+    color: var(--amber);
+    background: var(--amber-dim);
+}
+
+/* ---------- daily revenue mini bar chart ---------- */
+.mini-bars {
+    display: flex;
+    align-items: flex-end;
+    gap: 6px;
+    height: 90px;
+    padding: 10px 4px 0;
+}
+.mini-bar-col {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: flex-end;
+    height: 100%;
+    gap: 4px;
+}
+.mini-bar {
+    width: 100%;
+    max-width: 26px;
+    background: var(--amber);
+    border-radius: 4px 4px 0 0;
+    min-height: 3px;
+}
+.mini-bar-label {
+    font-size: 9.5px;
+    color: var(--text-faint);
+    font-family: var(--font-mono);
+    white-space: nowrap;
+}
+
+/* ---------- ranking badge (top selling items / device usage) ---------- */
+.rank-badge {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 22px;
+    height: 22px;
+    border-radius: 50%;
+    background: var(--bg-sunken);
+    border: 1px solid var(--border);
+    color: var(--text-dim);
+    font-size: 11px;
+    font-weight: 700;
+    margin-left: 10px;
+    flex-shrink: 0;
+}
+
+/* ---------- AI Analytics widgets ---------- */
+.ai-analytics-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 10px;
+    margin-top: 8px;
+}
+.ai-analytics-grid .stat-card {
+    padding: 12px;
+}
+.ai-analytics-grid .stat-card .stat-value {
+    font-size: 20px;
+}
+.ai-analytics-grid .stat-card .stat-label {
+    font-size: 10px;
+}
+.ai-confidence {
+    font-size: 11px;
+    color: var(--text-dim);
+    margin-top: 4px;
+    text-align: center;
+}
+.ai-anomaly-item {
+    background: var(--bg-sunken);
+    border-radius: var(--radius-sm);
+    padding: 8px 12px;
+    margin-bottom: 6px;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    border-right: 3px solid var(--red);
+}
+.ai-anomaly-item .anomaly-icon {
+    color: var(--red);
+    margin-left: 8px;
+}
+.ai-anomaly-item .anomaly-text {
+    font-size: 13px;
+    flex: 1;
+}
+.ai-anomaly-item .anomaly-badge {
+    font-size: 10px;
+    background: var(--red-dim);
+    color: #ff8f8f;
+    padding: 2px 10px;
+    border-radius: 12px;
+    flex-shrink: 0;
+}
+.ai-day-ranking {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+.ai-day-item {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 8px;
+    background: var(--bg-sunken);
+    border-radius: var(--radius-sm);
+}
+.ai-day-item .day-name {
+    font-weight: 700;
+    font-size: 13px;
+    min-width: 50px;
+}
+.ai-day-item .day-bar {
+    flex: 1;
+    height: 6px;
+    background: var(--border);
+    border-radius: 3px;
+    overflow: hidden;
+}
+.ai-day-item .day-bar .bar-fill {
+    height: 100%;
+    background: var(--amber);
+    border-radius: 3px;
+    transition: width 0.5s ease;
+}
+.ai-day-item .day-value {
+    font-family: var(--font-mono);
+    font-size: 12px;
+    font-weight: 700;
+    color: var(--amber);
+    min-width: 60px;
+    text-align: left;
+}
+.ai-feature-item {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 6px 0;
+    border-bottom: 1px solid var(--border);
+}
+.ai-feature-item:last-child {
+    border-bottom: none;
+}
+.ai-feature-item .feature-name {
+    font-size: 13px;
+    font-weight: 600;
+}
+.ai-feature-item .feature-level {
+    font-size: 12px;
+    font-weight: 700;
+    padding: 2px 12px;
+    border-radius: 12px;
+}
+.ai-feature-item .feature-level.high {
+    background: var(--amber-dim);
+    color: var(--amber);
+}
+.ai-feature-item .feature-level.very-high {
+    background: var(--teal-dim);
+    color: var(--teal);
+}
+.ai-feature-item .feature-level.medium {
+    background: var(--purple-dim);
+    color: var(--purple);
+}
+.ai-feature-item .feature-level.low {
+    background: var(--red-dim);
+    color: #ff8f8f;
+}
+
 /* ---------- transfer target selection ---------- */
 .transfer-targets {
     display: grid;
@@ -720,6 +917,11 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
         padding: 6px 8px;
         min-width: 40px;
     }
+    .analytics-tab {
+        font-size: 10px;
+        padding: 6px 8px;
+        min-width: 40px;
+    }
     
     .list-row {
         padding: 10px 2px;
@@ -772,6 +974,41 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 }
 
 /* ✅ تحسينات للشاشات المتوسطة (تابلت) */
+/* ✅ Responsive adjustments for AI Analytics */
+@media (max-width: 480px) {
+    .ai-analytics-grid {
+        grid-template-columns: 1fr 1fr;
+        gap: 6px;
+    }
+    .ai-analytics-grid .stat-card {
+        padding: 8px;
+    }
+    .ai-analytics-grid .stat-card .stat-value {
+        font-size: 16px;
+    }
+    .ai-analytics-grid .stat-card .stat-label {
+        font-size: 9px;
+    }
+    .ai-day-item .day-name {
+        font-size: 11px;
+        min-width: 40px;
+    }
+    .ai-day-item .day-value {
+        font-size: 10px;
+        min-width: 50px;
+    }
+    .ai-feature-item .feature-name {
+        font-size: 11px;
+    }
+    .ai-feature-item .feature-level {
+        font-size: 10px;
+        padding: 1px 8px;
+    }
+    .ai-anomaly-item .anomaly-text {
+        font-size: 11px;
+    }
+}
+
 @media (min-width: 481px) and (max-width: 768px) {
     .stat-grid {
         grid-template-columns: repeat(2, 1fr);
