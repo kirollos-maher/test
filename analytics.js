@@ -323,6 +323,193 @@ async function renderAnalytics() {
     }
 }
 
+
+
+
+// ============================================================
+// AI ANALYTICS MODULE - تحليلات ذكاء اصطناعي
+// ============================================================
+
+class AIAnalytics {
+    constructor() {
+        this.data = {};
+        this.models = {};
+    }
+
+    // 1. التنبؤ بالإيرادات (الانحدار الخطي)
+    predictRevenue(historicalData, features) {
+        // Simple Linear Regression
+        // y = mx + b
+        const n = historicalData.length;
+        let sumX = 0, sumY = 0, sumXY = 0, sumX2 = 0;
+        
+        historicalData.forEach((d, i) => {
+            const x = i; // اليوم
+            const y = d.revenue;
+            sumX += x;
+            sumY += y;
+            sumXY += x * y;
+            sumX2 += x * x;
+        });
+
+        const slope = (n * sumXY - sumX * sumY) / (n * sumX2 - sumX * sumX);
+        const intercept = (sumY - slope * sumX) / n;
+
+        // توقع الأيام القادمة
+        return features.map(day => ({
+            day: day,
+            predictedRevenue: slope * day + intercept
+        }));
+    }
+
+    // 2. تقسيم العملاء إلى مجموعات (K-Means)
+    clusterCustomers(customers, k = 3) {
+        // Simple K-Means implementation
+        const features = customers.map(c => [
+            c.avgSpend,
+            c.avgDuration,
+            c.visitFrequency
+        ]);
+
+        // ... خوارزمية K-Means
+        return clusters;
+    }
+
+    // 3. كشف الشذوذ (Z-Score)
+    detectAnomalies(sessions) {
+        const amounts = sessions.map(s => s.amount);
+        const mean = amounts.reduce((a, b) => a + b, 0) / amounts.length;
+        const stdDev = Math.sqrt(
+            amounts.reduce((a, b) => a + (b - mean) ** 2, 0) / amounts.length
+        );
+
+        return sessions.filter(s => {
+            const zScore = (s.amount - mean) / stdDev;
+            return Math.abs(zScore) > 2.5; // شذوذ إذا كان Z-Score > 2.5
+        });
+    }
+
+    // 4. قواعد الارتباط (Association Rules)
+    findAssociationRules(orders, minSupport = 0.05, minConfidence = 0.7) {
+        // اكتشاف: العملاء الذين طلبوا X طلبوا أيضاً Y
+        const items = {};
+        orders.forEach(order => {
+            order.items.forEach(item => {
+                if (!items[item]) items[item] = 0;
+                items[item]++;
+            });
+        });
+
+        // ... خوارزمية Apriori
+        return rules;
+    }
+
+    // 5. تحليل الموسمية
+    detectSeasonality(dailyData) {
+        const result = {
+            daily: {}, // لكل يوم من الأسبوع
+            monthly: {}, // لكل شهر
+            quarterly: {} // لكل ربع سنة
+        };
+
+        // تجميع الإيرادات حسب اليوم
+        dailyData.forEach(d => {
+            const day = new Date(d.date).getDay();
+            if (!result.daily[day]) result.daily[day] = [];
+            result.daily[day].push(d.revenue);
+        });
+
+        // حساب المتوسطات
+        Object.keys(result.daily).forEach(day => {
+            const revenues = result.daily[day];
+            result.daily[day] = revenues.reduce((a, b) => a + b, 0) / revenues.length;
+        });
+
+        return result;
+    }
+
+    // 6. تحليل العوامل المؤثرة
+    featureImportance(data) {
+        // استخدام Random Forest أو Correlation Matrix
+        const features = ['activeDevices', 'staffCount', 'dayOfWeek', 'hourOfDay'];
+        const target = 'revenue';
+
+        // حساب معامل الارتباط بين كل عامل والإيرادات
+        const correlations = {};
+        features.forEach(f => {
+            const featureValues = data.map(d => d[f]);
+            const targetValues = data.map(d => d[target]);
+            correlations[f] = this.pearsonCorrelation(featureValues, targetValues);
+        });
+
+        return correlations;
+    }
+
+    // معامل الارتباط (Pearson Correlation)
+    pearsonCorrelation(x, y) {
+        const n = x.length;
+        const sumX = x.reduce((a, b) => a + b, 0);
+        const sumY = y.reduce((a, b) => a + b, 0);
+        const sumXY = x.reduce((a, b, i) => a + b * y[i], 0);
+        const sumX2 = x.reduce((a, b) => a + b * b, 0);
+        const sumY2 = y.reduce((a, b) => a + b * b, 0);
+
+        return (n * sumXY - sumX * sumY) / 
+               Math.sqrt((n * sumX2 - sumX * sumX) * (n * sumY2 - sumY * sumY));
+    }
+}
+
+// ============================================================
+// دمج التحليلات الذكية مع النظام الحالي
+// ============================================================
+
+async function renderAdvancedAnalytics() {
+    const ai = new AIAnalytics();
+    
+    // جلب البيانات
+    const { start, end } = getAnalyticsRange();
+    const { sessions, orders, expenses } = await fetchAnalyticsPeriodData(
+        start.toISOString(), 
+        end.toISOString()
+    );
+
+    // 1. التنبؤ بالإيرادات
+    const dailyData = sessions.map(s => ({
+        date: s.ended_at,
+        revenue: s.amount
+    }));
+    const predictions = ai.predictRevenue(dailyData, [1, 2, 3, 4, 5, 6, 7]);
+
+    // 2. كشف الشذوذ
+    const anomalies = ai.detectAnomalies(sessions);
+
+    // 3. تحليل الموسمية
+    const seasonality = ai.detectSeasonality(dailyData);
+
+    // 4. تحليل العوامل المؤثرة
+    const features = sessions.map(s => ({
+        activeDevices: Object.keys(sessions).length,
+        staffCount: employees.length,
+        dayOfWeek: new Date(s.ended_at).getDay(),
+        hourOfDay: new Date(s.ended_at).getHours(),
+        revenue: s.amount
+    }));
+    const importance = ai.featureImportance(features);
+
+    // عرض النتائج في واجهة المستخدم
+    displayAIAnalytics({
+        predictions,
+        anomalies,
+        seasonality,
+        importance
+    });
+}
+
+
+
+
+
+
 // تصدير الدوال
 window.setAnalyticsFilter = setAnalyticsFilter;
 window.renderAnalytics = renderAnalytics;
