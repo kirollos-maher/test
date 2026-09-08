@@ -183,15 +183,17 @@ function navigateTo(viewId) {
         if (viewId === 'view-settings' && !perms.settings) viewId = 'view-dashboard';
         if (viewId === 'view-shift' && !perms.shift) viewId = 'view-dashboard';
         if (viewId === 'view-stations' && !perms.stations) viewId = 'view-dashboard';
+        // ✅ التحليلات مالية/حساسة، مقصورة على المالك فقط حالياً (زي الإعدادات)
+        if (viewId === 'view-analytics') viewId = 'view-dashboard';
     }
     document.querySelectorAll('.view').forEach(v => v.classList.remove('active'));
     document.getElementById(viewId).classList.add('active');
     document.querySelectorAll('.nav-btn').forEach(b => b.classList.toggle('active', b.dataset.view === viewId));
     if (viewId === 'view-dashboard') renderDashboard();
     if (viewId === 'view-shift') renderShiftView();
-    if (viewId === 'view-analytics' && typeof renderAnalytics === 'function') renderAnalytics();
     if (viewId === 'view-settings') { renderSettings(); renderSettingsStations(); renderSettingsPaymentMethods(); }
     if (viewId === 'view-stations') refreshStationOrdersCache().then(updateStationOrdersSummaryDOM);
+    if (viewId === 'view-analytics' && typeof renderAnalytics === 'function') renderAnalytics();
 }
 function openSheet(id) { document.getElementById(id).classList.add('show'); }
 function closeSheet(id) {
@@ -215,10 +217,12 @@ function applyPermissions() {
     const navSettings = document.querySelector('.bottom-nav .nav-btn[data-view="view-settings"]');
     const navShift = document.querySelector('.bottom-nav .nav-btn[data-view="view-shift"]');
     const navStations = document.querySelector('.bottom-nav .nav-btn[data-view="view-stations"]');
+    const navAnalytics = document.querySelector('.bottom-nav .nav-btn[data-view="view-analytics"]');
     const fab = document.getElementById('fabAddExpense');
     if (navSettings) navSettings.style.display = (isOwner || perms.settings) ? 'flex' : 'none';
     if (navShift) navShift.style.display = (isOwner || perms.shift) ? 'flex' : 'none';
     if (navStations) navStations.style.display = (isOwner || perms.stations) ? 'flex' : 'none';
+    if (navAnalytics) navAnalytics.style.display = isOwner ? 'flex' : 'none';
     if (fab) fab.style.display = (isOwner || perms.shift) ? 'flex' : 'none';
 }
 
