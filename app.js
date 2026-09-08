@@ -184,7 +184,6 @@ function navigateTo(viewId) {
         if (viewId === 'view-settings' && !perms.settings) viewId = 'view-dashboard';
         if (viewId === 'view-shift' && !perms.shift) viewId = 'view-dashboard';
         if (viewId === 'view-stations' && !perms.stations) viewId = 'view-dashboard';
-        if (viewId === 'view-analytics' && !perms.analytics) viewId = 'view-dashboard';
     }
     document.querySelectorAll('.view').forEach(v => v.classList.remove('active'));
     document.getElementById(viewId).classList.add('active');
@@ -193,7 +192,6 @@ function navigateTo(viewId) {
     if (viewId === 'view-shift') renderShiftView();
     if (viewId === 'view-settings') { renderSettings(); renderSettingsStations(); renderSettingsPaymentMethods(); }
     if (viewId === 'view-stations') refreshStationOrdersCache().then(updateStationOrdersSummaryDOM);
-    if (viewId === 'view-analytics' && typeof renderAnalytics === 'function') renderAnalytics();
 }
 function openSheet(id) { document.getElementById(id).classList.add('show'); }
 function closeSheet(id) {
@@ -217,15 +215,11 @@ function applyPermissions() {
     const navSettings = document.querySelector('.bottom-nav .nav-btn[data-view="view-settings"]');
     const navShift = document.querySelector('.bottom-nav .nav-btn[data-view="view-shift"]');
     const navStations = document.querySelector('.bottom-nav .nav-btn[data-view="view-stations"]');
-    const navAnalytics = document.querySelector('.bottom-nav .nav-btn[data-view="view-analytics"]');
     const fab = document.getElementById('fabAddExpense');
-    const fabAnalytics = document.getElementById('fabAnalytics');
     if (navSettings) navSettings.style.display = (isOwner || perms.settings) ? 'flex' : 'none';
     if (navShift) navShift.style.display = (isOwner || perms.shift) ? 'flex' : 'none';
     if (navStations) navStations.style.display = (isOwner || perms.stations) ? 'flex' : 'none';
-    if (navAnalytics) navAnalytics.style.display = (isOwner || perms.analytics) ? 'flex' : 'none';
     if (fab) fab.style.display = (isOwner || perms.shift) ? 'flex' : 'none';
-    if (fabAnalytics) fabAnalytics.style.display = (isOwner || perms.analytics) ? 'flex' : 'none';
 }
 
 // ============================================================
@@ -345,7 +339,7 @@ async function handleUnlock() {
     if (!pin) { errEl.textContent = t('اكتب الـ PIN.', 'Enter the PIN.'); return; }
 
     if (pin === business.owner_pin) {
-        currentUser = { type: 'owner', name: t('المالك', 'Owner'), permissions: { stations: true, inventory: true, shift: true, settings: true, analytics: true } };
+        currentUser = { type: 'owner', name: t('المالك', 'Owner'), permissions: { stations: true, inventory: true, shift: true, settings: true } };
         document.getElementById('lockPinInput').value = '';
         enterMainApp();
         return;
@@ -4613,8 +4607,7 @@ async function submitEmployee() {
     const permissions = {
         stations: document.getElementById('permStations').checked,
         shift: document.getElementById('permShift').checked,
-        settings: document.getElementById('permSettings').checked,
-        analytics: document.getElementById('permAnalytics') ? document.getElementById('permAnalytics').checked : false
+        settings: document.getElementById('permSettings').checked
     };
     const { data, error } = await supabaseClient.from('employees').insert({ business_id: business.id, name, pin, permissions }).select();
     if (error || !data || data.length === 0) {
