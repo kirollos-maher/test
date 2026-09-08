@@ -852,5 +852,71 @@
     </div>
 </div>
 
+
+<!-- قسم التحليلات الذكية -->
+<div id="ai-analytics">
+    <div class="section-title">
+        🤖 التحليلات الذكية
+        <span class="badge badge-teal">Beta</span>
+    </div>
+
+    <!-- التنبؤات -->
+    <div class="panel">
+        <div class="panel-title">🔮 توقعات الأيام القادمة</div>
+        <div class="forecast-chart" id="forecastChart"></div>
+        <div class="forecast-details">
+            <div class="stat-card">
+                <div class="stat-label">متوقع غداً</div>
+                <div class="stat-value" id="forecastTomorrow">850 ج</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-label">متوقع الأسبوع</div>
+                <div class="stat-value" id="forecastWeek">5,950 ج</div>
+            </div>
+        </div>
+    </div>
+
+    <!-- الشذوذ -->
+    <div class="panel">
+        <div class="panel-title">⚠️ اكتشافات غير طبيعية</div>
+        <div id="anomaliesList">
+            <div class="list-row">
+                <span>🔴 جلسة طويلة جداً (4 ساعات) على جهاز 3</span>
+                <span class="badge badge-red">شاذ</span>
+            </div>
+        </div>
+    </div>
+
+    <!-- الموسمية -->
+    <div class="panel">
+        <div class="panel-title">📅 أفضل أيام الأسبوع</div>
+        <div class="day-ranking" id="dayRanking">
+            <div class="day-item"><span>الجمعة</span><span class="bar" style="width:100%">1,200 ج</span></div>
+            <div class="day-item"><span>السبت</span><span class="bar" style="width:85%">1,020 ج</span></div>
+            <div class="day-item"><span>الخميس</span><span class="bar" style="width:75%">900 ج</span></div>
+        </div>
+    </div>
+
+    <!-- العوامل المؤثرة -->
+    <div class="panel">
+        <div class="panel-title">📊 العوامل المؤثرة على الإيرادات</div>
+        <div id="featureImportance">
+            <div class="feature-item">
+                <span>عدد الأجهزة الشغالة</span>
+                <span class="importance" style="width:78%">عالٍ</span>
+            </div>
+            <div class="feature-item">
+                <span>عدد الموظفين</span>
+                <span class="importance" style="width:45%">متوسط</span>
+            </div>
+            <div class="feature-item">
+                <span>اليوم من الأسبوع</span>
+                <span class="importance" style="width:92%">مرتفع جداً</span>
+            </div>
+        </div>
+    </div>
+</div>
+
+
 </body>
 </html>
