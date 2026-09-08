@@ -114,7 +114,7 @@ let menuItems = [];
 let employees = [];
 let paymentMethods = [];
 let currentShift = null;
-let currentShiftDetailsCtx = null; // { shift, totals, isCurrent } — بيانات آخر شيفت اتفتحت تفاصيله، مستخدمة في زرار طباعة تقرير الشيفت
+let lastViewedShiftPrintData = null;
 let currentUser = null;
 let realtimeChannel = null;
 let tickInterval = null;
@@ -3423,15 +3423,319 @@ function printReceipt() {
             </div>
         `;
         
-        openPrintWindow(receiptContent, t('إيصال', 'Receipt'));
+        const printWindow = window.open('', '_blank', 'width=400,height=600');
+        if (!printWindow) {
+            showToast(t('الرجاء السماح للنوافذ المنبثقة', 'Please allow popups'), 'error');
+            return;
+        }
+        
+        printWindow.document.write(`
+            <!DOCTYPE html>
+            <html>
+            <head>
+                <title>${t('إيصال', 'Receipt')}</title>
+                <meta charset="UTF-8">
+                <style>
+                    @page { margin: 10px; size: auto; }
+                    body { font-family: 'Cairo', Arial, sans-serif; margin: 0; padding: 0; background: #fff; }
+                    @media print {
+                        body { background: #fff; }
+                        .no-print { display: none; }
+                    }
+                </style>
+            </head>
+            <body>
+                ${receiptContent}
+                <div style="text-align:center;margin-top:12px;" class="no-print">
+                    <button onclick="window.print()" style="padding:10px 30px;background:#ff8a1e;color:#fff;border:none;border-radius:8px;font-size:16px;cursor:pointer;">
+                        🖨️ ${t('طباعة', 'Print')}
+                    </button>
+                    <button onclick="window.close()" style="padding:10px 30px;background:#666;color:#fff;border:none;border-radius:8px;font-size:16px;cursor:pointer;margin-right:8px;">
+                        ✕ ${t('إغلاق', 'Close')}
+                    </button>
+                </div>
+                <script>
+                    setTimeout(() => { window.print(); }, 500);
+                <\/script>
+            </body>
+            </html>
+        `);
+        printWindow.document.close();
     });
 }
 
 // ============================================================
-// ✅ دالة مشتركة لفتح نافذة الطباعة — مستخدمة لإيصال الجهاز الفردي
-// ولتقرير الشيفت الإجمالي عشان مانكررش نفس الكود
+// ✅ طباعة وصل لجلسة اتقفلت بالفعل — بتتنادى من قوائم "بيانات الشيفت"
+// و"تفاصيل الشيفت" (الشيفت الحالي أو شيفت مقفول من السجل). بتقرأ بيانات
+// الجلسة المحفوظة في قاعدة البيانات مباشرة (مش من أي state حي)، فمينفعش
+// تأثر على شاشة إنهاء الجلسة الجارية أو على printReceipt() الأصلية.
+// نفس شكل وصل نهاية الجلسة العادي بالظبط (اسم المحل، الطلبات، الإجمالي،
+// طريقة الدفع) — قراءة فقط، من غير أي تعديل على بيانات الجلسة.
 // ============================================================
-function openPrintWindow(contentHtml, docTitle) {
+async function printClosedSessionReceipt(sessionId) {
+    try {
+        const { data: session, error } = await supabaseClient
+            .from('sessions')
+            .select('*')
+            .eq('id', sessionId)
+            .single();
+        if (error || !session) {
+            showToast(t('تعذر تحميل بيانات الجلسة', 'Could not load session data'), 'error');
+            return;
+        }
+
+        const totals = await calculateTotalAmounts(session.id);
+        const { data: ordersDetails } = await supabaseClient
+            .from('session_orders')
+            .select('*')
+            .eq('session_id', session.id)
+            .order('created_at');
+
+        const pm = paymentMethods.find(p => p.id === session.payment_method);
+        const station = stations.find(s => s.id === session.station_id);
+        const stationName = station ? (station.name || t('جهاز', 'Device') + ' ' + station.number) : t('جهاز', 'Device');
+        const discount = Number(session.discount || 0);
+        const amountPaid = (session.amount_paid !== null && session.amount_paid !== undefined) ? Number(session.amount_paid) : null;
+        const finalTotal = (session.amount !== null && session.amount !== undefined)
+            ? Number(session.amount)
+            : Math.max(0, Math.round((totals.grandTotal - discount) * 100) / 100);
+
+        let ordersReceiptHtml = '';
+        if (ordersDetails && ordersDetails.length > 0) {
+            ordersReceiptHtml = `
+                <hr style="border: none; border-top: 1px dashed #ccc; margin: 10px 0;">
+                <div style="font-size: 13px; margin-bottom: 8px;">
+                    <div style="font-weight:700;margin-bottom:4px;">${t('الطلبات', 'Orders')}</div>
+                    ${ordersDetails.map(o => `
+                        <div style="display:flex;justify-content:space-between;padding:2px 0;font-size:12px;">
+                            <span>${escapeHtml(o.item_name)} × ${o.quantity}</span>
+                            <span>${moneyDec(o.quantity * o.unit_price)} ${t('ج', 'EGP')}</span>
+                        </div>
+                    `).join('')}
+                    <div style="display:flex;justify-content:space-between;padding:3px 0;border-top:1px solid #eee;margin-top:4px;padding-top:4px;font-weight:600;">
+                        <span>${t('إجمالي الطلبات', 'Orders Total')}</span>
+                        <span>${moneyDec(totals.ordersTotal)} ${t('ج', 'EGP')}</span>
+                    </div>
+                </div>
+            `;
+        }
+
+        const durationStr = session.ended_at
+            ? formatCountdown(Math.max(0, (new Date(session.ended_at) - new Date(session.started_at)) / 1000))
+            : formatElapsed(new Date(session.started_at));
+
+        const receiptContent = `
+            <div style="font-family: 'Cairo', Arial, sans-serif; padding: 20px; max-width: 300px; margin: 0 auto; direction: rtl; text-align: center; background: #fff; color: #000;">
+                <div style="font-size: 18px; font-weight: 700; margin-bottom: 4px;">${escapeHtml(business.name)}</div>
+                <div style="font-size: 12px; color: #666; margin-bottom: 12px;">${escapeHtml(business.code)}</div>
+                <hr style="border: none; border-top: 1px dashed #ccc; margin: 10px 0;">
+                <div style="font-size: 13px; margin-bottom: 8px;">
+                    <div style="display:flex;justify-content:space-between;padding:3px 0;">
+                        <span>${t('الجهاز', 'Device')}</span>
+                        <span>${escapeHtml(stationName)}</span>
+                    </div>
+                    <div style="display:flex;justify-content:space-between;padding:3px 0;">
+                        <span>${t('الوقت', 'Time')}</span>
+                        <span>${new Date(session.started_at).toLocaleString(currentLang === 'ar' ? 'ar-EG' : 'en-US')}</span>
+                    </div>
+                    <div style="display:flex;justify-content:space-between;padding:3px 0;">
+                        <span>${t('المدة', 'Duration')}</span>
+                        <span>${durationStr}</span>
+                    </div>
+                </div>
+                <hr style="border: none; border-top: 1px dashed #ccc; margin: 10px 0;">
+                <div style="font-size: 13px; margin-bottom: 8px;">
+                    ${totals.singleTotal > 0 ? `
+                    <div style="display:flex;justify-content:space-between;padding:2px 0;">
+                        <span>${t('Single', 'Single')}</span>
+                        <span>${moneyDec(totals.singleTotal)} ${t('ج', 'EGP')}</span>
+                    </div>
+                    ` : ''}
+                    ${totals.multiTotal > 0 ? `
+                    <div style="display:flex;justify-content:space-between;padding:2px 0;">
+                        <span>${t('Multi', 'Multi')}</span>
+                        <span>${moneyDec(totals.multiTotal)} ${t('ج', 'EGP')}</span>
+                    </div>
+                    ` : ''}
+                </div>
+                ${ordersReceiptHtml}
+                <hr style="border: none; border-top: 1px dashed #ccc; margin: 10px 0;">
+                ${discount > 0 ? `
+                <div style="font-size: 13px; margin-bottom: 4px;">
+                    <div style="display:flex;justify-content:space-between;padding:2px 0;">
+                        <span>${t('الإجمالي قبل الخصم', 'Total Before Discount')}</span>
+                        <span>${moneyDec(totals.grandTotal)} ${t('ج', 'EGP')}</span>
+                    </div>
+                    <div style="display:flex;justify-content:space-between;padding:2px 0;color:#c0392b;">
+                        <span>${t('الخصم', 'Discount')}</span>
+                        <span>- ${moneyDec(discount)} ${t('ج', 'EGP')}</span>
+                    </div>
+                </div>
+                ` : ''}
+                <div style="font-size: 18px; font-weight: 700; color: #000; margin: 8px 0;">
+                    <div style="display:flex;justify-content:space-between;">
+                        <span>${t('الإجمالي', 'Total')}</span>
+                        <span>${moneyDec(finalTotal)} ${t('ج', 'EGP')}</span>
+                    </div>
+                </div>
+                ${amountPaid !== null ? `
+                <div style="font-size: 13px; margin-bottom: 8px;">
+                    <div style="display:flex;justify-content:space-between;padding:2px 0;">
+                        <span>${t('دفع العميل', 'Amount Paid')}</span>
+                        <span>${moneyDec(amountPaid)} ${t('ج', 'EGP')}</span>
+                    </div>
+                    <div style="display:flex;justify-content:space-between;padding:2px 0;font-weight:700;">
+                        <span>${amountPaid >= finalTotal ? t('الباقي للعميل', 'Change Due') : t('باقي على العميل', 'Remaining Owed')}</span>
+                        <span>${moneyDec(Math.abs(Math.round((amountPaid - finalTotal) * 100) / 100))} ${t('ج', 'EGP')}</span>
+                    </div>
+                </div>
+                ` : ''}
+                <div style="font-size: 13px; margin: 8px 0;">
+                    <div style="display:flex;justify-content:space-between;padding:2px 0;">
+                        <span>${t('طريقة الدفع', 'Payment Method')}</span>
+                        <span>${pm ? escapeHtml(pm.name) : t('غير محدد', 'Not set')}</span>
+                    </div>
+                </div>
+                <hr style="border: none; border-top: 1px dashed #ccc; margin: 10px 0;">
+                <div style="font-size: 11px; color: #999; margin-top: 8px;">
+                    ${t('شكراً لزيارتكم', 'Thank you for your visit')}
+                </div>
+                <div style="font-size: 10px; color: #aaa; margin-top: 4px;">
+                    ${new Date().toLocaleString(currentLang === 'ar' ? 'ar-EG' : 'en-US')}
+                </div>
+            </div>
+        `;
+
+        const printWindow = window.open('', '_blank', 'width=400,height=600');
+        if (!printWindow) {
+            showToast(t('الرجاء السماح للنوافذ المنبثقة', 'Please allow popups'), 'error');
+            return;
+        }
+
+        printWindow.document.write(`
+            <!DOCTYPE html>
+            <html>
+            <head>
+                <title>${t('إيصال', 'Receipt')}</title>
+                <meta charset="UTF-8">
+                <style>
+                    @page { margin: 10px; size: auto; }
+                    body { font-family: 'Cairo', Arial, sans-serif; margin: 0; padding: 0; background: #fff; }
+                    @media print {
+                        body { background: #fff; }
+                        .no-print { display: none; }
+                    }
+                </style>
+            </head>
+            <body>
+                ${receiptContent}
+                <div style="text-align:center;margin-top:12px;" class="no-print">
+                    <button onclick="window.print()" style="padding:10px 30px;background:#ff8a1e;color:#fff;border:none;border-radius:8px;font-size:16px;cursor:pointer;">
+                        🖨️ ${t('طباعة', 'Print')}
+                    </button>
+                    <button onclick="window.close()" style="padding:10px 30px;background:#666;color:#fff;border:none;border-radius:8px;font-size:16px;cursor:pointer;margin-right:8px;">
+                        ✕ ${t('إغلاق', 'Close')}
+                    </button>
+                </div>
+                <script>
+                    setTimeout(() => { window.print(); }, 500);
+                <\/script>
+            </body>
+            </html>
+        `);
+        printWindow.document.close();
+    } catch (e) {
+        console.error('Error printing closed session receipt:', e);
+        showToast(t('حدث خطأ أثناء تجهيز الوصل', 'Error preparing the receipt'), 'error');
+    }
+}
+
+// ============================================================
+// ✅ طباعة ملخص الشيفت — بتطبع بيانات آخر شيفت اترعرض في مودال
+// "تفاصيل الشيفت" (سواء الشيفت الحالي المفتوح أو شيفت مقفول من
+// السجل)، مخزنة في lastViewedShiftPrintData. قراءة فقط، مفيش أي
+// تعديل على بيانات الشيفت أو منطق الإقفال.
+// ============================================================
+function printShiftSummary() {
+    if (!lastViewedShiftPrintData) {
+        showToast(t('افتح تفاصيل الشيفت أولاً', 'Open shift details first'), 'warning');
+        return;
+    }
+    const { shift, totals } = lastViewedShiftPrintData;
+    const openedStr = new Date(shift.opened_at).toLocaleString(currentLang === 'ar' ? 'ar-EG' : 'en-US');
+    const closedStr = shift.closed_at ? new Date(shift.closed_at).toLocaleString(currentLang === 'ar' ? 'ar-EG' : 'en-US') : t('لسه مفتوح', 'Still open');
+
+    const itemEntries = Object.entries(totals.itemBreakdown || {});
+    const itemsHtml = itemEntries.length
+        ? itemEntries.map(([name, amt]) => `
+            <div style="display:flex;justify-content:space-between;padding:2px 0;font-size:12px;">
+                <span>${escapeHtml(name)}</span>
+                <span>${moneyDec(amt)} ${t('ج', 'EGP')}</span>
+            </div>`).join('')
+        : `<div style="font-size:12px;color:#999;padding:2px 0;">${t('لا يوجد طلبات منيو', 'No menu orders')}</div>`;
+
+    const expensesHtml = (totals.expenseRows || []).length
+        ? totals.expenseRows.map(e => `
+            <div style="display:flex;justify-content:space-between;padding:2px 0;font-size:12px;">
+                <span>${escapeHtml(e.description)}</span>
+                <span>${moneyDec(e.amount)} ${t('ج', 'EGP')}</span>
+            </div>`).join('')
+        : `<div style="font-size:12px;color:#999;padding:2px 0;">${t('لا يوجد مصروفات', 'No expenses')}</div>`;
+
+    const summaryContent = `
+        <div style="font-family: 'Cairo', Arial, sans-serif; padding: 20px; max-width: 320px; margin: 0 auto; direction: rtl; text-align: center; background: #fff; color: #000;">
+            <div style="font-size: 18px; font-weight: 700; margin-bottom: 4px;">${escapeHtml(business.name)}</div>
+            <div style="font-size: 12px; color: #666; margin-bottom: 4px;">${escapeHtml(business.code)}</div>
+            <div style="font-size: 14px; font-weight: 700; margin-bottom: 12px;">${t('ملخص الشيفت', 'Shift Summary')}</div>
+            <hr style="border: none; border-top: 1px dashed #ccc; margin: 10px 0;">
+            <div style="font-size: 13px; margin-bottom: 8px;">
+                <div style="display:flex;justify-content:space-between;padding:2px 0;">
+                    <span>${t('وقت الفتح', 'Opened At')}</span><span>${openedStr}</span>
+                </div>
+                <div style="display:flex;justify-content:space-between;padding:2px 0;">
+                    <span>${t('وقت الإقفال', 'Closed At')}</span><span>${closedStr}</span>
+                </div>
+            </div>
+            <hr style="border: none; border-top: 1px dashed #ccc; margin: 10px 0;">
+            <div style="font-size: 13px; margin-bottom: 8px;">
+                <div style="display:flex;justify-content:space-between;padding:2px 0;">
+                    <span>${t('إيراد الساعات', 'Hours Revenue')}</span><span>${moneyDec(totals.hoursRevenue)} ${t('ج', 'EGP')}</span>
+                </div>
+                <div style="display:flex;justify-content:space-between;padding:2px 0;">
+                    <span>${t('إيراد المنيو', 'Menu Revenue')}</span><span>${moneyDec(totals.itemsRevenue)} ${t('ج', 'EGP')}</span>
+                </div>
+                <div style="display:flex;justify-content:space-between;padding:2px 0;font-weight:700;">
+                    <span>${t('إجمالي الإيراد', 'Total Revenue')}</span><span>${moneyDec(totals.revenue)} ${t('ج', 'EGP')}</span>
+                </div>
+            </div>
+            <hr style="border: none; border-top: 1px dashed #ccc; margin: 10px 0;">
+            <div style="font-size: 13px; margin-bottom: 8px; text-align:right;">
+                <div style="font-weight:700;margin-bottom:4px;">${t('إيراد المنيو حسب الصنف', 'Menu Revenue by Item')}</div>
+                ${itemsHtml}
+            </div>
+            <hr style="border: none; border-top: 1px dashed #ccc; margin: 10px 0;">
+            <div style="font-size: 13px; margin-bottom: 8px; text-align:right;">
+                <div style="font-weight:700;margin-bottom:4px;">${t('المصروفات', 'Expenses')}</div>
+                ${expensesHtml}
+                <div style="display:flex;justify-content:space-between;padding:3px 0;border-top:1px solid #eee;margin-top:4px;padding-top:4px;font-weight:600;">
+                    <span>${t('إجمالي المصروفات', 'Total Expenses')}</span>
+                    <span>${moneyDec(totals.expenses)} ${t('ج', 'EGP')}</span>
+                </div>
+            </div>
+            <hr style="border: none; border-top: 1px dashed #ccc; margin: 10px 0;">
+            <div style="font-size: 18px; font-weight: 700; color: #000; margin: 8px 0;">
+                <div style="display:flex;justify-content:space-between;">
+                    <span>${t('الصافي', 'Net Income')}</span>
+                    <span>${moneyDec(totals.profit)} ${t('ج', 'EGP')}</span>
+                </div>
+            </div>
+            <hr style="border: none; border-top: 1px dashed #ccc; margin: 10px 0;">
+            <div style="font-size: 10px; color: #aaa; margin-top: 4px;">
+                ${new Date().toLocaleString(currentLang === 'ar' ? 'ar-EG' : 'en-US')}
+            </div>
+        </div>
+    `;
+
     const printWindow = window.open('', '_blank', 'width=400,height=600');
     if (!printWindow) {
         showToast(t('الرجاء السماح للنوافذ المنبثقة', 'Please allow popups'), 'error');
@@ -3442,7 +3746,7 @@ function openPrintWindow(contentHtml, docTitle) {
         <!DOCTYPE html>
         <html>
         <head>
-            <title>${docTitle || t('طباعة', 'Print')}</title>
+            <title>${t('ملخص الشيفت', 'Shift Summary')}</title>
             <meta charset="UTF-8">
             <style>
                 @page { margin: 10px; size: auto; }
@@ -3454,7 +3758,7 @@ function openPrintWindow(contentHtml, docTitle) {
             </style>
         </head>
         <body>
-            ${contentHtml}
+            ${summaryContent}
             <div style="text-align:center;margin-top:12px;" class="no-print">
                 <button onclick="window.print()" style="padding:10px 30px;background:#ff8a1e;color:#fff;border:none;border-radius:8px;font-size:16px;cursor:pointer;">
                     🖨️ ${t('طباعة', 'Print')}
@@ -3470,108 +3774,6 @@ function openPrintWindow(contentHtml, docTitle) {
         </html>
     `);
     printWindow.document.close();
-}
-
-// ============================================================
-// ✅ طباعة تقرير الشيفت الإجمالي (من شاشة تفاصيل الشيفت)
-// بيستخدم currentShiftDetailsCtx اللي بيتخزن أول ما نفتح شاشة
-// تفاصيل الشيفت (سواء شيفت مقفول من السجل أو الشيفت المفتوح حالياً)
-// ============================================================
-function printShiftReport() {
-    if (!currentShiftDetailsCtx || !currentShiftDetailsCtx.totals) {
-        showToast(t('افتح تفاصيل الشيفت الأول', 'Open shift details first'), 'warning');
-        return;
-    }
-    const { shift, totals, isCurrent } = currentShiftDetailsCtx;
-
-    const openedStr = new Date(shift.opened_at).toLocaleString(currentLang === 'ar' ? 'ar-EG' : 'en-US');
-    const closedStr = shift.closed_at ? new Date(shift.closed_at).toLocaleString(currentLang === 'ar' ? 'ar-EG' : 'en-US') : t('لسه مفتوح', 'Still open');
-
-    const pmBreakdown = {};
-    (totals.sessions || []).forEach(s => {
-        if (s.payment_method) {
-            const pm = paymentMethods.find(p => p.id === s.payment_method);
-            const key = pm ? pm.name : s.payment_method;
-            pmBreakdown[key] = (pmBreakdown[key] || 0) + Number(s.amount || 0);
-        }
-    });
-    const pmHtml = Object.entries(pmBreakdown).map(([name, amount]) => `
-        <div style="display:flex;justify-content:space-between;padding:2px 0;font-size:12px;">
-            <span>${escapeHtml(name)}</span>
-            <span>${moneyDec(amount)} ${t('ج', 'EGP')}</span>
-        </div>`).join('');
-
-    const itemEntries = Object.entries(totals.itemBreakdown || {});
-    const itemsHtml = itemEntries.length
-        ? itemEntries.map(([name, amt]) => `
-            <div style="display:flex;justify-content:space-between;padding:2px 0;font-size:12px;">
-                <span>${escapeHtml(name)}</span>
-                <span>${moneyDec(amt)} ${t('ج', 'EGP')}</span>
-            </div>`).join('')
-        : `<div style="font-size:12px;color:#999;">${t('لا يوجد طلبات منيو', 'No menu orders')}</div>`;
-
-    const expensesHtml = (totals.expenseRows || []).length
-        ? totals.expenseRows.map(e => `
-            <div style="display:flex;justify-content:space-between;padding:2px 0;font-size:12px;">
-                <span>${escapeHtml(e.description)}</span>
-                <span>${moneyDec(e.amount)} ${t('ج', 'EGP')}</span>
-            </div>`).join('')
-        : `<div style="font-size:12px;color:#999;">${t('لا يوجد مصروفات', 'No expenses')}</div>`;
-
-    const closedSessions = (totals.sessions || []).slice().sort((a, b) => new Date(a.ended_at) - new Date(b.ended_at));
-    const sessionsHtml = closedSessions.length
-        ? closedSessions.map(s => {
-            const station = stations.find(st => st.id === s.station_id);
-            const deviceName = station ? (station.name || (t('جهاز', 'Device') + ' ' + station.number)) : t('جهاز محذوف', 'Deleted device');
-            const endedStr = s.ended_at ? new Date(s.ended_at).toLocaleTimeString(currentLang === 'ar' ? 'ar-EG' : 'en-US', { hour: '2-digit', minute: '2-digit' }) : '—';
-            return `
-            <div style="display:flex;justify-content:space-between;padding:3px 0;font-size:12px;">
-                <span>${escapeHtml(deviceName)} (${endedStr})</span>
-                <span>${moneyDec(s.amount)} ${t('ج', 'EGP')}</span>
-            </div>`;
-        }).join('')
-        : `<div style="font-size:12px;color:#999;">${t('لا يوجد جلسات مقفولة', 'No closed sessions')}</div>`;
-
-    const reportContent = `
-        <div style="font-family: 'Cairo', Arial, sans-serif; padding: 20px; max-width: 320px; margin: 0 auto; direction: rtl; text-align: center; background: #fff; color: #000;">
-            <div style="font-size: 18px; font-weight: 700; margin-bottom: 4px;">${escapeHtml(business.name)}</div>
-            <div style="font-size: 12px; color: #666; margin-bottom: 4px;">${escapeHtml(business.code)}</div>
-            <div style="font-size: 14px; font-weight: 700; margin-bottom: 12px;">${t('تقرير الشيفت', 'Shift Report')} ${isCurrent ? `(${t('مفتوح', 'Open')})` : ''}</div>
-            <hr style="border: none; border-top: 1px dashed #ccc; margin: 10px 0;">
-            <div style="font-size: 12px; text-align:${currentLang === 'ar' ? 'right' : 'left'};">
-                <div style="display:flex;justify-content:space-between;padding:2px 0;"><span>${t('وقت الفتح', 'Opened At')}</span><span>${openedStr}</span></div>
-                <div style="display:flex;justify-content:space-between;padding:2px 0;"><span>${t('وقت الإقفال', 'Closed At')}</span><span>${closedStr}</span></div>
-            </div>
-            <hr style="border: none; border-top: 1px dashed #ccc; margin: 10px 0;">
-            <div style="font-size: 13px; text-align:${currentLang === 'ar' ? 'right' : 'left'};">
-                <div style="display:flex;justify-content:space-between;padding:3px 0;"><span>${t('إيراد الساعات', 'Hours Revenue')}</span><span>${moneyDec(totals.hoursRevenue)}</span></div>
-                <div style="display:flex;justify-content:space-between;padding:3px 0;"><span>${t('إيراد المنيو', 'Menu Revenue')}</span><span>${moneyDec(totals.itemsRevenue)}</span></div>
-                <div style="display:flex;justify-content:space-between;padding:3px 0;font-weight:700;"><span>${t('إجمالي الإيراد', 'Total Revenue')}</span><span>${moneyDec(totals.revenue)}</span></div>
-                <div style="display:flex;justify-content:space-between;padding:3px 0;color:#c0392b;"><span>${t('المصروفات', 'Expenses')}</span><span>- ${moneyDec(totals.expenses)}</span></div>
-                <div style="display:flex;justify-content:space-between;padding:3px 0;font-weight:700;font-size:15px;"><span>${t('الصافي', 'Net Income')}</span><span>${moneyDec(totals.profit)}</span></div>
-            </div>
-            ${pmHtml ? `
-            <hr style="border: none; border-top: 1px dashed #ccc; margin: 10px 0;">
-            <div style="font-size: 13px; font-weight:700; margin-bottom:4px; text-align:${currentLang === 'ar' ? 'right' : 'left'};">${t('حسب طريقة الدفع', 'By Payment Method')}</div>
-            <div style="text-align:${currentLang === 'ar' ? 'right' : 'left'};">${pmHtml}</div>
-            ` : ''}
-            <hr style="border: none; border-top: 1px dashed #ccc; margin: 10px 0;">
-            <div style="font-size: 13px; font-weight:700; margin-bottom:4px; text-align:${currentLang === 'ar' ? 'right' : 'left'};">${t('إيراد المنيو حسب الصنف', 'Menu Revenue by Item')}</div>
-            <div style="text-align:${currentLang === 'ar' ? 'right' : 'left'};">${itemsHtml}</div>
-            <hr style="border: none; border-top: 1px dashed #ccc; margin: 10px 0;">
-            <div style="font-size: 13px; font-weight:700; margin-bottom:4px; text-align:${currentLang === 'ar' ? 'right' : 'left'};">${t('المصروفات', 'Expenses')}</div>
-            <div style="text-align:${currentLang === 'ar' ? 'right' : 'left'};">${expensesHtml}</div>
-            <hr style="border: none; border-top: 1px dashed #ccc; margin: 10px 0;">
-            <div style="font-size: 13px; font-weight:700; margin-bottom:4px; text-align:${currentLang === 'ar' ? 'right' : 'left'};">${t('الأجهزة اللي اتقفلت', 'Closed Devices')}</div>
-            <div style="text-align:${currentLang === 'ar' ? 'right' : 'left'};">${sessionsHtml}</div>
-            <hr style="border: none; border-top: 1px dashed #ccc; margin: 10px 0;">
-            <div style="font-size: 10px; color: #aaa; margin-top: 4px;">
-                ${new Date().toLocaleString(currentLang === 'ar' ? 'ar-EG' : 'en-US')}
-            </div>
-        </div>
-    `;
-
-    openPrintWindow(reportContent, t('تقرير الشيفت', 'Shift Report'));
 }
 
 // ============================================================
@@ -3908,8 +4110,8 @@ async function viewShiftDetails(shiftId) {
         <div class="list-row"><div class="row-title">${t('وقت الفتح', 'Opened At')}</div><div class="row-value mono">${openedStr}</div></div>
         <div class="list-row"><div class="row-title">${t('وقت الإقفال', 'Closed At')}</div><div class="row-value mono">${closedStr}</div></div>`;
     const closedSessionsHtml = buildClosedSessionsHtml(totals);
-    currentShiftDetailsCtx = { shift, totals, isCurrent: false };
     document.getElementById('shiftDetailsSummary').innerHTML = buildShiftBreakdownHtml(totals, extraRows) + closedSessionsHtml;
+    lastViewedShiftPrintData = { shift, totals };
     openSheet('shiftDetailsOverlay');
 }
 
@@ -3931,8 +4133,8 @@ async function viewCurrentShiftDetails() {
     const extraRows = `
         <div class="list-row"><div class="row-title">${t('وقت الفتح', 'Opened At')}</div><div class="row-value mono">${openedStr}</div></div>
         <div class="list-row"><div class="row-title">${t('أجهزة لسه شغالة', 'Active Devices')}</div><div class="row-value mono">${Object.keys(sessions).length}</div></div>`;
-    currentShiftDetailsCtx = { shift: currentShift, totals, isCurrent: true };
     document.getElementById('shiftDetailsSummary').innerHTML = buildShiftBreakdownHtml(totals, extraRows) + activeDevicesHtml + closedSessionsHtml;
+    lastViewedShiftPrintData = { shift: currentShift, totals };
     openSheet('shiftDetailsOverlay');
 }
 
@@ -3960,136 +4162,19 @@ function buildClosedSessionsHtml(totals) {
             <div class="list-row" style="flex-direction:column;align-items:stretch;padding:10px 4px;border-bottom:1px solid var(--border);">
                 <div style="display:flex;justify-content:space-between;width:100%;margin-bottom:4px;">
                     <div class="row-title" style="font-weight:700;">${escapeHtml(deviceName)}</div>
-                    <div style="display:flex;align-items:center;gap:8px;">
-                        <div class="row-value mono">${money(s.amount)}</div>
-                        <button class="btn btn-teal-sm" onclick="event.stopPropagation(); printClosedSessionReceipt('${s.id}')" title="${t('طباعة إيصال الجهاز', 'Print device receipt')}">
-                            <i class="fa-solid fa-print"></i>
-                        </button>
-                    </div>
+                    <div class="row-value mono">${money(s.amount)}</div>
                 </div>
-                <div style="display:flex;justify-content:space-between;width:100%;font-size:12px;color:var(--text-dim);">
+                <div style="display:flex;justify-content:space-between;align-items:center;width:100%;font-size:12px;color:var(--text-dim);">
                     <span>${startedStr} → ${endedStr}</span>
                     <span>${escapeHtml(pmName)}</span>
                 </div>
+                <button class="btn btn-ghost" style="margin-top:8px;padding:6px 10px;font-size:12px;width:auto;align-self:flex-start;" onclick="printClosedSessionReceipt('${s.id}')">
+                    <i class="fa-solid fa-print"></i> <span data-ar="طباعة الوصل" data-en="Print Receipt">طباعة الوصل</span>
+                </button>
             </div>`;
     });
 
     return html;
-}
-
-// ============================================================
-// ✅ إعادة طباعة إيصال جهاز من جلسة اتقفلت (من سجل الشيفتات)
-// بيانات قراءة فقط: بيجيب الجلسة + طلباتها من قاعدة البيانات ويطبعها
-// بنفس تنسيق إيصال إنهاء الجلسة العادي
-// ============================================================
-async function printClosedSessionReceipt(sessionId) {
-    try {
-        const { data: session, error } = await supabaseClient
-            .from('sessions')
-            .select('*')
-            .eq('id', sessionId)
-            .single();
-        if (error || !session) {
-            showToast(t('تعذر تحميل بيانات الجلسة', 'Could not load session data'), 'error');
-            console.error('Error loading session for reprint:', error);
-            return;
-        }
-
-        const { data: ordersDetails } = await supabaseClient
-            .from('session_orders')
-            .select('*')
-            .eq('session_id', sessionId)
-            .order('created_at');
-
-        const pm = paymentMethods.find(p => p.id === session.payment_method);
-        const station = stations.find(s => s.id === session.station_id);
-        const stationName = station ? (station.name || t('جهاز', 'Device') + ' ' + station.number) : t('جهاز محذوف', 'Deleted device');
-
-        const discountAmount = Number(session.discount || 0);
-        const amountPaid = session.amount_paid;
-
-        let ordersReceiptHtml = '';
-        let ordersTotal = 0;
-        if (ordersDetails && ordersDetails.length > 0) {
-            ordersTotal = ordersDetails.reduce((s, o) => s + Number(o.quantity || 0) * Number(o.unit_price || 0), 0);
-            ordersReceiptHtml = `
-                <hr style="border: none; border-top: 1px dashed #ccc; margin: 10px 0;">
-                <div style="font-size: 13px; margin-bottom: 8px;">
-                    <div style="font-weight:700;margin-bottom:4px;">${t('الطلبات', 'Orders')}</div>
-                    ${ordersDetails.map(o => `
-                        <div style="display:flex;justify-content:space-between;padding:2px 0;font-size:12px;">
-                            <span>${escapeHtml(o.item_name)} × ${o.quantity}</span>
-                            <span>${moneyDec(o.quantity * o.unit_price)} ${t('ج', 'EGP')}</span>
-                        </div>
-                    `).join('')}
-                    <div style="display:flex;justify-content:space-between;padding:3px 0;border-top:1px solid #eee;margin-top:4px;padding-top:4px;font-weight:600;">
-                        <span>${t('إجمالي الطلبات', 'Orders Total')}</span>
-                        <span>${moneyDec(ordersTotal)} ${t('ج', 'EGP')}</span>
-                    </div>
-                </div>
-            `;
-        }
-
-        const receiptContent = `
-            <div style="font-family: 'Cairo', Arial, sans-serif; padding: 20px; max-width: 300px; margin: 0 auto; direction: rtl; text-align: center; background: #fff; color: #000;">
-                <div style="font-size: 18px; font-weight: 700; margin-bottom: 4px;">${escapeHtml(business.name)}</div>
-                <div style="font-size: 12px; color: #666; margin-bottom: 12px;">${escapeHtml(business.code)}</div>
-                <hr style="border: none; border-top: 1px dashed #ccc; margin: 10px 0;">
-                <div style="font-size: 13px; margin-bottom: 8px;">
-                    <div style="display:flex;justify-content:space-between;padding:3px 0;">
-                        <span>${t('الجهاز', 'Device')}</span>
-                        <span>${escapeHtml(stationName)}</span>
-                    </div>
-                    <div style="display:flex;justify-content:space-between;padding:3px 0;">
-                        <span>${t('الوقت', 'Time')}</span>
-                        <span>${new Date(session.started_at).toLocaleString(currentLang === 'ar' ? 'ar-EG' : 'en-US')}</span>
-                    </div>
-                </div>
-                ${ordersReceiptHtml}
-                <hr style="border: none; border-top: 1px dashed #ccc; margin: 10px 0;">
-                ${discountAmount > 0 ? `
-                <div style="font-size: 13px; margin-bottom: 4px;">
-                    <div style="display:flex;justify-content:space-between;padding:2px 0;color:#c0392b;">
-                        <span>${t('الخصم', 'Discount')}</span>
-                        <span>- ${moneyDec(discountAmount)} ${t('ج', 'EGP')}</span>
-                    </div>
-                </div>
-                ` : ''}
-                <div style="font-size: 18px; font-weight: 700; color: #000; margin: 8px 0;">
-                    <div style="display:flex;justify-content:space-between;">
-                        <span>${t('الإجمالي', 'Total')}</span>
-                        <span>${moneyDec(Number(session.amount || 0))} ${t('ج', 'EGP')}</span>
-                    </div>
-                </div>
-                ${amountPaid !== null && amountPaid !== undefined ? `
-                <div style="font-size: 13px; margin-bottom: 8px;">
-                    <div style="display:flex;justify-content:space-between;padding:2px 0;">
-                        <span>${t('دفع العميل', 'Amount Paid')}</span>
-                        <span>${moneyDec(amountPaid)} ${t('ج', 'EGP')}</span>
-                    </div>
-                </div>
-                ` : ''}
-                <div style="font-size: 13px; margin: 8px 0;">
-                    <div style="display:flex;justify-content:space-between;padding:2px 0;">
-                        <span>${t('طريقة الدفع', 'Payment Method')}</span>
-                        <span>${pm ? escapeHtml(pm.name) : (session.payment_method || t('غير محدد', 'Not set'))}</span>
-                    </div>
-                </div>
-                <hr style="border: none; border-top: 1px dashed #ccc; margin: 10px 0;">
-                <div style="font-size: 11px; color: #999; margin-top: 8px;">
-                    ${t('نسخة معاد طباعتها', 'Reprinted copy')}
-                </div>
-                <div style="font-size: 10px; color: #aaa; margin-top: 4px;">
-                    ${new Date().toLocaleString(currentLang === 'ar' ? 'ar-EG' : 'en-US')}
-                </div>
-            </div>
-        `;
-
-        openPrintWindow(receiptContent);
-    } catch (e) {
-        console.error('Error reprinting session receipt:', e);
-        showToast(t('حصل خطأ أثناء الطباعة', 'Error while printing'), 'error');
-    }
 }
 
 // بناء قسم "الأجهزة الشغالة دلوقتي" — بيانات قراءة فقط من الـ state الحالي
