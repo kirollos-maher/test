@@ -9,10 +9,10 @@
 <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 <link rel="stylesheet" href="style.css">
-<script src="app.js?v=20260825b"></script>
-<script src="analytics.js?v=20260825b"></script>
-<script src="alerts.js?v=20260825b"></script>
-<script src="whatsapp.js?v=20260825b"></script>
+<script src="app.js?v=20260908"></script>
+<script src="analytics.js?v=20260908"></script>
+<script src="alerts.js?v=20260908"></script>
+<script src="whatsapp.js?v=20260908"></script>
 
 <style>
     /* ✅ DORAK Brand */
@@ -94,6 +94,129 @@
     .qr-toggle-row .qr-sub {
         font-size: 11px;
         color: var(--text-muted);
+    }
+
+    /* ✅ AI Analytics Styles */
+    .ai-analytics-grid {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 10px;
+        margin-top: 8px;
+    }
+    .ai-analytics-grid .stat-card {
+        padding: 12px;
+    }
+    .ai-analytics-grid .stat-card .stat-value {
+        font-size: 20px;
+    }
+    .ai-analytics-grid .stat-card .stat-label {
+        font-size: 10px;
+    }
+    .ai-anomaly-item {
+        background: var(--bg-sunken);
+        border-radius: var(--radius-sm);
+        padding: 8px 12px;
+        margin-bottom: 6px;
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        border-right: 3px solid var(--red);
+    }
+    .ai-anomaly-item .anomaly-icon {
+        color: var(--red);
+        margin-left: 8px;
+    }
+    .ai-anomaly-item .anomaly-text {
+        font-size: 13px;
+        flex: 1;
+    }
+    .ai-anomaly-item .anomaly-badge {
+        font-size: 10px;
+        background: var(--red-dim);
+        color: #ff8f8f;
+        padding: 2px 10px;
+        border-radius: 12px;
+    }
+    .ai-day-ranking {
+        display: flex;
+        flex-direction: column;
+        gap: 4px;
+    }
+    .ai-day-item {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        padding: 6px 8px;
+        background: var(--bg-sunken);
+        border-radius: var(--radius-sm);
+    }
+    .ai-day-item .day-name {
+        font-weight: 700;
+        font-size: 13px;
+        min-width: 50px;
+    }
+    .ai-day-item .day-bar {
+        flex: 1;
+        height: 6px;
+        background: var(--border);
+        border-radius: 3px;
+        overflow: hidden;
+    }
+    .ai-day-item .day-bar .bar-fill {
+        height: 100%;
+        background: var(--amber);
+        border-radius: 3px;
+        transition: width 0.5s ease;
+    }
+    .ai-day-item .day-value {
+        font-family: var(--font-mono);
+        font-size: 12px;
+        font-weight: 700;
+        color: var(--amber);
+        min-width: 60px;
+        text-align: left;
+    }
+    .ai-feature-item {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        padding: 6px 0;
+        border-bottom: 1px solid var(--border);
+    }
+    .ai-feature-item:last-child {
+        border-bottom: none;
+    }
+    .ai-feature-item .feature-name {
+        font-size: 13px;
+        font-weight: 600;
+    }
+    .ai-feature-item .feature-level {
+        font-size: 12px;
+        font-weight: 700;
+        padding: 2px 12px;
+        border-radius: 12px;
+    }
+    .ai-feature-item .feature-level.high {
+        background: var(--amber-dim);
+        color: var(--amber);
+    }
+    .ai-feature-item .feature-level.very-high {
+        background: var(--teal-dim);
+        color: var(--teal);
+    }
+    .ai-feature-item .feature-level.medium {
+        background: var(--purple-dim);
+        color: var(--purple);
+    }
+    .ai-feature-item .feature-level.low {
+        background: var(--red-dim);
+        color: #ff8f8f;
+    }
+    .ai-confidence {
+        font-size: 11px;
+        color: var(--text-dim);
+        margin-top: 4px;
+        text-align: center;
     }
 
     /* ✅ CUSTOMER PAGE (مدمجة من نظام الكافيه) */
@@ -334,6 +457,41 @@
     .whatsapp-status-summary .warning {
         color: var(--red);
     }
+
+    /* ✅ Responsive adjustments for AI Analytics */
+    @media (max-width: 480px) {
+        .ai-analytics-grid {
+            grid-template-columns: 1fr 1fr;
+            gap: 6px;
+        }
+        .ai-analytics-grid .stat-card {
+            padding: 8px;
+        }
+        .ai-analytics-grid .stat-card .stat-value {
+            font-size: 16px;
+        }
+        .ai-analytics-grid .stat-card .stat-label {
+            font-size: 9px;
+        }
+        .ai-day-item .day-name {
+            font-size: 11px;
+            min-width: 40px;
+        }
+        .ai-day-item .day-value {
+            font-size: 10px;
+            min-width: 50px;
+        }
+        .ai-feature-item .feature-name {
+            font-size: 11px;
+        }
+        .ai-feature-item .feature-level {
+            font-size: 10px;
+            padding: 1px 8px;
+        }
+        .ai-anomaly-item .anomaly-text {
+            font-size: 11px;
+        }
+    }
 </style>
 </head>
 <body>
@@ -477,6 +635,15 @@
             <div class="stat-card" id="dashExpensesCard"><div class="stat-label" data-ar="مصروفات اليوم" data-en="Today's Expenses">مصروفات اليوم</div><div class="stat-value mono" id="dashExpenses">0</div></div>
             <div class="stat-card"><div class="stat-label" data-ar="أجهزة شغالة" data-en="Active Devices">أجهزة شغالة</div><div class="stat-value mono" id="dashActive">0</div></div>
             <div class="stat-card"><div class="stat-label" data-ar="أجهزة متاحة" data-en="Available Devices">أجهزة متاحة</div><div class="stat-value mono" id="dashAvailable">0</div></div>
+        </div>
+
+        <!-- ============== AI ANALYTICS SECTION ============== -->
+        <div class="section-title" style="margin-top:20px;">
+            🤖 التحليلات الذكية
+            <span class="badge badge-teal" style="font-size:9px;padding:2px 10px;">AI</span>
+        </div>
+        <div id="aiAnalyticsContainer">
+            <div class="empty"><i class="fa-solid fa-spinner fa-spin"></i> جارِ تحميل التحليلات الذكية...</div>
         </div>
     </div>
 
@@ -851,72 +1018,6 @@
         <div class="toast" id="customerToast"></div>
     </div>
 </div>
-
-
-<!-- قسم التحليلات الذكية -->
-<div id="ai-analytics">
-    <div class="section-title">
-        🤖 التحليلات الذكية
-        <span class="badge badge-teal">Beta</span>
-    </div>
-
-    <!-- التنبؤات -->
-    <div class="panel">
-        <div class="panel-title">🔮 توقعات الأيام القادمة</div>
-        <div class="forecast-chart" id="forecastChart"></div>
-        <div class="forecast-details">
-            <div class="stat-card">
-                <div class="stat-label">متوقع غداً</div>
-                <div class="stat-value" id="forecastTomorrow">850 ج</div>
-            </div>
-            <div class="stat-card">
-                <div class="stat-label">متوقع الأسبوع</div>
-                <div class="stat-value" id="forecastWeek">5,950 ج</div>
-            </div>
-        </div>
-    </div>
-
-    <!-- الشذوذ -->
-    <div class="panel">
-        <div class="panel-title">⚠️ اكتشافات غير طبيعية</div>
-        <div id="anomaliesList">
-            <div class="list-row">
-                <span>🔴 جلسة طويلة جداً (4 ساعات) على جهاز 3</span>
-                <span class="badge badge-red">شاذ</span>
-            </div>
-        </div>
-    </div>
-
-    <!-- الموسمية -->
-    <div class="panel">
-        <div class="panel-title">📅 أفضل أيام الأسبوع</div>
-        <div class="day-ranking" id="dayRanking">
-            <div class="day-item"><span>الجمعة</span><span class="bar" style="width:100%">1,200 ج</span></div>
-            <div class="day-item"><span>السبت</span><span class="bar" style="width:85%">1,020 ج</span></div>
-            <div class="day-item"><span>الخميس</span><span class="bar" style="width:75%">900 ج</span></div>
-        </div>
-    </div>
-
-    <!-- العوامل المؤثرة -->
-    <div class="panel">
-        <div class="panel-title">📊 العوامل المؤثرة على الإيرادات</div>
-        <div id="featureImportance">
-            <div class="feature-item">
-                <span>عدد الأجهزة الشغالة</span>
-                <span class="importance" style="width:78%">عالٍ</span>
-            </div>
-            <div class="feature-item">
-                <span>عدد الموظفين</span>
-                <span class="importance" style="width:45%">متوسط</span>
-            </div>
-            <div class="feature-item">
-                <span>اليوم من الأسبوع</span>
-                <span class="importance" style="width:92%">مرتفع جداً</span>
-            </div>
-        </div>
-    </div>
-</div>
-
 
 </body>
 </html>
