@@ -54,6 +54,7 @@ function updateTexts() {
     renderSettingsStations();
     renderSettingsPaymentMethods();
     if (document.getElementById('view-shift').classList.contains('active')) renderShiftView();
+    if (document.getElementById('view-analytics').classList.contains('active')) renderAnalytics();
     if (document.getElementById('view-settings').classList.contains('active')) renderSettings();
 }
 
@@ -189,6 +190,7 @@ function navigateTo(viewId) {
     document.querySelectorAll('.nav-btn').forEach(b => b.classList.toggle('active', b.dataset.view === viewId));
     if (viewId === 'view-dashboard') renderDashboard();
     if (viewId === 'view-shift') renderShiftView();
+    if (viewId === 'view-analytics') renderAnalytics();
     if (viewId === 'view-settings') { renderSettings(); renderSettingsStations(); renderSettingsPaymentMethods(); }
     if (viewId === 'view-stations') refreshStationOrdersCache().then(updateStationOrdersSummaryDOM);
 }
@@ -214,10 +216,12 @@ function applyPermissions() {
     const navSettings = document.querySelector('.bottom-nav .nav-btn[data-view="view-settings"]');
     const navShift = document.querySelector('.bottom-nav .nav-btn[data-view="view-shift"]');
     const navStations = document.querySelector('.bottom-nav .nav-btn[data-view="view-stations"]');
+    const navAnalytics = document.querySelector('.bottom-nav .nav-btn[data-view="view-analytics"]');
     const fab = document.getElementById('fabAddExpense');
     if (navSettings) navSettings.style.display = (isOwner || perms.settings) ? 'flex' : 'none';
     if (navShift) navShift.style.display = (isOwner || perms.shift) ? 'flex' : 'none';
     if (navStations) navStations.style.display = (isOwner || perms.stations) ? 'flex' : 'none';
+    if (navAnalytics) navAnalytics.style.display = (isOwner || perms.reports) ? 'flex' : 'none';
     if (fab) fab.style.display = (isOwner || perms.shift) ? 'flex' : 'none';
 }
 
@@ -338,7 +342,7 @@ async function handleUnlock() {
     if (!pin) { errEl.textContent = t('اكتب الـ PIN.', 'Enter the PIN.'); return; }
 
     if (pin === business.owner_pin) {
-        currentUser = { type: 'owner', name: t('المالك', 'Owner'), permissions: { stations: true, inventory: true, shift: true, settings: true } };
+        currentUser = { type: 'owner', name: t('المالك', 'Owner'), permissions: { stations: true, inventory: true, shift: true, settings: true, reports: true } };
         document.getElementById('lockPinInput').value = '';
         enterMainApp();
         return;
@@ -1142,6 +1146,7 @@ function handleSessionChange(payload) {
     renderStationsGrid();
     if (document.getElementById('view-dashboard').classList.contains('active')) renderDashboard();
     if (document.getElementById('view-shift').classList.contains('active')) renderShiftView();
+    if (document.getElementById('view-analytics').classList.contains('active')) renderAnalytics();
     if (activeStationId === row.station_id && !pendingSwitch && !endingSessionInProgress) openStationSheet(activeStationId);
 }
 
@@ -2571,8 +2576,7 @@ function renderMenuQuickAdd() {
         html += `</div>`;
         html += `<div class="menu-category-items ${open ? 'open' : ''}" data-category="${escapeHtml(category)}">`;
         items.forEach(item => {
-            const sessionId =
-                currentOrderSessionId ||
+            const sessionId = currentOrderSessionId ||
                 (activeStationId && sessions[activeStationId] ? sessions[activeStationId].id : '') ||
                 (activeSessionOrders.length > 0 ? activeSessionOrders[0].session_id : '');
             html += `<button class="btn btn-ghost btn-sm" onclick="addOrderItem('${sessionId}','${item.id}')">${escapeHtml(item.name)} - ${money(item.price)}</button>`;
@@ -3282,6 +3286,9 @@ async function confirmEndSessionWithPayment() {
         if (document.getElementById('view-shift').classList.contains('active')) {
             await renderShiftView();
         }
+        if (document.getElementById('view-analytics').classList.contains('active')) {
+            await renderAnalytics();
+        }
         
         setTimeout(() => {
             printReceipt();
@@ -3544,6 +3551,44 @@ async function getShiftTotals(shift) {
     }
 }
 
+// ============================================================
+// SHIFT - تحسين الأداء (جلب إيرادات ومصروفات كل الشيفتات دفعة واحدة)
+// ============================================================
+
+async function fetchShiftsAggregated(shiftIds, businessId) {
+    if (!shiftIds || shiftIds.length === 0) return {};
+
+    const { data: sessionsData } = await supabaseClient
+        .from('sessions')
+        .select('shift_id, amount')
+        .eq('business_id', businessId)
+        .eq('status', 'completed')
+        .in('shift_id', shiftIds);
+
+    const { data: expensesData } = await supabaseClient
+        .from('expenses')
+        .select('shift_id, amount')
+        .in('shift_id', shiftIds);
+
+    const result = {};
+    shiftIds.forEach(id => {
+        const sessionsAmt = (sessionsData || [])
+            .filter(s => s.shift_id === id)
+            .reduce((sum, s) => sum + Number(s.amount || 0), 0);
+
+        const expensesAmt = (expensesData || [])
+            .filter(e => e.shift_id === id)
+            .reduce((sum, e) => sum + Number(e.amount || 0), 0);
+
+        result[id] = {
+            revenue: sessionsAmt,
+            expenses: expensesAmt,
+            profit: sessionsAmt - expensesAmt
+        };
+    });
+    return result;
+}
+
 async function renderShiftView() {
     // ✅ نتأكد إن التابات وصف الفلتر الشهري متزامنين مع shiftFilter الحالي
     // من أول ما الشاشة تتفتح، مش بس لما المستخدم يدوس على تاب — عشان كده
@@ -3598,9 +3643,8 @@ async function renderShiftView() {
         .eq('business_id', business.id)
         .eq('status', 'closed')
         .order('closed_at', { ascending: false });
-    
+
     const now = new Date();
-    
     if (shiftFilter === 'weekly') {
         const weekAgo = new Date(now);
         weekAgo.setDate(weekAgo.getDate() - 7);
@@ -3610,30 +3654,24 @@ async function renderShiftView() {
         const yearSelect = document.getElementById('yearSelect');
         const selectedMonth = parseInt(monthSelect ? monthSelect.value : now.getMonth());
         const selectedYear = parseInt(yearSelect ? yearSelect.value : now.getFullYear());
-        
         const startDate = new Date(selectedYear, selectedMonth, 1);
         const endDate = new Date(selectedYear, selectedMonth + 1, 1);
-        
         query = query
             .gte('closed_at', startDate.toISOString())
             .lt('closed_at', endDate.toISOString());
     }
-    
-    // ✅ Limit to last 30 shifts for performance
-    const { data: pastShifts } = await query.limit(30);
-    
+
+    const { data: pastShifts } = await query.limit(50);
     const histEl = document.getElementById('shiftHistory');
-    
+
     if (!pastShifts || pastShifts.length === 0) {
         let filterLabel = '';
-        if (shiftFilter === 'all') {
-            filterLabel = t('كل الشيفتات', 'All shifts');
-        } else if (shiftFilter === 'weekly') {
-            filterLabel = t('الآسبوع الماضي', 'Last week');
-        } else if (shiftFilter === 'monthly') {
+        if (shiftFilter === 'all') filterLabel = t('كل الشيفتات', 'All shifts');
+        else if (shiftFilter === 'weekly') filterLabel = t('الآسبوع الماضي', 'Last week');
+        else {
             const monthSelect = document.getElementById('monthSelect');
             const yearSelect = document.getElementById('yearSelect');
-            const monthNames = currentLang === 'ar' 
+            const monthNames = currentLang === 'ar'
                 ? ['يناير', 'فبراير', 'مارس', 'أبريل', 'مايو', 'يونيو', 'يوليو', 'أغسطس', 'سبتمبر', 'أكتوبر', 'نوفمبر', 'ديسمبر']
                 : ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
             const monthName = monthNames[parseInt(monthSelect ? monthSelect.value : new Date().getMonth())];
@@ -3644,35 +3682,28 @@ async function renderShiftView() {
         return;
     }
 
-    // ✅ Load all shift totals in parallel for better performance
-    const shiftPromises = pastShifts.map(shift => getShiftTotals(shift));
-    const shiftTotalsResults = await Promise.all(shiftPromises);
-    
+    const shiftIds = pastShifts.map(s => s.id);
+    const aggregated = await fetchShiftsAggregated(shiftIds, business.id);
+
     let historyHtml = '';
-    for (let i = 0; i < pastShifts.length; i++) {
-        const shift = pastShifts[i];
-        const shiftTotals = shiftTotalsResults[i];
+    for (const shift of pastShifts) {
+        const agg = aggregated[shift.id] || { revenue: 0, expenses: 0, profit: 0 };
         const dateStr = new Date(shift.closed_at).toLocaleDateString(currentLang === 'ar' ? 'ar-EG' : 'en-US');
         const timeStr = new Date(shift.closed_at).toLocaleTimeString(currentLang === 'ar' ? 'ar-EG' : 'en-US', { hour: '2-digit', minute: '2-digit' });
-        const revLabel = t('إيراد', 'Revenue');
-        const expLabel = t('مصروفات', 'Expenses');
-        const netLabel = t('صافي الدخل', 'Net Income');
-        
-        // ✅ Show who closed the shift with a small orange badge
         const closedBy = shift.closed_by || t('غير معروف', 'Unknown');
-        const closedByBadge = `<span class="badge badge-amber" style="font-size:9px;padding:1px 8px;">👤 ${escapeHtml(closedBy)}</span>`;
-        
+
         historyHtml += `
             <div class="list-row" style="flex-direction:column;align-items:stretch;padding:12px 4px;border-bottom:1px solid var(--border);cursor:pointer;" onclick="viewShiftDetails('${shift.id}')">
                 <div style="display:flex;justify-content:space-between;width:100%;margin-bottom:6px;">
-                    <div class="row-title" style="display:flex;align-items:center;gap:8px;font-size:13px;">
+                    <div class="row-title" style="display:flex;align-items:center;gap:8px;">
+                        <span class="closed-by-dot" style="display:inline-block;width:10px;height:10px;border-radius:50%;background:var(--amber);flex-shrink:0;" title="${t('مُغلق بواسطة', 'Closed by')} ${escapeHtml(closedBy)}"></span>
                         ${dateStr} - ${timeStr}
-                        ${closedByBadge}
+                        <span style="font-size:11px;font-weight:400;color:var(--text-dim);">${escapeHtml(closedBy)}</span>
                     </div>
                     <div style="display:flex;gap:8px;align-items:center;">
                         <div style="display:flex;gap:12px;font-size:12px;color:var(--text-dim);">
-                            <span>${revLabel} <span class="mono" style="color:var(--text);">${money(shiftTotals.revenue)}</span></span>
-                            <span>${expLabel} <span class="mono" style="color:var(--text);">${money(shiftTotals.expenses)}</span></span>
+                            <span>${t('إيراد', 'Revenue')} <span class="mono" style="color:var(--text);">${money(agg.revenue)}</span></span>
+                            <span>${t('مصروفات', 'Expenses')} <span class="mono" style="color:var(--text);">${money(agg.expenses)}</span></span>
                         </div>
                         <button class="btn btn-danger-sm" onclick="event.stopPropagation(); deleteShift('${shift.id}')" title="${t('حذف الشيفت', 'Delete shift')}" style="padding:4px 8px;font-size:11px;">
                             <i class="fa-solid fa-xmark"></i>
@@ -3680,8 +3711,8 @@ async function renderShiftView() {
                     </div>
                 </div>
                 <div style="display:flex;justify-content:space-between;width:100%;">
-                    <div style="font-size:12px;color:var(--text-faint);">${netLabel}</div>
-                    <div class="mono" style="font-weight:700;color:var(--amber);">${money(shiftTotals.profit)} ${t('ج', 'EGP')}</div>
+                    <div style="font-size:12px;color:var(--text-faint);">${t('صافي الدخل', 'Net Income')}</div>
+                    <div class="mono" style="font-weight:700;color:var(--amber);">${money(agg.profit)} ${t('ج', 'EGP')}</div>
                 </div>
             </div>
         `;
@@ -3793,9 +3824,11 @@ async function viewShiftDetails(shiftId) {
     const totals = await getShiftTotals(shift);
     const openedStr = new Date(shift.opened_at).toLocaleString(currentLang === 'ar' ? 'ar-EG' : 'en-US');
     const closedStr = shift.closed_at ? new Date(shift.closed_at).toLocaleString(currentLang === 'ar' ? 'ar-EG' : 'en-US') : '—';
+    const closedBy = shift.closed_by || t('غير معروف', 'Unknown');
     const extraRows = `
         <div class="list-row"><div class="row-title">${t('وقت الفتح', 'Opened At')}</div><div class="row-value mono">${openedStr}</div></div>
-        <div class="list-row"><div class="row-title">${t('وقت الإقفال', 'Closed At')}</div><div class="row-value mono">${closedStr}</div></div>`;
+        <div class="list-row"><div class="row-title">${t('وقت الإقفال', 'Closed At')}</div><div class="row-value mono">${closedStr}</div></div>
+        <div class="list-row"><div class="row-title">${t('مُغلق بواسطة', 'Closed by')}</div><div class="row-value mono">${escapeHtml(closedBy)}</div></div>`;
     document.getElementById('shiftDetailsSummary').innerHTML = buildShiftBreakdownHtml(totals, extraRows);
     openSheet('shiftDetailsOverlay');
 }
@@ -3935,23 +3968,21 @@ async function confirmCloseShift() {
     if (!currentShift) return;
     const totals = await getShiftTotals(currentShift);
     const closedAt = new Date().toISOString();
-    
-    // ✅ Get the name of who's closing the shift
-    const closedByName = currentUser ? (currentUser.name || currentUser.type || t('غير معروف', 'Unknown')) : t('غير معروف', 'Unknown');
-    
+    const closedBy = currentUser?.name || currentUser?.type || t('غير معروف', 'Unknown');
+
     const { data, error } = await supabaseClient
         .from('shifts')
-        .update({ 
-            status: 'closed', 
-            closed_at: closedAt, 
-            total_revenue: totals.revenue, 
-            total_expenses: totals.expenses, 
-            total_profit: totals.profit, 
-            closed_by: closedByName
+        .update({
+            status: 'closed',
+            closed_at: closedAt,
+            total_revenue: totals.revenue,
+            total_expenses: totals.expenses,
+            total_profit: totals.profit,
+            closed_by: closedBy
         })
         .eq('id', currentShift.id)
         .select();
-    
+
     if (error) {
         showToast(t('فشل إقفال الشيفت: ' + error.message, 'Failed to close shift: ' + error.message), 'error');
         console.error('Error closing shift:', error);
@@ -3962,11 +3993,11 @@ async function confirmCloseShift() {
         showToast(t('فشل إقفال الشيفت: قاعدة البيانات رفضت الحفظ (تحقق من صلاحيات RLS على جدول shifts)', 'Failed to close shift: database rejected the save (check RLS permissions on the shifts table)'), 'error');
         return;
     }
-    
+
     closeSheet('closeShiftOverlay');
     showToast(t('تم إقفال الشيفت', 'Shift closed'), 'success');
     await loadOrOpenShift();
-    renderShiftView(); 
+    renderShiftView();
     renderDashboard();
 }
 
@@ -4050,7 +4081,7 @@ function renderSettings() {
                     </button>
                 </div>
             </div>`).join('');
-    
+
     // ✅ تحديث حالة الـ Toggle (PIN)
     const pinSection = document.getElementById('settingsChangePin');
     const chevron = document.getElementById('settingsPinChevron');
