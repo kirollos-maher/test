@@ -10,6 +10,7 @@
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 <link rel="stylesheet" href="style.css">
 <script src="app.js" defer></script>
+<script src="analytics.js" defer></script>
 <script src="alerts.js" defer></script>
 
 <style>
@@ -60,6 +61,70 @@
     /* ✅ تحريك الجرس عند الرنين */
     .bell-ringing {
         animation: bellShake 0.3s infinite, bellBlink 0.6s infinite alternate;
+    }
+
+    /* ✅ أنماط التحليلات */
+    .analytics-tab {
+        background: var(--bg-sunken);
+        border: 1px solid var(--border);
+        border-radius: var(--radius-sm);
+        color: var(--text-dim);
+        padding: 8px 16px;
+        font-size: 12px;
+        font-weight: 700;
+        cursor: pointer;
+    }
+    .analytics-tab:hover {
+        border-color: var(--border-strong);
+        color: var(--text);
+    }
+    .analytics-tab.active {
+        border-color: var(--amber);
+        color: var(--amber);
+        background: var(--amber-dim);
+    }
+    .rank-badge {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        width: 20px;
+        height: 20px;
+        border-radius: 50%;
+        background: var(--amber-dim);
+        color: var(--amber);
+        font-size: 11px;
+        font-weight: 800;
+        margin-inline-end: 6px;
+        flex: 0 0 auto;
+    }
+    .mini-bars {
+        display: flex;
+        align-items: flex-end;
+        gap: 6px;
+        height: 90px;
+        padding: 10px 4px 0;
+    }
+    .mini-bar-col {
+        flex: 1;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: flex-end;
+        height: 100%;
+        gap: 4px;
+    }
+    .mini-bar {
+        width: 100%;
+        max-width: 26px;
+        background: var(--amber);
+        border-radius: 4px 4px 0 0;
+        min-height: 3px;
+    }
+    .mini-bar-label {
+        font-size: 9.5px;
+        color: var(--text-faint);
+        font-family: var(--font-mono);
+        white-space: nowrap;
     }
 </style>
 </head>
@@ -287,6 +352,19 @@
         </div>
         
         <div class="panel" id="shiftHistory"></div>
+    </div>
+
+    <!-- ---------- ANALYTICS ---------- -->
+    <div class="view" id="view-analytics">
+        <div class="section-title" data-ar="التحليلات" data-en="Analytics">التحليلات</div>
+        <div class="shift-tabs">
+            <button class="analytics-tab" data-filter="today" onclick="setAnalyticsFilter('today')" data-ar="اليوم" data-en="Today">اليوم</button>
+            <button class="analytics-tab active" data-filter="week" onclick="setAnalyticsFilter('week')" data-ar="آخر 7 أيام" data-en="Last 7 Days">آخر 7 أيام</button>
+            <button class="analytics-tab" data-filter="month" onclick="setAnalyticsFilter('month')" data-ar="آخر 30 يوم" data-en="Last 30 Days">آخر 30 يوم</button>
+        </div>
+        <div id="analyticsBody">
+            <div class="empty"><i class="fa-solid fa-chart-pie"></i><span data-ar="جارِ التحميل..." data-en="Loading...">جارِ التحميل...</span></div>
+        </div>
     </div>
 
     <!-- ---------- SETTINGS ---------- -->
@@ -555,6 +633,7 @@
         <button class="nav-btn active" data-view="view-dashboard" onclick="navigateTo('view-dashboard')"><i class="fa-solid fa-chart-simple"></i><span data-ar="الرئيسية" data-en="Home">الرئيسية</span></button>
         <button class="nav-btn" data-view="view-stations" onclick="navigateTo('view-stations')"><i class="fa-solid fa-gamepad"></i><span data-ar="الأجهزة" data-en="Devices">الأجهزة</span></button>
         <button class="nav-btn" data-view="view-shift" onclick="navigateTo('view-shift')"><i class="fa-solid fa-clock"></i><span data-ar="الشيفت" data-en="Shift">الشيفت</span></button>
+        <button class="nav-btn" data-view="view-analytics" onclick="navigateTo('view-analytics')"><i class="fa-solid fa-chart-pie"></i><span data-ar="التحليلات" data-en="Analytics">التحليلات</span></button>
         <button class="nav-btn" data-view="view-settings" onclick="navigateTo('view-settings')"><i class="fa-solid fa-gear"></i><span data-ar="الإعدادات" data-en="Settings">الإعدادات</span></button>
     </div>
 </div>
