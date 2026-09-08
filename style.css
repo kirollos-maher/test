@@ -372,31 +372,6 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
     background: var(--amber-dim);
 }
 
-/* ---------- analytics tabs ---------- */
-.analytics-tab {
-    background: var(--bg-sunken);
-    border: 1px solid var(--border);
-    border-radius: var(--radius-sm);
-    color: var(--text-dim);
-    padding: 8px 16px;
-    font-size: 12px;
-    font-weight: 700;
-    cursor: pointer;
-    transition: all 0.2s var(--ease);
-    flex: 1;
-    text-align: center;
-    min-width: 60px;
-}
-.analytics-tab:hover {
-    border-color: var(--border-strong);
-    color: var(--text);
-}
-.analytics-tab.active {
-    border-color: var(--teal);
-    color: var(--teal);
-    background: var(--teal-dim);
-}
-
 /* ---------- transfer target selection ---------- */
 .transfer-targets {
     display: grid;
