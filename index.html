@@ -542,13 +542,10 @@
     <div class="overlay" id="shiftDetailsOverlay">
         <div class="sheet">
             <div class="sheet-handle"></div>
-            <div class="sheet-title">
-                <span data-ar="تفاصيل الشيفت" data-en="Shift Details">تفاصيل الشيفت</span>
-                <div style="display:flex;align-items:center;gap:10px;">
-                    <button class="close-x" onclick="printShiftReport()" title="طباعة تقرير الشيفت"><i class="fa-solid fa-print"></i></button>
-                    <button class="close-x" onclick="closeSheet('shiftDetailsOverlay')"><i class="fa-solid fa-xmark"></i></button>
-                </div>
-            </div>
+            <div class="sheet-title"><span data-ar="تفاصيل الشيفت" data-en="Shift Details">تفاصيل الشيفت</span><button class="close-x" onclick="closeSheet('shiftDetailsOverlay')"><i class="fa-solid fa-xmark"></i></button></div>
+            <button class="btn btn-ghost btn-block" style="margin-bottom:14px;" onclick="printShiftSummary()">
+                <i class="fa-solid fa-print"></i> <span data-ar="طباعة ملخص الشيفت" data-en="Print Shift Summary">طباعة ملخص الشيفت</span>
+            </button>
             <div class="panel" id="shiftDetailsSummary" style="margin-bottom:14px;"></div>
         </div>
     </div>
