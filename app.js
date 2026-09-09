@@ -1285,6 +1285,8 @@ async function renderDashboard() {
             document.getElementById('dashExpenses').textContent = '0';
             document.getElementById('dashActive').textContent = Object.keys(sessions).length;
             document.getElementById('dashAvailable').textContent = stations.length - Object.keys(sessions).length;
+            // ✅ حتى لو فشل فتح الشيفت، نحاول نعرض الـ AI data على Dashboard
+            renderAIAnalyticsOnDashboard();
             return;
         }
     }
@@ -1294,6 +1296,7 @@ async function renderDashboard() {
         document.getElementById('dashExpenses').textContent = '0';
         document.getElementById('dashActive').textContent = Object.keys(sessions).length;
         document.getElementById('dashAvailable').textContent = stations.length - Object.keys(sessions).length;
+        renderAIAnalyticsOnDashboard();
         return;
     }
     
@@ -1355,6 +1358,215 @@ async function renderDashboard() {
         document.getElementById('dashExpenses').textContent = '0';
         document.getElementById('dashActive').textContent = Object.keys(sessions).length;
         document.getElementById('dashAvailable').textContent = stations.length - Object.keys(sessions).length;
+    }
+    
+    // ✅ عرض التحليلات الذكية في الصفحة الرئيسية
+    renderAIAnalyticsOnDashboard();
+}
+
+// ============================================================
+// ✅ عرض التحليلات الذكية في الصفحة الرئيسية (Dashboard)
+// ============================================================
+async function renderAIAnalyticsOnDashboard() {
+    const container = document.getElementById('dashboardAIContainer');
+    if (!container) return;
+
+    try {
+        const trendEnd = new Date(nowCorrected());
+        const trendStart = new Date(trendEnd);
+        trendStart.setDate(trendStart.getDate() - 28);
+        const startIso = trendStart.toISOString();
+        const endIso = trendEnd.toISOString();
+
+        // ✅ نجيب البيانات من نفس فترة الـ 28 يوم
+        const { sessions: sessRows } = await supabaseClient
+            .from('sessions')
+            .select('id, station_id, amount, payment_method, started_at, ended_at, current_mode')
+            .eq('business_id', business.id)
+            .eq('status', 'completed')
+            .gte('ended_at', startIso)
+            .lte('ended_at', endIso);
+
+        const sessionsData = sessRows || [];
+        const sessionIds = sessionsData.map(s => s.id);
+
+        let orders = [];
+        if (sessionIds.length > 0) {
+            const { data: orderRows } = await supabaseClient
+                .from('session_orders')
+                .select('item_name, quantity, unit_price, session_id')
+                .in('session_id', sessionIds);
+            orders = orderRows || [];
+        }
+
+        // ✅ نحسب الإيراد اليومي
+        const dailyRevenueMap = {};
+        sessionsData.forEach(s => {
+            if (s.ended_at) {
+                const d = new Date(s.ended_at);
+                const key = d.toISOString().slice(0, 10);
+                dailyRevenueMap[key] = (dailyRevenueMap[key] || 0) + Number(s.amount || 0);
+            }
+        });
+
+        // ✅ نحسب التوقعات
+        const sortedDates = Object.keys(dailyRevenueMap).sort();
+        const last28Days = sortedDates.slice(-28);
+        const dailyRevenues = last28Days.map(date => dailyRevenueMap[date] || 0);
+        
+        // ✅ حساب التوقعات يدوياً (بدون الاعتماد على analytics.js)
+        const avgDailyRevenue = dailyRevenues.length > 0 ? dailyRevenues.reduce((a, b) => a + b, 0) / dailyRevenues.length : 0;
+        const forecastTomorrow = Math.round(avgDailyRevenue);
+        const forecastWeek = Math.round(avgDailyRevenue * 7);
+        const confidence = dailyRevenues.length >= 7 ? 75 : 55;
+        
+        // ✅ اتجاه بسيط
+        let direction = 'stable';
+        let trendPct = 0;
+        if (dailyRevenues.length >= 3) {
+            const firstHalf = dailyRevenues.slice(0, Math.floor(dailyRevenues.length / 2));
+            const secondHalf = dailyRevenues.slice(Math.floor(dailyRevenues.length / 2));
+            const avgFirst = firstHalf.length > 0 ? firstHalf.reduce((a, b) => a + b, 0) / firstHalf.length : 0;
+            const avgSecond = secondHalf.length > 0 ? secondHalf.reduce((a, b) => a + b, 0) / secondHalf.length : 0;
+            if (avgSecond > avgFirst * 1.05) {
+                direction = 'increasing';
+                trendPct = ((avgSecond - avgFirst) / (avgFirst || 1)) * 100;
+            } else if (avgSecond < avgFirst * 0.95) {
+                direction = 'decreasing';
+                trendPct = ((avgSecond - avgFirst) / (avgFirst || 1)) * 100;
+            }
+        }
+
+        // ✅ اكتشافات غير طبيعية (جلسات طويلة/قصيرة)
+        const anomalies = [];
+        const validSessions = sessionsData.filter(s => {
+            if (!s.started_at || !s.ended_at) return false;
+            const startMs = new Date(s.started_at).getTime();
+            const endMs = new Date(s.ended_at).getTime();
+            return Number.isFinite(startMs) && Number.isFinite(endMs) && endMs > startMs;
+        }).map(s => ({
+            ...s,
+            durationSeconds: (new Date(s.ended_at).getTime() - new Date(s.started_at).getTime()) / 1000,
+            amountClean: Number(s.amount || 0)
+        }));
+
+        // ✅ اكتشاف الجلسات الطويلة/القصيرة
+        if (validSessions.length >= 4) {
+            const durations = validSessions.map(s => s.durationSeconds);
+            const meanDuration = durations.reduce((a, b) => a + b, 0) / durations.length;
+            const variance = durations.reduce((a, b) => a + Math.pow(b - meanDuration, 2), 0) / durations.length;
+            const stdDuration = Math.sqrt(variance);
+            
+            if (stdDuration > 0) {
+                validSessions.forEach(s => {
+                    const z = (s.durationSeconds - meanDuration) / stdDuration;
+                    if (Math.abs(z) >= 2) {
+                        const station = stations.find(st => st.id === s.station_id);
+                        const stationName = station ? (station.name || t('جهاز', 'Device') + ' ' + station.number) : t('جهاز محذوف', 'Deleted device');
+                        anomalies.push({
+                            type: z > 0 ? 'long_session' : 'short_session',
+                            station: stationName,
+                            duration: s.durationSeconds,
+                            z: Math.round(z * 100) / 100
+                        });
+                    }
+                });
+            }
+        }
+
+        // ✅ اكتشاف أيام الإيراد العالية/المنخفضة
+        const revenueEntries = last28Days.map(date => ({ date, revenue: dailyRevenueMap[date] || 0 }));
+        if (revenueEntries.length >= 4) {
+            const revenues = revenueEntries.map(e => e.revenue);
+            const meanRevenue = revenues.reduce((a, b) => a + b, 0) / revenues.length;
+            const variance = revenues.reduce((a, b) => a + Math.pow(b - meanRevenue, 2), 0) / revenues.length;
+            const stdRevenue = Math.sqrt(variance);
+            
+            if (stdRevenue > 0) {
+                revenueEntries.forEach(e => {
+                    const z = (e.revenue - meanRevenue) / stdRevenue;
+                    if (Math.abs(z) >= 2) {
+                        anomalies.push({
+                            type: z > 0 ? 'revenue_spike' : 'revenue_drop',
+                            date: e.date,
+                            revenue: e.revenue,
+                            z: Math.round(z * 100) / 100
+                        });
+                    }
+                });
+            }
+        }
+
+        // ✅ ترتيب الـ anomalies حسب الـ Z-Score
+        anomalies.sort((a, b) => Math.abs(b.z) - Math.abs(a.z));
+        const topAnomalies = anomalies.slice(0, 5);
+
+        // ✅ عرض HTML
+        const trendEmoji = direction === 'increasing' ? '📈' : (direction === 'decreasing' ? '📉' : '➖');
+        const trendText = direction === 'increasing' ? t('صاعد', 'Upward') : (direction === 'decreasing' ? t('هابط', 'Downward') : t('مستقر', 'Stable'));
+
+        let html = '';
+
+        // === توقعات الأيام القادمة ===
+        html += `<div class="section-title" style="margin-top:16px;">📅 ${t('توقعات الأيام القادمة', 'Upcoming Days Forecast')}</div>`;
+        html += `
+            <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;">
+                <div class="stat-card accent" style="padding:12px;">
+                    <div class="stat-label" style="font-size:10px;">${t('متوقع غداً', 'Tomorrow Forecast')}</div>
+                    <div class="stat-value mono" style="font-size:20px;">${money(forecastTomorrow)} ${t('ج', 'EGP')}</div>
+                    <div class="ai-confidence" style="font-size:10px;">${t('ثقة التوقع', 'Confidence')}: ${confidence}%</div>
+                </div>
+                <div class="stat-card accent" style="padding:12px;">
+                    <div class="stat-label" style="font-size:10px;">${t('متوقع الأسبوع', 'Week Forecast')}</div>
+                    <div class="stat-value mono" style="font-size:20px;">${money(forecastWeek)} ${t('ج', 'EGP')}</div>
+                    <div class="ai-confidence" style="font-size:10px;">${t('الاتجاه', 'Trend')}: ${trendEmoji} ${trendText} (${trendPct > 0 ? '+' : ''}${Math.round(trendPct * 10) / 10}%)</div>
+                </div>
+            </div>
+            <div style="font-size:10px;color:var(--text-faint);padding:4px 4px 8px;text-align:center;">
+                ${t('التوقع مبني على متوسط أداء آخر 28 يوم', 'Forecast based on average performance over the last 28 days')}
+            </div>
+        `;
+
+        // === اكتشافات غير طبيعية ===
+        html += `<div class="section-title" style="margin-top:4px;">⚠️ ${t('اكتشافات غير طبيعية', 'Anomalies Detected')}</div>`;
+        if (topAnomalies.length === 0) {
+            html += `<div class="panel"><div class="empty" style="padding:12px 0;"><i class="fa-solid fa-circle-check"></i>${t('مفيش شذوذ ملحوظ في البيانات دلوقتي', 'Nothing anomalous detected right now')}</div></div>`;
+        } else {
+            html += `<div class="panel" style="padding:4px 8px;">`;
+            topAnomalies.forEach(a => {
+                let text = '', icon = '🔴';
+                if (a.type === 'long_session') {
+                    text = `${t('جلسة طويلة جداً', 'Very long session')} (Z-Score: ${a.z}) ${t('على', 'on')} ${escapeHtml(a.station)}`;
+                } else if (a.type === 'short_session') {
+                    text = `${t('جلسة قصيرة بشكل غير طبيعي', 'Unusually short session')} (Z-Score: ${a.z}) ${t('على', 'on')} ${escapeHtml(a.station)}`;
+                    icon = '🟡';
+                } else if (a.type === 'revenue_spike') {
+                    text = `${t('يوم بإيراد أعلى من المعتاد بشكل ملحوظ', 'Day with unusually high revenue')} — ${a.date}`;
+                    icon = '🟢';
+                } else if (a.type === 'revenue_drop') {
+                    text = `${t('يوم بإيراد أقل من المعتاد بشكل ملحوظ', 'Day with unusually low revenue')} — ${a.date}`;
+                    icon = '🟡';
+                }
+                html += `
+                    <div class="list-row" style="padding:8px 4px;border-bottom:1px solid var(--border);">
+                        <div style="display:flex;align-items:center;gap:8px;">
+                            <span>${icon}</span>
+                            <div>
+                                <div class="row-title" style="font-size:12.5px;">${text}</div>
+                            </div>
+                        </div>
+                        <span class="badge badge-red" style="font-size:9px;">${t('شاذ', 'Anomaly')}</span>
+                    </div>
+                `;
+            });
+            html += `</div>`;
+        }
+
+        container.innerHTML = html;
+
+    } catch (e) {
+        console.error('Error rendering AI analytics on dashboard:', e);
+        container.innerHTML = `<div style="font-size:12px;color:var(--text-faint);padding:8px 0;">${t('لا توجد بيانات كافية للتحليلات الذكية', 'Not enough data for smart analytics')}</div>`;
     }
 }
 
