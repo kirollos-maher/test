@@ -114,8 +114,11 @@ let menuItems = [];
 let employees = [];
 let paymentMethods = [];
 let currentShift = null;
-let lastViewedShiftPrintData = null;
 let currentUser = null;
+// ✅ بتخزن آخر شيفت (وإجمالياته) اترعرض في مودال "تفاصيل الشيفت"، عشان
+// زر "طباعة ملخص الشيفت" يعرف يطبع بيانات الشيفت المعروض حالياً (سواء
+// كان الشيفت الحالي المفتوح أو شيفت مقفول من السجل) بدون إعادة استعلام
+let lastViewedShiftPrintData = null;
 let realtimeChannel = null;
 let tickInterval = null;
 let activeStationId = null;
@@ -184,7 +187,6 @@ function navigateTo(viewId) {
         if (viewId === 'view-settings' && !perms.settings) viewId = 'view-dashboard';
         if (viewId === 'view-shift' && !perms.shift) viewId = 'view-dashboard';
         if (viewId === 'view-stations' && !perms.stations) viewId = 'view-dashboard';
-        if (viewId === 'view-analytics' && !perms.analytics) viewId = 'view-dashboard';
     }
     document.querySelectorAll('.view').forEach(v => v.classList.remove('active'));
     document.getElementById(viewId).classList.add('active');
@@ -193,9 +195,6 @@ function navigateTo(viewId) {
     if (viewId === 'view-shift') renderShiftView();
     if (viewId === 'view-settings') { renderSettings(); renderSettingsStations(); renderSettingsPaymentMethods(); }
     if (viewId === 'view-stations') refreshStationOrdersCache().then(updateStationOrdersSummaryDOM);
-    if (viewId === 'view-analytics' && typeof renderAnalytics === 'function') {
-        renderAnalytics();
-    }
 }
 function openSheet(id) { document.getElementById(id).classList.add('show'); }
 function closeSheet(id) {
@@ -219,12 +218,10 @@ function applyPermissions() {
     const navSettings = document.querySelector('.bottom-nav .nav-btn[data-view="view-settings"]');
     const navShift = document.querySelector('.bottom-nav .nav-btn[data-view="view-shift"]');
     const navStations = document.querySelector('.bottom-nav .nav-btn[data-view="view-stations"]');
-    const navAnalytics = document.querySelector('.bottom-nav .nav-btn[data-view="view-analytics"]');
     const fab = document.getElementById('fabAddExpense');
     if (navSettings) navSettings.style.display = (isOwner || perms.settings) ? 'flex' : 'none';
     if (navShift) navShift.style.display = (isOwner || perms.shift) ? 'flex' : 'none';
     if (navStations) navStations.style.display = (isOwner || perms.stations) ? 'flex' : 'none';
-    if (navAnalytics) navAnalytics.style.display = (isOwner || perms.analytics) ? 'flex' : 'none';
     if (fab) fab.style.display = (isOwner || perms.shift) ? 'flex' : 'none';
 }
 
@@ -345,7 +342,7 @@ async function handleUnlock() {
     if (!pin) { errEl.textContent = t('اكتب الـ PIN.', 'Enter the PIN.'); return; }
 
     if (pin === business.owner_pin) {
-        currentUser = { type: 'owner', name: t('المالك', 'Owner'), permissions: { stations: true, inventory: true, shift: true, settings: true, analytics: true } };
+        currentUser = { type: 'owner', name: t('المالك', 'Owner'), permissions: { stations: true, inventory: true, shift: true, settings: true } };
         document.getElementById('lockPinInput').value = '';
         enterMainApp();
         return;
@@ -3657,132 +3654,6 @@ async function printClosedSessionReceipt(sessionId) {
 }
 
 // ============================================================
-// ✅ طباعة ملخص الشيفت — بتطبع بيانات آخر شيفت اترعرض في مودال
-// "تفاصيل الشيفت" (سواء الشيفت الحالي المفتوح أو شيفت مقفول من
-// السجل)، مخزنة في lastViewedShiftPrintData. قراءة فقط، مفيش أي
-// تعديل على بيانات الشيفت أو منطق الإقفال.
-// ============================================================
-function printShiftSummary() {
-    if (!lastViewedShiftPrintData) {
-        showToast(t('افتح تفاصيل الشيفت أولاً', 'Open shift details first'), 'warning');
-        return;
-    }
-    const { shift, totals } = lastViewedShiftPrintData;
-    const openedStr = new Date(shift.opened_at).toLocaleString(currentLang === 'ar' ? 'ar-EG' : 'en-US');
-    const closedStr = shift.closed_at ? new Date(shift.closed_at).toLocaleString(currentLang === 'ar' ? 'ar-EG' : 'en-US') : t('لسه مفتوح', 'Still open');
-
-    const itemEntries = Object.entries(totals.itemBreakdown || {});
-    const itemsHtml = itemEntries.length
-        ? itemEntries.map(([name, amt]) => `
-            <div style="display:flex;justify-content:space-between;padding:2px 0;font-size:12px;">
-                <span>${escapeHtml(name)}</span>
-                <span>${moneyDec(amt)} ${t('ج', 'EGP')}</span>
-            </div>`).join('')
-        : `<div style="font-size:12px;color:#999;padding:2px 0;">${t('لا يوجد طلبات منيو', 'No menu orders')}</div>`;
-
-    const expensesHtml = (totals.expenseRows || []).length
-        ? totals.expenseRows.map(e => `
-            <div style="display:flex;justify-content:space-between;padding:2px 0;font-size:12px;">
-                <span>${escapeHtml(e.description)}</span>
-                <span>${moneyDec(e.amount)} ${t('ج', 'EGP')}</span>
-            </div>`).join('')
-        : `<div style="font-size:12px;color:#999;padding:2px 0;">${t('لا يوجد مصروفات', 'No expenses')}</div>`;
-
-    const summaryContent = `
-        <div style="font-family: 'Cairo', Arial, sans-serif; padding: 20px; max-width: 320px; margin: 0 auto; direction: rtl; text-align: center; background: #fff; color: #000;">
-            <div style="font-size: 18px; font-weight: 700; margin-bottom: 4px;">${escapeHtml(business.name)}</div>
-            <div style="font-size: 12px; color: #666; margin-bottom: 4px;">${escapeHtml(business.code)}</div>
-            <div style="font-size: 14px; font-weight: 700; margin-bottom: 12px;">${t('ملخص الشيفت', 'Shift Summary')}</div>
-            <hr style="border: none; border-top: 1px dashed #ccc; margin: 10px 0;">
-            <div style="font-size: 13px; margin-bottom: 8px;">
-                <div style="display:flex;justify-content:space-between;padding:2px 0;">
-                    <span>${t('وقت الفتح', 'Opened At')}</span><span>${openedStr}</span>
-                </div>
-                <div style="display:flex;justify-content:space-between;padding:2px 0;">
-                    <span>${t('وقت الإقفال', 'Closed At')}</span><span>${closedStr}</span>
-                </div>
-            </div>
-            <hr style="border: none; border-top: 1px dashed #ccc; margin: 10px 0;">
-            <div style="font-size: 13px; margin-bottom: 8px;">
-                <div style="display:flex;justify-content:space-between;padding:2px 0;">
-                    <span>${t('إيراد الساعات', 'Hours Revenue')}</span><span>${moneyDec(totals.hoursRevenue)} ${t('ج', 'EGP')}</span>
-                </div>
-                <div style="display:flex;justify-content:space-between;padding:2px 0;">
-                    <span>${t('إيراد المنيو', 'Menu Revenue')}</span><span>${moneyDec(totals.itemsRevenue)} ${t('ج', 'EGP')}</span>
-                </div>
-                <div style="display:flex;justify-content:space-between;padding:2px 0;font-weight:700;">
-                    <span>${t('إجمالي الإيراد', 'Total Revenue')}</span><span>${moneyDec(totals.revenue)} ${t('ج', 'EGP')}</span>
-                </div>
-            </div>
-            <hr style="border: none; border-top: 1px dashed #ccc; margin: 10px 0;">
-            <div style="font-size: 13px; margin-bottom: 8px; text-align:right;">
-                <div style="font-weight:700;margin-bottom:4px;">${t('إيراد المنيو حسب الصنف', 'Menu Revenue by Item')}</div>
-                ${itemsHtml}
-            </div>
-            <hr style="border: none; border-top: 1px dashed #ccc; margin: 10px 0;">
-            <div style="font-size: 13px; margin-bottom: 8px; text-align:right;">
-                <div style="font-weight:700;margin-bottom:4px;">${t('المصروفات', 'Expenses')}</div>
-                ${expensesHtml}
-                <div style="display:flex;justify-content:space-between;padding:3px 0;border-top:1px solid #eee;margin-top:4px;padding-top:4px;font-weight:600;">
-                    <span>${t('إجمالي المصروفات', 'Total Expenses')}</span>
-                    <span>${moneyDec(totals.expenses)} ${t('ج', 'EGP')}</span>
-                </div>
-            </div>
-            <hr style="border: none; border-top: 1px dashed #ccc; margin: 10px 0;">
-            <div style="font-size: 18px; font-weight: 700; color: #000; margin: 8px 0;">
-                <div style="display:flex;justify-content:space-between;">
-                    <span>${t('الصافي', 'Net Income')}</span>
-                    <span>${moneyDec(totals.profit)} ${t('ج', 'EGP')}</span>
-                </div>
-            </div>
-            <hr style="border: none; border-top: 1px dashed #ccc; margin: 10px 0;">
-            <div style="font-size: 10px; color: #aaa; margin-top: 4px;">
-                ${new Date().toLocaleString(currentLang === 'ar' ? 'ar-EG' : 'en-US')}
-            </div>
-        </div>
-    `;
-
-    const printWindow = window.open('', '_blank', 'width=400,height=600');
-    if (!printWindow) {
-        showToast(t('الرجاء السماح للنوافذ المنبثقة', 'Please allow popups'), 'error');
-        return;
-    }
-
-    printWindow.document.write(`
-        <!DOCTYPE html>
-        <html>
-        <head>
-            <title>${t('ملخص الشيفت', 'Shift Summary')}</title>
-            <meta charset="UTF-8">
-            <style>
-                @page { margin: 10px; size: auto; }
-                body { font-family: 'Cairo', Arial, sans-serif; margin: 0; padding: 0; background: #fff; }
-                @media print {
-                    body { background: #fff; }
-                    .no-print { display: none; }
-                }
-            </style>
-        </head>
-        <body>
-            ${summaryContent}
-            <div style="text-align:center;margin-top:12px;" class="no-print">
-                <button onclick="window.print()" style="padding:10px 30px;background:#ff8a1e;color:#fff;border:none;border-radius:8px;font-size:16px;cursor:pointer;">
-                    🖨️ ${t('طباعة', 'Print')}
-                </button>
-                <button onclick="window.close()" style="padding:10px 30px;background:#666;color:#fff;border:none;border-radius:8px;font-size:16px;cursor:pointer;margin-right:8px;">
-                    ✕ ${t('إغلاق', 'Close')}
-                </button>
-            </div>
-            <script>
-                setTimeout(() => { window.print(); }, 500);
-            <\/script>
-        </body>
-        </html>
-    `);
-    printWindow.document.close();
-}
-
-// ============================================================
 // EXPENSES
 // ============================================================
 function openExpenseSheet() { document.getElementById('expenseDesc').value = ''; document.getElementById('expenseAmount').value = ''; document.getElementById('expenseError').textContent = ''; openSheet('expenseOverlay'); }
@@ -4256,6 +4127,132 @@ async function buildActiveDevicesDetailsHtml() {
     return html;
 }
 
+// ============================================================
+// ✅ طباعة ملخص الشيفت — بتطبع بيانات آخر شيفت اترعرض في مودال
+// "تفاصيل الشيفت" (سواء الشيفت الحالي المفتوح أو شيفت مقفول من
+// السجل)، مخزنة في lastViewedShiftPrintData. قراءة فقط، مفيش أي
+// تعديل على بيانات الشيفت أو منطق الإقفال.
+// ============================================================
+function printShiftSummary() {
+    if (!lastViewedShiftPrintData) {
+        showToast(t('افتح تفاصيل الشيفت أولاً', 'Open shift details first'), 'warning');
+        return;
+    }
+    const { shift, totals } = lastViewedShiftPrintData;
+    const openedStr = new Date(shift.opened_at).toLocaleString(currentLang === 'ar' ? 'ar-EG' : 'en-US');
+    const closedStr = shift.closed_at ? new Date(shift.closed_at).toLocaleString(currentLang === 'ar' ? 'ar-EG' : 'en-US') : t('لسه مفتوح', 'Still open');
+
+    const itemEntries = Object.entries(totals.itemBreakdown || {});
+    const itemsHtml = itemEntries.length
+        ? itemEntries.map(([name, amt]) => `
+            <div style="display:flex;justify-content:space-between;padding:2px 0;font-size:12px;">
+                <span>${escapeHtml(name)}</span>
+                <span>${moneyDec(amt)} ${t('ج', 'EGP')}</span>
+            </div>`).join('')
+        : `<div style="font-size:12px;color:#999;padding:2px 0;">${t('لا يوجد طلبات منيو', 'No menu orders')}</div>`;
+
+    const expensesHtml = (totals.expenseRows || []).length
+        ? totals.expenseRows.map(e => `
+            <div style="display:flex;justify-content:space-between;padding:2px 0;font-size:12px;">
+                <span>${escapeHtml(e.description)}</span>
+                <span>${moneyDec(e.amount)} ${t('ج', 'EGP')}</span>
+            </div>`).join('')
+        : `<div style="font-size:12px;color:#999;padding:2px 0;">${t('لا يوجد مصروفات', 'No expenses')}</div>`;
+
+    const summaryContent = `
+        <div style="font-family: 'Cairo', Arial, sans-serif; padding: 20px; max-width: 320px; margin: 0 auto; direction: rtl; text-align: center; background: #fff; color: #000;">
+            <div style="font-size: 18px; font-weight: 700; margin-bottom: 4px;">${escapeHtml(business.name)}</div>
+            <div style="font-size: 12px; color: #666; margin-bottom: 4px;">${escapeHtml(business.code)}</div>
+            <div style="font-size: 14px; font-weight: 700; margin-bottom: 12px;">${t('ملخص الشيفت', 'Shift Summary')}</div>
+            <hr style="border: none; border-top: 1px dashed #ccc; margin: 10px 0;">
+            <div style="font-size: 13px; margin-bottom: 8px;">
+                <div style="display:flex;justify-content:space-between;padding:2px 0;">
+                    <span>${t('وقت الفتح', 'Opened At')}</span><span>${openedStr}</span>
+                </div>
+                <div style="display:flex;justify-content:space-between;padding:2px 0;">
+                    <span>${t('وقت الإقفال', 'Closed At')}</span><span>${closedStr}</span>
+                </div>
+            </div>
+            <hr style="border: none; border-top: 1px dashed #ccc; margin: 10px 0;">
+            <div style="font-size: 13px; margin-bottom: 8px;">
+                <div style="display:flex;justify-content:space-between;padding:2px 0;">
+                    <span>${t('إيراد الساعات', 'Hours Revenue')}</span><span>${moneyDec(totals.hoursRevenue)} ${t('ج', 'EGP')}</span>
+                </div>
+                <div style="display:flex;justify-content:space-between;padding:2px 0;">
+                    <span>${t('إيراد المنيو', 'Menu Revenue')}</span><span>${moneyDec(totals.itemsRevenue)} ${t('ج', 'EGP')}</span>
+                </div>
+                <div style="display:flex;justify-content:space-between;padding:2px 0;font-weight:700;">
+                    <span>${t('إجمالي الإيراد', 'Total Revenue')}</span><span>${moneyDec(totals.revenue)} ${t('ج', 'EGP')}</span>
+                </div>
+            </div>
+            <hr style="border: none; border-top: 1px dashed #ccc; margin: 10px 0;">
+            <div style="font-size: 13px; margin-bottom: 8px; text-align:right;">
+                <div style="font-weight:700;margin-bottom:4px;">${t('إيراد المنيو حسب الصنف', 'Menu Revenue by Item')}</div>
+                ${itemsHtml}
+            </div>
+            <hr style="border: none; border-top: 1px dashed #ccc; margin: 10px 0;">
+            <div style="font-size: 13px; margin-bottom: 8px; text-align:right;">
+                <div style="font-weight:700;margin-bottom:4px;">${t('المصروفات', 'Expenses')}</div>
+                ${expensesHtml}
+                <div style="display:flex;justify-content:space-between;padding:3px 0;border-top:1px solid #eee;margin-top:4px;padding-top:4px;font-weight:600;">
+                    <span>${t('إجمالي المصروفات', 'Total Expenses')}</span>
+                    <span>${moneyDec(totals.expenses)} ${t('ج', 'EGP')}</span>
+                </div>
+            </div>
+            <hr style="border: none; border-top: 1px dashed #ccc; margin: 10px 0;">
+            <div style="font-size: 18px; font-weight: 700; color: #000; margin: 8px 0;">
+                <div style="display:flex;justify-content:space-between;">
+                    <span>${t('الصافي', 'Net Income')}</span>
+                    <span>${moneyDec(totals.profit)} ${t('ج', 'EGP')}</span>
+                </div>
+            </div>
+            <hr style="border: none; border-top: 1px dashed #ccc; margin: 10px 0;">
+            <div style="font-size: 10px; color: #aaa; margin-top: 4px;">
+                ${new Date().toLocaleString(currentLang === 'ar' ? 'ar-EG' : 'en-US')}
+            </div>
+        </div>
+    `;
+
+    const printWindow = window.open('', '_blank', 'width=400,height=600');
+    if (!printWindow) {
+        showToast(t('الرجاء السماح للنوافذ المنبثقة', 'Please allow popups'), 'error');
+        return;
+    }
+
+    printWindow.document.write(`
+        <!DOCTYPE html>
+        <html>
+        <head>
+            <title>${t('ملخص الشيفت', 'Shift Summary')}</title>
+            <meta charset="UTF-8">
+            <style>
+                @page { margin: 10px; size: auto; }
+                body { font-family: 'Cairo', Arial, sans-serif; margin: 0; padding: 0; background: #fff; }
+                @media print {
+                    body { background: #fff; }
+                    .no-print { display: none; }
+                }
+            </style>
+        </head>
+        <body>
+            ${summaryContent}
+            <div style="text-align:center;margin-top:12px;" class="no-print">
+                <button onclick="window.print()" style="padding:10px 30px;background:#ff8a1e;color:#fff;border:none;border-radius:8px;font-size:16px;cursor:pointer;">
+                    🖨️ ${t('طباعة', 'Print')}
+                </button>
+                <button onclick="window.close()" style="padding:10px 30px;background:#666;color:#fff;border:none;border-radius:8px;font-size:16px;cursor:pointer;margin-right:8px;">
+                    ✕ ${t('إغلاق', 'Close')}
+                </button>
+            </div>
+            <script>
+                setTimeout(() => { window.print(); }, 500);
+            <\/script>
+        </body>
+        </html>
+    `);
+    printWindow.document.close();
+}
+
 async function confirmCloseShift() {
     if (!currentShift) return;
     const totals = await getShiftTotals(currentShift);
@@ -4613,8 +4610,7 @@ async function submitEmployee() {
     const permissions = {
         stations: document.getElementById('permStations').checked,
         shift: document.getElementById('permShift').checked,
-        settings: document.getElementById('permSettings').checked,
-        analytics: true
+        settings: document.getElementById('permSettings').checked
     };
     const { data, error } = await supabaseClient.from('employees').insert({ business_id: business.id, name, pin, permissions }).select();
     if (error || !data || data.length === 0) {
@@ -4900,58 +4896,5 @@ async function handleSwitchMode(sessionId, newMode, stationId) {
     } finally {
         pendingSwitch = false;
         if (btn) btn.disabled = false;
-    }
-}
-
-// ============================================================
-// ANALYTICS WRAPPER - ربط analytics.js مع التطبيق
-// ============================================================
-
-// دالة لعرض التحليلات - بتتنادى من analytics.js
-async function renderAnalytics() {
-    // التحقق من وجود analytics.js
-    if (typeof setAnalyticsFilter !== 'function') {
-        console.warn('analytics.js not loaded');
-        const container = document.getElementById('analyticsStats');
-        if (container) {
-            container.innerHTML = `<div class="empty"><i class="fa-solid fa-spinner fa-spin"></i> ${t('جارِ تحميل التحليلات...', 'Loading analytics...')}</div>`;
-        }
-        // نحاول تحميل analytics.js تاني
-        try {
-            const script = document.createElement('script');
-            script.src = 'analytics.js';
-            document.head.appendChild(script);
-            script.onload = function() {
-                if (typeof renderAnalytics === 'function') {
-                    renderAnalytics();
-                }
-            };
-        } catch (e) {
-            console.warn('Could not load analytics.js');
-        }
-        return;
-    }
-    
-    // لو analytics.js موجود، ننادي الدالة بتاعته
-    if (typeof window.renderAnalytics === 'function') {
-        // analytics.js بتصدّر renderAnalytics على window
-        window.renderAnalytics();
-    } else if (typeof renderAnalyticsFromAnalytics === 'function') {
-        renderAnalyticsFromAnalytics();
-    } else {
-        // نحاول ننادي الدالة مباشرة من analytics.js
-        try {
-            // analytics.js بتنادي setAnalyticsFilter وتعمل render بنفسها
-            if (typeof setAnalyticsFilter === 'function') {
-                // ننادي setAnalyticsFilter عشان تبدأ الريندر
-                setAnalyticsFilter('week');
-            }
-        } catch (e) {
-            console.warn('Could not call analytics functions:', e);
-            const container = document.getElementById('analyticsStats');
-            if (container) {
-                container.innerHTML = `<div class="empty"><i class="fa-solid fa-triangle-exclamation"></i> ${t('تعذر تحميل التحليلات', 'Could not load analytics')}</div>`;
-            }
-        }
     }
 }
