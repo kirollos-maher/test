@@ -241,41 +241,7 @@ function computeAnalytics(sessions, orders, expenses) {
     }
     dayRanking.sort((a, b) => b.revenue - a.revenue);
 
-    // 4. العوامل المؤثرة على الإيرادات (Feature Importance)
-    const features = {
-        'عدد الأجهزة الشغالة': {
-            values: sessions.map(s => {
-                const activeCount = sessions.filter(ss => ss.station_id === s.station_id).length;
-                return activeCount;
-            }),
-            label: t('عدد الأجهزة الشغالة', 'Active Devices')
-        },
-        'عدد الموظفين': {
-            values: sessions.map(() => employees ? employees.filter(e => e.active !== false).length : 0),
-            label: t('عدد الموظفين', 'Staff Count')
-        },
-        'اليوم من الأسبوع': {
-            values: sessions.map(s => new Date(s.ended_at).getDay()),
-            label: t('اليوم من الأسبوع', 'Day of Week')
-        }
-    };
-
-    const target = sessions.map(s => Number(s.amount) || 0);
-    const featureImportance = {};
-    Object.keys(features).forEach(key => {
-        const correlation = pearsonCorrelation(features[key].values, target);
-        let level = 'ضعيف';
-        if (Math.abs(correlation) >= 0.7) level = 'مرتفع جداً';
-        else if (Math.abs(correlation) >= 0.4) level = 'عالٍ';
-        else if (Math.abs(correlation) >= 0.2) level = 'متوسط';
-        featureImportance[key] = {
-            correlation: Math.round(correlation * 100) / 100,
-            level: level,
-            label: features[key].label
-        };
-    });
-
-    // 5. تحليل الاتجاه (Trend Detection)
+    // 4. تحليل الاتجاه (Trend Detection)
     function detectTrend(data) {
         if (data.length < 3) return 'stable';
         const firstHalf = data.slice(0, Math.floor(data.length / 2));
@@ -303,26 +269,9 @@ function computeAnalytics(sessions, orders, expenses) {
             forecast,
             anomalies,
             dayRanking,
-            featureImportance,
             trend: detectTrend(dailyRevenues.slice(-7))
         }
     };
-}
-
-// ============================================================
-// دالة معامل الارتباط (Pearson Correlation)
-// ============================================================
-function pearsonCorrelation(x, y) {
-    const n = x.length;
-    if (n === 0) return 0;
-    const sumX = x.reduce((a, b) => a + b, 0);
-    const sumY = y.reduce((a, b) => a + b, 0);
-    const sumXY = x.reduce((a, b, i) => a + b * y[i], 0);
-    const sumX2 = x.reduce((a, b) => a + b * b, 0);
-    const sumY2 = y.reduce((a, b) => a + b * b, 0);
-    const numerator = n * sumXY - sumX * sumY;
-    const denominator = Math.sqrt((n * sumX2 - sumX * sumX) * (n * sumY2 - sumY * sumY));
-    return denominator === 0 ? 0 : numerator / denominator;
 }
 
 function buildDailyTrendHtml(dailyRevenueMap, days) {
@@ -633,7 +582,7 @@ function generateSmartInsights(a) {
 }
 
 function buildAIInsightsHtml(a) {
-    const { forecast, anomalies, dayRanking, featureImportance, trend } = a.ai;
+    const { forecast, anomalies, dayRanking, trend } = a.ai;
     const insights = generateSmartInsights(a);
 
     const trendEmoji = trend === 'increasing' ? '📈' : (trend === 'decreasing' ? '📉' : '➖');
@@ -682,18 +631,6 @@ function buildAIInsightsHtml(a) {
             html += `<div class="ai-day-item"><span class="day-name">${escapeHtml(d.name)}</span><div class="day-bar"><div class="bar-fill" style="width:${pct}%;"></div></div><span class="day-value">${money(d.revenue)} ${t('ج', 'EGP')}</span></div>`;
         });
         html += `</div></div>`;
-    }
-
-    if (featureImportance && Object.keys(featureImportance).length > 0) {
-        html += `<div class="section-title" style="margin-top:16px;">📊 ${t('العوامل المؤثرة على الإيرادات', 'Revenue Drivers')}</div><div class="panel">`;
-        const sortedFeatures = Object.entries(featureImportance).sort((x, y) => y[1].correlation - x[1].correlation);
-        sortedFeatures.forEach(([key, value]) => {
-            const levelClass = value.level === 'مرتفع جداً' ? 'very-high' :
-                (value.level === 'عالٍ' ? 'high' :
-                (value.level === 'متوسط' ? 'medium' : 'low'));
-            html += `<div class="ai-feature-item"><span class="feature-name">${escapeHtml(value.label || key)}</span><span class="feature-level ${levelClass}">${escapeHtml(value.level)}</span></div>`;
-        });
-        html += `</div>`;
     }
 
     return html;
