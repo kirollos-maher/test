@@ -35,28 +35,7 @@ function getAnalyticsRange() {
     return { start, end };
 }
 
-async function fetchAnalyticsPeriodData(startIso, endIso) {
-    const { data: sessRows } = await supabaseClient
-        .from('sessions')
-        .select('id, station_id, amount, payment_method, started_at, ended_at, current_mode')
-        .eq('business_id', business.id)
-        .eq('status', 'completed')
-        .gte('ended_at', startIso)
-        .lte('ended_at', endIso);
-
-    const sessions = sessRows || [];
-    const sessionIds = sessions.map(s => s.id);
-
-    let orders = [];
-    if (sessionIds.length > 0) {
-        const { data: orderRows } = await supabaseClient
-            .from('session_orders')
-            .select('item_name, quantity, unit_price, session_id')
-            .in('session_id', sessionIds);
-        orders = orderRows || [];
-    }
-
-    let expenses = [];
+async function fetchExpensesForPeriod(startIso, endIso) {
     try {
         const { data: expRows, error } = await supabaseClient
             .from('expenses')
@@ -65,7 +44,7 @@ async function fetchAnalyticsPeriodData(startIso, endIso) {
             .gte('created_at', startIso)
             .lte('created_at', endIso);
         if (error) throw error;
-        expenses = expRows || [];
+        return expRows || [];
     } catch (e) {
         try {
             const { data: allShifts } = await supabaseClient
@@ -85,11 +64,40 @@ async function fetchAnalyticsPeriodData(startIso, endIso) {
                 .map(sh => sh.id);
             if (shiftIds.length > 0) {
                 const { data: expRows2 } = await supabaseClient.from('expenses').select('description, amount').in('shift_id', shiftIds);
-                expenses = expRows2 || [];
+                return expRows2 || [];
             }
+            return [];
         } catch (e2) {
             console.warn('Could not load expenses for analytics period:', e2);
+            return [];
         }
+    }
+}
+
+async function fetchAnalyticsPeriodData(startIso, endIso) {
+    // نجيب الجلسات والمصروفات في نفس الوقت (مش الواحدة ورا التانية) عشان نقلل وقت التحميل
+    const [sessResult, expenses] = await Promise.all([
+        supabaseClient
+            .from('sessions')
+            .select('id, station_id, amount, payment_method, started_at, ended_at, current_mode')
+            .eq('business_id', business.id)
+            .eq('status', 'completed')
+            .gte('ended_at', startIso)
+            .lte('ended_at', endIso),
+        fetchExpensesForPeriod(startIso, endIso)
+    ]);
+
+    const sessions = sessResult.data || [];
+    const sessionIds = sessions.map(s => s.id);
+
+    // طلبات المنيو محتاجة session ids الأول، فبتتجاب بعد الجلسات
+    let orders = [];
+    if (sessionIds.length > 0) {
+        const { data: orderRows } = await supabaseClient
+            .from('session_orders')
+            .select('item_name, quantity, unit_price, session_id')
+            .in('session_id', sessionIds);
+        orders = orderRows || [];
     }
 
     return { sessions, orders, expenses };
@@ -171,31 +179,12 @@ function computeAnalytics(sessions, orders, expenses) {
     const avgDurationSeconds = durationCount > 0 ? totalDurationSeconds / durationCount : 0;
 
     // ============================================================
-    // AI ANALYTICS - حسابات ذكاء اصطناعي
+    // AI ANALYTICS - حسابات ذكاء اصطناعي (بتاعة الفترة المختارة فقط)
+    // ملحوظة: التوقعات (Forecast) بقت بتتحسب لوحدها من نافذة ثابتة
+    // آخر 28 يوم عشان تكون موحّدة في كل مكان (الداشبورد + صفحة التحليلات)
     // ============================================================
 
-    // 1. حساب التوقعات (Forecast)
-    const sortedDates = Object.keys(dailyRevenueMap).sort();
-    const last28Days = sortedDates.slice(-28);
-    const dailyRevenues = last28Days.map(date => dailyRevenueMap[date] || 0);
-    const avgDailyRevenue = dailyRevenues.length > 0 
-        ? dailyRevenues.reduce((a, b) => a + b, 0) / dailyRevenues.length 
-        : 0;
-    
-    // حساب ثقة التوقع (Standard Error)
-    const variance = dailyRevenues.reduce((a, b) => a + Math.pow(b - avgDailyRevenue, 2), 0) / (dailyRevenues.length || 1);
-    const stdDev = Math.sqrt(variance);
-    const confidenceInterval = stdDev / Math.sqrt(dailyRevenues.length || 1);
-    const confidence = Math.max(60, Math.min(95, 95 - (confidenceInterval / avgDailyRevenue * 100) * 2));
-    
-    const forecast = {
-        tomorrow: Math.round(avgDailyRevenue),
-        week: Math.round(avgDailyRevenue * 7),
-        confidence: Math.round(confidence),
-        trend: dailyRevenues.length >= 7 ? detectTrend(dailyRevenues.slice(-7)) : 'stable'
-    };
-
-    // 2. كشف الشذوذ (Anomaly Detection)
+    // 1. كشف الشذوذ (Anomaly Detection)
     const durations = sessions.map(s => {
         if (s.started_at && s.ended_at) {
             return (new Date(s.ended_at) - new Date(s.started_at)) / 1000;
@@ -227,7 +216,7 @@ function computeAnalytics(sessions, orders, expenses) {
         });
     }
 
-    // 3. أفضل أيام الأسبوع (Day Ranking)
+    // 2. أفضل أيام الأسبوع (Day Ranking)
     const dayRanking = [];
     const dayNames = currentLang === 'ar' ? dayNamesAr : dayNamesEn;
     for (let i = 0; i < 7; i++) {
@@ -241,19 +230,6 @@ function computeAnalytics(sessions, orders, expenses) {
     }
     dayRanking.sort((a, b) => b.revenue - a.revenue);
 
-    // 4. تحليل الاتجاه (Trend Detection)
-    function detectTrend(data) {
-        if (data.length < 3) return 'stable';
-        const firstHalf = data.slice(0, Math.floor(data.length / 2));
-        const secondHalf = data.slice(Math.floor(data.length / 2));
-        const avgFirst = firstHalf.reduce((a, b) => a + b, 0) / firstHalf.length;
-        const avgSecond = secondHalf.reduce((a, b) => a + b, 0) / secondHalf.length;
-        const diff = ((avgSecond - avgFirst) / avgFirst) * 100;
-        if (diff > 10) return 'increasing';
-        if (diff < -10) return 'decreasing';
-        return 'stable';
-    }
-
     return {
         totalRevenue, hoursRevenue, itemsRevenue, totalExpenses, netProfit,
         sessionsCount: sessions.length,
@@ -264,13 +240,55 @@ function computeAnalytics(sessions, orders, expenses) {
         bestDay: bestDay !== null ? { ar: dayNamesAr[bestDay], en: dayNamesEn[bestDay], revenue: bestDayRevenue } : null,
         avgDurationSeconds,
         dailyRevenueMap,
-        // AI Analytics
+        // AI Analytics (فقط اللي منطقي يتحسب على الفترة المختارة)
         ai: {
-            forecast,
             anomalies,
-            dayRanking,
-            trend: detectTrend(dailyRevenues.slice(-7))
+            dayRanking
         }
+    };
+}
+
+// ============================================================
+// التوقعات (Forecast) — بتتحسب دايمًا من نافذة ثابتة آخر 28 يوم
+// عشان يبقى الرقم واحد وثابت في كل مكان (الداشبورد + صفحة التحليلات)
+// ============================================================
+function detectTrend(data) {
+    if (data.length < 3) return 'stable';
+    const firstHalf = data.slice(0, Math.floor(data.length / 2));
+    const secondHalf = data.slice(Math.floor(data.length / 2));
+    const avgFirst = firstHalf.reduce((a, b) => a + b, 0) / firstHalf.length;
+    const avgSecond = secondHalf.reduce((a, b) => a + b, 0) / secondHalf.length;
+    if (avgFirst === 0) return avgSecond > 0 ? 'increasing' : 'stable';
+    const diff = ((avgSecond - avgFirst) / avgFirst) * 100;
+    if (diff > 10) return 'increasing';
+    if (diff < -10) return 'decreasing';
+    return 'stable';
+}
+
+// dailyRevenueMap هنا لازم يكون sparse map (key = 'YYYY-MM-DD' -> revenue)؛
+// الدالة بتملأ الأيام الفاضية بصفر عشان المتوسط يبقى حقيقي (مقسوم على 28 يوم فعلي مش بس أيام فيها إيراد)
+function computeForecastFromDailyMap(dailyRevenueMap, days = 28) {
+    const now = new Date(nowCorrected());
+    const series = [];
+    for (let i = days - 1; i >= 0; i--) {
+        const d = new Date(now);
+        d.setDate(d.getDate() - i);
+        const key = d.toISOString().slice(0, 10);
+        series.push(dailyRevenueMap[key] || 0);
+    }
+
+    const avgDailyRevenue = series.reduce((a, b) => a + b, 0) / days;
+    const variance = series.reduce((a, b) => a + Math.pow(b - avgDailyRevenue, 2), 0) / days;
+    const stdDev = Math.sqrt(variance);
+    const confidence = avgDailyRevenue > 0
+        ? Math.max(60, Math.min(95, 95 - ((stdDev / Math.sqrt(days)) / avgDailyRevenue * 100) * 2))
+        : 60;
+
+    return {
+        tomorrow: Math.round(avgDailyRevenue),
+        week: Math.round(avgDailyRevenue * 7),
+        confidence: Math.round(confidence),
+        trend: detectTrend(series.slice(-7))
     };
 }
 
@@ -514,11 +532,11 @@ function buildTopItemsChart(topItems) {
 // ============================================================
 // SMART INSIGHTS (rule-based AI-style recommendations)
 // ============================================================
-function generateSmartInsights(a) {
+function generateSmartInsights(a, forecast) {
     const insights = [];
     if (!a || !a.ai) return insights;
-    const { forecast, anomalies, dayRanking } = a.ai;
-    const trend = a.ai.trend;
+    const { anomalies, dayRanking } = a.ai;
+    const trend = forecast ? forecast.trend : 'stable';
 
     if (trend === 'increasing') {
         insights.push({ icon: '📈', type: 'positive', text: t('الإيراد في اتجاه صاعد خلال آخر فترة، استمر على نفس الوتيرة.', 'Revenue has been trending upward recently — keep up the momentum.') });
@@ -581,9 +599,10 @@ function generateSmartInsights(a) {
     return insights;
 }
 
-function buildAIInsightsHtml(a) {
-    const { forecast, anomalies, dayRanking, trend } = a.ai;
-    const insights = generateSmartInsights(a);
+function buildAIInsightsHtml(a, forecast) {
+    const { anomalies, dayRanking } = a.ai;
+    const trend = forecast ? forecast.trend : 'stable';
+    const insights = generateSmartInsights(a, forecast);
 
     const trendEmoji = trend === 'increasing' ? '📈' : (trend === 'decreasing' ? '📉' : '➖');
     const trendText = trend === 'increasing' ? t('صاعد', 'Upward') : (trend === 'decreasing' ? t('هابط', 'Downward') : t('مستقر', 'Stable'));
@@ -639,15 +658,31 @@ function buildAIInsightsHtml(a) {
 // ============================================================
 // DASHBOARD — SIMPLE AI SUMMARY
 // ============================================================
-async function refreshDashboardSummary() {
+function withTimeout(promise, ms, message) {
+    return Promise.race([
+        promise,
+        new Promise((_, reject) => setTimeout(() => reject(new Error(message || 'timeout')), ms))
+    ]);
+}
+
+async function refreshDashboardSummary(silent) {
     const container = document.getElementById('aiAnalyticsContainer');
     if (!container || !business) return;
+    if (!silent) {
+        container.innerHTML = `<div class="empty"><i class="fa-solid fa-spinner fa-spin"></i> ${t('جارِ تحميل الملخص الذكي...', 'Loading smart summary...')}</div>`;
+    }
     try {
         const end = new Date(nowCorrected());
         const start = new Date(end);
         start.setDate(start.getDate() - 28);
-        const { sessions, orders, expenses } = await fetchAnalyticsPeriodData(start.toISOString(), end.toISOString());
+        // نحط سقف زمني (15 ثانية) عشان الملخص الذكي ميفضلش عالق في التحميل لو النت بطيء
+        const { sessions, orders, expenses } = await withTimeout(
+            fetchAnalyticsPeriodData(start.toISOString(), end.toISOString()),
+            15000,
+            'analytics-timeout'
+        );
         const a = computeAnalytics(sessions, orders, expenses);
+        const forecast = computeForecastFromDailyMap(a.dailyRevenueMap, 28);
 
         const now = new Date(nowCorrected());
         let curWeek = 0, prevWeek = 0;
@@ -661,31 +696,33 @@ async function refreshDashboardSummary() {
         }
         const growthPct = prevWeek > 0 ? Math.round(((curWeek - prevWeek) / prevWeek) * 100) : (curWeek > 0 ? 100 : 0);
 
-        renderDashboardAISummary(a, curWeek, growthPct);
+        renderDashboardAISummary(a, forecast, curWeek, growthPct);
     } catch (e) {
         console.warn('Dashboard AI summary failed:', e);
         if (container) {
-            container.innerHTML = `<div class="empty"><i class="fa-solid fa-triangle-exclamation"></i>${t('تعذر تحميل الملخص الذكي', 'Could not load smart summary')}</div>`;
+            container.innerHTML = `<div class="empty"><i class="fa-solid fa-triangle-exclamation"></i>${t('تعذر تحميل الملخص الذكي', 'Could not load smart summary')}</div>
+            <button class="btn btn-ghost btn-block" onclick="refreshDashboardSummary()" style="margin-top:4px;">
+                <i class="fa-solid fa-rotate-right"></i> ${t('إعادة المحاولة', 'Retry')}
+            </button>`;
         }
     }
 }
 
-function renderDashboardAISummary(a, curWeek, growthPct) {
+function renderDashboardAISummary(a, forecast, curWeek, growthPct) {
     const container = document.getElementById('aiAnalyticsContainer');
     if (!container) return;
-    if (!a || !a.ai) {
+    if (!a || !a.ai || !forecast) {
         container.innerHTML = `<div class="empty"><i class="fa-solid fa-spinner fa-spin"></i> ${t('جارِ تحميل الملخص الذكي...', 'Loading smart summary...')}</div>`;
         return;
     }
 
-    const { forecast } = a.ai;
     const trendClass = growthPct > 3 ? 'up' : (growthPct < -3 ? 'down' : 'stable');
     const trendIcon = trendClass === 'up' ? '▲' : (trendClass === 'down' ? '▼' : '■');
     const trendLabelText = trendClass === 'up'
         ? t('أعلى من الأسبوع اللي فات', 'higher than last week')
         : (trendClass === 'down' ? t('أقل من الأسبوع اللي فات', 'lower than last week') : t('زي الأسبوع اللي فات تقريبًا', 'similar to last week'));
 
-    const insights = generateSmartInsights(a);
+    const insights = generateSmartInsights(a, forecast);
     const headline = insights.length > 0 ? insights[0].text : t('لسه مفيش بيانات كافية لعرض ملخص ذكي.', 'Not enough data yet for a smart summary.');
 
     container.innerHTML = `
@@ -723,7 +760,7 @@ function startAIAnalyticsUpdater() {
     aiAnalyticsInterval = setInterval(() => {
         const dashEl = document.getElementById('view-dashboard');
         if (business && dashEl && dashEl.classList.contains('active')) {
-            refreshDashboardSummary();
+            refreshDashboardSummary(true); // تحديث صامت من غير ما نرجّع "جارِ التحميل" كل شوية
         }
     }, 60000); // تحديث كل دقيقة
 }
@@ -745,18 +782,24 @@ async function renderAnalytics() {
         const { sessions, orders, expenses } = await fetchAnalyticsPeriodData(startIso, endIso);
         const a = computeAnalytics(sessions, orders, expenses);
 
+        // نافذة ثابتة آخر 28 يوم للتوقعات (بغض النظر عن الفلتر المختار فوق)
+        // عشان رقم التوقع يبقى واحد وثابت في كل مكان في التطبيق
         const forecastEnd = new Date(nowCorrected());
         const forecastStart = new Date(forecastEnd);
         forecastStart.setDate(forecastStart.getDate() - 28);
-        const { sessions: fSessions, expenses: fExpenses } = (analyticsFilter === 'month')
-            ? { sessions, expenses }
-            : await fetchAnalyticsPeriodData(forecastStart.toISOString(), forecastEnd.toISOString());
-        const fRevenue = fSessions.reduce((s, r) => s + (Number(r.amount) || 0), 0);
+        const { sessions: fSessions, expenses: fExpenses } = await fetchAnalyticsPeriodData(forecastStart.toISOString(), forecastEnd.toISOString());
+        const fDailyRevenueMap = {};
+        fSessions.forEach(s => {
+            if (s.ended_at) {
+                const key = new Date(s.ended_at).toISOString().slice(0, 10);
+                fDailyRevenueMap[key] = (fDailyRevenueMap[key] || 0) + Number(s.amount || 0);
+            }
+        });
+        const forecast = computeForecastFromDailyMap(fDailyRevenueMap, 28);
         const fExpTotal = fExpenses.reduce((s, r) => s + (Number(r.amount) || 0), 0);
-        const avgDailyRevenue = fRevenue / 28;
         const avgDailyExpenses = fExpTotal / 28;
-        const forecastRevenue = avgDailyRevenue * 7;
-        const forecastExpenses = avgDailyExpenses * 7;
+        const forecastRevenue = forecast.week;
+        const forecastExpenses = Math.round(avgDailyExpenses * 7);
         const forecastNet = forecastRevenue - forecastExpenses;
 
         const useCharts = chartsAvailable();
@@ -771,7 +814,7 @@ async function renderAnalytics() {
         </div>`;
 
         // ---- Smart AI insights ----
-        html += buildAIInsightsHtml(a);
+        html += buildAIInsightsHtml(a, forecast);
 
         // ---- Revenue trend chart ----
         html += `<div class="section-title" style="margin-top:20px;">${t('نمو الإيراد', 'Revenue Growth')}</div>`;
