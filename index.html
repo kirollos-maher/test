@@ -13,7 +13,6 @@
 <script src="app.js?v=20260910"></script>
 <script src="analytics.js?v=20260910"></script>
 <script src="alerts.js?v=20260910"></script>
-<script src="whatsapp.js?v=20260910"></script>
 
 <style>
     /* ✅ DORAK Brand */
@@ -405,60 +404,6 @@
         color: var(--amber);
     }
 
-    /* ✅ WhatsApp Settings */
-    .whatsapp-option {
-        display: flex;
-        align-items: center;
-        justify-content: space-between;
-        padding: 10px 12px;
-        border-bottom: 1px solid var(--border);
-        cursor: pointer;
-        transition: background 0.2s;
-    }
-    .whatsapp-option:hover {
-        background: var(--bg-sunken);
-    }
-    .whatsapp-option:last-child {
-        border-bottom: none;
-    }
-    .whatsapp-option .option-info {
-        flex: 1;
-    }
-    .whatsapp-option .option-title {
-        font-weight: 600;
-        font-size: 13px;
-    }
-    .whatsapp-option .option-desc {
-        font-size: 10px;
-        color: var(--text-dim);
-        margin-top: 2px;
-    }
-    .whatsapp-option input[type="checkbox"] {
-        width: 18px;
-        height: 18px;
-        flex-shrink: 0;
-        cursor: pointer;
-        accent-color: var(--amber);
-    }
-    .whatsapp-status-summary {
-        display: flex;
-        align-items: center;
-        justify-content: space-between;
-        padding: 8px 12px;
-        background: var(--bg-sunken);
-        border-radius: var(--radius-sm);
-        font-size: 11px;
-        color: var(--text-dim);
-        margin-top: 10px;
-    }
-    .whatsapp-status-summary .count {
-        font-weight: 700;
-        color: var(--amber);
-    }
-    .whatsapp-status-summary .warning {
-        color: var(--red);
-    }
-
     /* ✅ Responsive adjustments for AI Analytics */
     @media (max-width: 480px) {
         .ai-analytics-grid {
@@ -752,10 +697,6 @@
         <div class="section-title" data-ar="الموظفين" data-en="Employees">الموظفين</div>
         <div class="panel" id="settingsEmployees"></div>
         <button class="btn btn-ghost btn-block" style="margin-top:8px;" onclick="openEmployeeSheet()"><i class="fa-solid fa-plus"></i> <span data-ar="إضافة موظف" data-en="Add Employee">إضافة موظف</span></button>
-
-        <!-- ============== WHATSAPP SETTINGS ============== -->
-        <div class="section-title" data-ar="تنبيهات واتساب" data-en="WhatsApp Notifications">تنبيهات واتساب</div>
-        <div id="settingsWhatsapp"></div>
 
         <div class="section-title" data-ar="النشاط" data-en="Business">النشاط</div>
         <button class="btn btn-ghost btn-block" onclick="switchBusiness()"><i class="fa-solid fa-right-left"></i> <span data-ar="تبديل النشاط" data-en="Switch Business">تبديل النشاط</span></button>
