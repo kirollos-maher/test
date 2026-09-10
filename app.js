@@ -54,7 +54,7 @@ function updateTexts() {
     renderSettingsPaymentMethods();
     if (document.getElementById('view-shift').classList.contains('active')) renderShiftView();
     if (document.getElementById('view-analytics').classList.contains('active')) renderAnalytics();
-    if (document.getElementById('view-settings').classList.contains('active')) { renderSettings(); renderWhatsappSettingsUI(); }
+    if (document.getElementById('view-settings').classList.contains('active')) { renderSettings(); }
 }
 
 function updateMonthNames() {
@@ -186,7 +186,7 @@ function navigateTo(viewId) {
     if (viewId === 'view-dashboard') renderDashboard();
     if (viewId === 'view-shift') renderShiftView();
     if (viewId === 'view-analytics') renderAnalytics();
-    if (viewId === 'view-settings') { renderSettings(); renderSettingsStations(); renderSettingsPaymentMethods(); renderWhatsappSettingsUI(); }
+    if (viewId === 'view-settings') { renderSettings(); renderSettingsStations(); renderSettingsPaymentMethods(); }
 }
 function openSheet(id) { document.getElementById(id).classList.add('show'); }
 function closeSheet(id) {
@@ -435,7 +435,6 @@ window.addEventListener('DOMContentLoaded', async () => {
     await tryAutoActivateFromURL();
     tryAutoResume();
     initCustomerPage();
-    loadWhatsappConfig();
 });
 
 // ============================================================
@@ -460,8 +459,6 @@ async function enterMainApp() {
     setInterval(syncServerClock, 5 * 60 * 1000);
 
     startQrOrderReminders();
-    loadWhatsappConfig();
-    startWhatsappAutoReports();
     if (typeof startAIAnalyticsUpdater === 'function') startAIAnalyticsUpdater();
 }
 
@@ -3526,8 +3523,6 @@ function renderSettings() {
         qrToggle.checked = qrOrderingEnabled;
     }
 
-    // عرض إعدادات واتساب
-    renderWhatsappSettingsUI();
 }
 
 // ============================================================
@@ -4802,9 +4797,7 @@ window.submitCustomerOrder = submitCustomerOrder;
 window.filterCustomerItems = filterCustomerItems;
 window.initCustomerPage = initCustomerPage;
 window.loadCustomerData = loadCustomerData;
-window.renderWhatsappSettingsUI = renderWhatsappSettingsUI;
 
 console.log('✅ DORAK App loaded successfully!');
 console.log('📱 QR ordering per station enabled');
 console.log('🔔 Ring notifications active');
-console.log('📱 WhatsApp notifications module ready');
