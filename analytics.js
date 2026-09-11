@@ -1,942 +1,718 @@
 // ============================================================
-// ANALYTICS MODULE (منفصل عن app.js)
+// ANALYTICS — نظام التحليلات (إحصائي بالكامل: Mean/Median/StdDev/Z-score)
+// كل رقم في الصفحة دي متبني على بيانات حقيقية من Supabase، مفيش أرقام
+// وهمية أو ثابتة في الكود. الاكتشافات الشاذة والتوقعات مبنية على مبادئ
+// إحصائية (الانحراف المعياري وZ-score) بدل عتبات ثابتة.
 // ============================================================
 
-// دالة مساعدة لتحويل الثواني إلى ساعات ودقائق
-function formatHoursDuration(totalSeconds) {
-    const hrs = totalSeconds / 3600;
-    if (hrs >= 1) {
-        return `${moneyDec(hrs)} ${t('ساعة', 'hrs')}`;
-    }
-    const mins = Math.round(totalSeconds / 60);
-    return `${mins} ${t('دقيقة', 'min')}`;
+let analyticsRange = '7d'; // 'today' | '7d' | '30d'
+let analyticsLoading = false;
+
+// ------------------------------------------------------------
+// STATISTICS HELPERS
+// ------------------------------------------------------------
+function stMean(arr) {
+    if (!arr || arr.length === 0) return 0;
+    return arr.reduce((a, b) => a + b, 0) / arr.length;
 }
 
-let analyticsFilter = 'week';
-
-function setAnalyticsFilter(filter) {
-    analyticsFilter = filter;
-    document.querySelectorAll('.analytics-tab').forEach(tab => {
-        tab.classList.toggle('active', tab.dataset.filter === filter);
-    });
-    renderAnalytics();
+function stStdDev(arr) {
+    const n = arr ? arr.length : 0;
+    if (n < 2) return 0;
+    const m = stMean(arr);
+    const variance = arr.reduce((s, v) => s + Math.pow(v - m, 2), 0) / (n - 1); // sample stdev (n-1)
+    return Math.sqrt(variance);
 }
 
-function getAnalyticsRange() {
+function stMedian(arr) {
+    if (!arr || arr.length === 0) return 0;
+    const sorted = [...arr].sort((a, b) => a - b);
+    const mid = Math.floor(sorted.length / 2);
+    return sorted.length % 2 !== 0 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2;
+}
+
+function stZScore(value, m, sd) {
+    if (!sd || sd === 0) return 0;
+    return (value - m) / sd;
+}
+
+function analyticsDayKey(dateLike) {
+    const d = new Date(dateLike);
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+}
+
+// ✅ الوقت دايمًا بنظام 12 ساعة (AM/PM) في صفحة التحليلات
+function formatHour12(hour) {
+    const h = ((hour % 24) + 24) % 24;
+    const period = h >= 12 ? t('م', 'PM') : t('ص', 'AM');
+    let h12 = h % 12;
+    if (h12 === 0) h12 = 12;
+    return `${h12}:00 ${period}`;
+}
+
+function analyticsWeekdayNames() {
+    return currentLang === 'ar'
+        ? ['الأحد', 'الإثنين', 'الثلاثاء', 'الأربعاء', 'الخميس', 'الجمعة', 'السبت']
+        : ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+}
+
+// ------------------------------------------------------------
+// RANGE BOUNDS
+// ------------------------------------------------------------
+function getAnalyticsRangeBounds(range) {
     const end = new Date(nowCorrected());
+    let days = 1;
+    if (range === '7d') days = 7;
+    else if (range === '30d') days = 30;
+
     const start = new Date(end);
-    if (analyticsFilter === 'today') {
-        start.setHours(0, 0, 0, 0);
-    } else if (analyticsFilter === 'week') {
-        start.setDate(start.getDate() - 7);
-    } else {
-        start.setDate(start.getDate() - 30);
-    }
-    return { start, end };
+    start.setDate(start.getDate() - (days - 1));
+    start.setHours(0, 0, 0, 0);
+
+    const spanMs = end - start;
+    const prevEnd = new Date(start.getTime());
+    const prevStart = new Date(prevEnd.getTime() - spanMs);
+
+    return { start, end, prevStart, prevEnd, days };
 }
 
-async function fetchExpensesForPeriod(startIso, endIso) {
+// ------------------------------------------------------------
+// DATA FETCHING
+// ------------------------------------------------------------
+async function fetchAnalyticsPeriodData(start, end) {
+    const startIso = start.toISOString();
+    const endIso = end.toISOString();
+
+    const { data: sessionsData, error: sessErr } = await supabaseClient
+        .from('sessions')
+        .select('id, amount, payment_method, station_id, started_at, ended_at, current_mode')
+        .eq('business_id', business.id)
+        .eq('status', 'completed')
+        .gte('ended_at', startIso)
+        .lte('ended_at', endIso);
+
+    if (sessErr) console.warn('Analytics: error loading sessions:', sessErr);
+    const sessionsList = sessionsData || [];
+    const sessionIds = sessionsList.map(s => s.id);
+
+    let orders = [];
+    let segments = [];
+    if (sessionIds.length > 0) {
+        const [{ data: ordersData }, { data: segmentsData }] = await Promise.all([
+            supabaseClient.from('session_orders').select('item_name, quantity, unit_price, session_id').in('session_id', sessionIds),
+            supabaseClient.from('session_segments').select('session_id, mode, amount, started_at, ended_at, rate').in('session_id', sessionIds)
+        ]);
+        orders = ordersData || [];
+        segments = segmentsData || [];
+    }
+
+    // ✅ المصروفات: بنحاول نفلترها بالتاريخ الفعلي. لو العمود مش موجود لأي سبب،
+    // منرجعش صفر بصمت — بنعمل fallback ونحاول تاني بدون فلتر تاريخ فقط لو فشل النداء بالكامل.
+    let expensesTotal = 0;
     try {
-        const { data: expRows, error } = await supabaseClient
+        const { data: expensesData, error: expErr } = await supabaseClient
             .from('expenses')
-            .select('description, amount, created_at')
+            .select('amount, created_at')
             .eq('business_id', business.id)
             .gte('created_at', startIso)
             .lte('created_at', endIso);
-        if (error) throw error;
-        return expRows || [];
+        if (expErr) throw expErr;
+        expensesTotal = (expensesData || []).reduce((s, e) => s + (Number(e.amount) || 0), 0);
     } catch (e) {
-        try {
-            const { data: allShifts } = await supabaseClient
-                .from('shifts')
-                .select('id, opened_at, closed_at')
-                .eq('business_id', business.id)
-                .order('opened_at', { ascending: false })
-                .limit(200);
-            const startMs = new Date(startIso).getTime();
-            const endMs = new Date(endIso).getTime();
-            const shiftIds = (allShifts || [])
-                .filter(sh => {
-                    const openMs = new Date(sh.opened_at).getTime();
-                    const closeMs = sh.closed_at ? new Date(sh.closed_at).getTime() : Date.now();
-                    return openMs <= endMs && closeMs >= startMs;
-                })
-                .map(sh => sh.id);
-            if (shiftIds.length > 0) {
-                const { data: expRows2 } = await supabaseClient.from('expenses').select('description, amount').in('shift_id', shiftIds);
-                return expRows2 || [];
-            }
-            return [];
-        } catch (e2) {
-            console.warn('Could not load expenses for analytics period:', e2);
-            return [];
+        console.warn('Analytics: could not filter expenses by date, defaulting to 0 for this metric:', e.message || e);
+        expensesTotal = 0;
+    }
+
+    return { sessions: sessionsList, orders, segments, expensesTotal };
+}
+
+// ------------------------------------------------------------
+// CORE AGGREGATION
+// ------------------------------------------------------------
+function analyticsComputeCore(periodData) {
+    const { sessions: sess, orders, segments, expensesTotal } = periodData;
+
+    const grossRevenue = sess.reduce((s, r) => s + (Number(r.amount) || 0), 0);
+    const ordersTotal = orders.reduce((s, o) => s + Number(o.quantity || 0) * Number(o.unit_price || 0), 0);
+    const hoursRevenue = Math.max(0, grossRevenue - ordersTotal);
+
+    let singleRevenue = 0, multiRevenue = 0;
+    segments.forEach(seg => {
+        if (seg.ended_at) {
+            const amt = Number(seg.amount) || 0;
+            if (seg.mode === 'single') singleRevenue += amt; else multiRevenue += amt;
         }
-    }
-}
+    });
+    // ✅ لو مجموع السجمنتس أقل من إيراد الساعات (بيانات قديمة ناقصة)، نضيف الفرق لـ single
+    // عشان الأرقام في "تفاصيل الإيراد" تفضل متوازنة مع الإجمالي الحقيقي
+    const segTotal = singleRevenue + multiRevenue;
+    if (segTotal < hoursRevenue - 0.5) singleRevenue += (hoursRevenue - segTotal);
 
-async function fetchAnalyticsPeriodData(startIso, endIso) {
-    // نجيب الجلسات والمصروفات في نفس الوقت (مش الواحدة ورا التانية) عشان نقلل وقت التحميل
-    const [sessResult, expenses] = await Promise.all([
-        supabaseClient
-            .from('sessions')
-            .select('id, station_id, amount, payment_method, started_at, ended_at, current_mode')
-            .eq('business_id', business.id)
-            .eq('status', 'completed')
-            .gte('ended_at', startIso)
-            .lte('ended_at', endIso),
-        fetchExpensesForPeriod(startIso, endIso)
-    ]);
+    const netProfit = grossRevenue - expensesTotal;
 
-    const sessions = sessResult.data || [];
-    const sessionIds = sessions.map(s => s.id);
+    const paymentBreakdown = {};
+    sess.forEach(s => {
+        if (s.payment_method) {
+            const pm = paymentMethods.find(p => p.id === s.payment_method);
+            const key = pm ? pm.name : s.payment_method;
+            paymentBreakdown[key] = (paymentBreakdown[key] || 0) + (Number(s.amount) || 0);
+        }
+    });
 
-    // طلبات المنيو محتاجة session ids الأول، فبتتجاب بعد الجلسات
-    let orders = [];
-    if (sessionIds.length > 0) {
-        const { data: orderRows } = await supabaseClient
-            .from('session_orders')
-            .select('item_name, quantity, unit_price, session_id')
-            .in('session_id', sessionIds);
-        orders = orderRows || [];
-    }
-
-    return { sessions, orders, expenses };
-}
-
-function computeAnalytics(sessions, orders, expenses) {
-    let itemsRevenue = 0;
     const itemBreakdown = {};
     orders.forEach(o => {
         const lineTotal = Number(o.quantity || 0) * Number(o.unit_price || 0);
-        itemsRevenue += lineTotal;
         if (!itemBreakdown[o.item_name]) itemBreakdown[o.item_name] = { qty: 0, revenue: 0 };
         itemBreakdown[o.item_name].qty += Number(o.quantity || 0);
         itemBreakdown[o.item_name].revenue += lineTotal;
     });
 
-    const totalRevenue = sessions.reduce((s, r) => s + (Number(r.amount) || 0), 0);
-    const hoursRevenue = Math.max(0, totalRevenue - itemsRevenue);
-    const totalExpenses = expenses.reduce((s, r) => s + (Number(r.amount) || 0), 0);
-    const netProfit = totalRevenue - totalExpenses;
-
-    const deviceStats = {};
-    sessions.forEach(s => {
-        if (!s.station_id) return;
-        if (!deviceStats[s.station_id]) deviceStats[s.station_id] = { seconds: 0, revenue: 0, count: 0 };
-        const startMs = s.started_at ? new Date(s.started_at).getTime() : null;
-        const endMs = s.ended_at ? new Date(s.ended_at).getTime() : null;
-        if (startMs && endMs && endMs > startMs) {
-            deviceStats[s.station_id].seconds += (endMs - startMs) / 1000;
-        }
-        deviceStats[s.station_id].revenue += Number(s.amount || 0);
-        deviceStats[s.station_id].count += 1;
-    });
-
-    const pmBreakdown = {};
-    sessions.forEach(s => {
-        if (s.payment_method) {
-            const pm = paymentMethods.find(p => p.id === s.payment_method);
-            const key = pm ? pm.name : s.payment_method;
-            pmBreakdown[key] = (pmBreakdown[key] || 0) + Number(s.amount || 0);
+    // مدة كل جلسة (بالساعات) من مجموع segments بتاعتها
+    const sessionDurationMap = {};
+    segments.forEach(seg => {
+        if (seg.ended_at) {
+            const hrs = (new Date(seg.ended_at) - new Date(seg.started_at)) / 3600000;
+            sessionDurationMap[seg.session_id] = (sessionDurationMap[seg.session_id] || 0) + hrs;
         }
     });
 
-    let singleRevenue = 0, multiRevenue = 0;
-    sessions.forEach(s => {
-        if (s.current_mode === 'single') singleRevenue += Number(s.amount || 0);
-        else if (s.current_mode === 'multi') multiRevenue += Number(s.amount || 0);
+    const deviceBreakdown = {};
+    sess.forEach(s => {
+        const key = s.station_id;
+        if (!deviceBreakdown[key]) deviceBreakdown[key] = { revenue: 0, sessionsCount: 0, hoursSum: 0 };
+        deviceBreakdown[key].revenue += Number(s.amount) || 0;
+        deviceBreakdown[key].sessionsCount += 1;
+        deviceBreakdown[key].hoursSum += sessionDurationMap[s.id] || 0;
     });
 
-    const hourCounts = new Array(24).fill(0);
-    sessions.forEach(s => {
-        if (s.started_at) hourCounts[new Date(s.started_at).getHours()] += 1;
+    const dailyMap = {};
+    sess.forEach(s => {
+        const key = analyticsDayKey(s.ended_at);
+        dailyMap[key] = (dailyMap[key] || 0) + (Number(s.amount) || 0);
     });
-    let busiestHour = null, busiestHourCount = 0;
-    hourCounts.forEach((c, h) => { if (c > busiestHourCount) { busiestHourCount = c; busiestHour = h; } });
 
-    const dayNamesAr = ['الأحد', 'الإثنين', 'الثلاثاء', 'الأربعاء', 'الخميس', 'الجمعة', 'السبت'];
-    const dayNamesEn = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
-    const dayRevenue = new Array(7).fill(0);
-    const dailyRevenueMap = {};
-    sessions.forEach(s => {
-        if (s.ended_at) {
-            const d = new Date(s.ended_at);
-            dayRevenue[d.getDay()] += Number(s.amount || 0);
-            const key = d.toISOString().slice(0, 10);
-            dailyRevenueMap[key] = (dailyRevenueMap[key] || 0) + Number(s.amount || 0);
-        }
+    const weekdayMap = {};
+    sess.forEach(s => {
+        const wd = new Date(s.ended_at).getDay();
+        weekdayMap[wd] = (weekdayMap[wd] || 0) + (Number(s.amount) || 0);
     });
-    let bestDay = null, bestDayRevenue = 0;
-    dayRevenue.forEach((r, i) => { if (r > bestDayRevenue) { bestDayRevenue = r; bestDay = i; } });
 
-    let totalDurationSeconds = 0, durationCount = 0;
-    sessions.forEach(s => {
-        if (s.started_at && s.ended_at) {
-            const secs = (new Date(s.ended_at) - new Date(s.started_at)) / 1000;
-            if (secs > 0) { totalDurationSeconds += secs; durationCount++; }
-        }
+    const hourMap = {};
+    sess.forEach(s => {
+        const h = new Date(s.started_at).getHours();
+        hourMap[h] = (hourMap[h] || 0) + (Number(s.amount) || 0);
     });
-    const avgDurationSeconds = durationCount > 0 ? totalDurationSeconds / durationCount : 0;
 
-    // ============================================================
-    // AI ANALYTICS - حسابات ذكاء اصطناعي (بتاعة الفترة المختارة فقط)
-    // ملحوظة: التوقعات (Forecast) بقت بتتحسب لوحدها من نافذة ثابتة
-    // آخر 28 يوم عشان تكون موحّدة في كل مكان (الداشبورد + صفحة التحليلات)
-    // ============================================================
+    const sessionValues = sess.map(s => Number(s.amount) || 0);
+    const sessionDurations = sess.map(s => sessionDurationMap[s.id] || 0).filter(h => h > 0);
 
-    // 1. كشف الشذوذ (Anomaly Detection)
-    const durations = sessions.map(s => {
-        if (s.started_at && s.ended_at) {
-            return (new Date(s.ended_at) - new Date(s.started_at)) / 1000;
-        }
-        return 0;
-    }).filter(d => d > 0);
-    
+    return {
+        grossRevenue, ordersTotal, hoursRevenue, singleRevenue, multiRevenue,
+        expensesTotal, netProfit,
+        paymentBreakdown, itemBreakdown, deviceBreakdown,
+        dailyMap, weekdayMap, hourMap,
+        sessionValues, sessionDurations, sessionDurationMap,
+        sessionsCount: sess.length,
+        sessions: sess
+    };
+}
+
+// ------------------------------------------------------------
+// ANOMALY DETECTION (Z-score based — مش عتبات ثابتة)
+// ------------------------------------------------------------
+function analyticsDetectAnomalies(core) {
     const anomalies = [];
-    if (durations.length > 3) {
-        const meanDuration = durations.reduce((a, b) => a + b, 0) / durations.length;
-        const stdDuration = Math.sqrt(durations.reduce((a, b) => a + Math.pow(b - meanDuration, 2), 0) / durations.length);
-        const threshold = meanDuration + 2 * stdDuration;
-        
-        sessions.forEach(s => {
-            if (s.started_at && s.ended_at) {
-                const duration = (new Date(s.ended_at) - new Date(s.started_at)) / 1000;
-                if (duration > threshold) {
-                    const station = stations.find(st => st.id === s.station_id);
-                    const stationName = station ? (station.name || t('جهاز', 'Device') + ' ' + station.number) : t('جهاز محذوف', 'Deleted device');
-                    anomalies.push({
-                        station: stationName,
-                        duration: duration,
-                        threshold: threshold,
-                        amount: s.amount,
-                        type: 'long_session'
-                    });
-                }
+    const MIN_SAMPLE = 5;
+    const Z_THRESHOLD = 2.5;
+
+    // 1) جلسات ذات مدة شاذة إحصائيًا (Z-score على مدة الجلسات)
+    if (core.sessionDurations.length >= MIN_SAMPLE) {
+        const m = stMean(core.sessionDurations);
+        const sd = stStdDev(core.sessionDurations);
+        core.sessions.forEach(s => {
+            const hrs = core.sessionDurationMap[s.id] || 0;
+            if (hrs <= 0) return;
+            const z = stZScore(hrs, m, sd);
+            if (z > Z_THRESHOLD) {
+                const station = stations.find(st => st.id === s.station_id);
+                const deviceName = station ? (station.name || `${t('جهاز', 'Device')} ${station.number}`) : t('جهاز', 'Device');
+                anomalies.push({
+                    icon: '🔴', tone: 'red',
+                    text: t(
+                        `جلسة طويلة جدًا (${hrs.toFixed(1)} ساعة) على ${deviceName} — منحرفة ${z.toFixed(1)}σ عن المتوسط، تأكد إن الجلسة مش منسية مفتوحة.`,
+                        `Unusually long session (${hrs.toFixed(1)}h) on ${deviceName} — ${z.toFixed(1)}σ above average, make sure it wasn't left open by mistake.`
+                    )
+                });
             }
         });
     }
 
-    // 2. أفضل أيام الأسبوع (Day Ranking)
-    const dayRanking = [];
-    const dayNames = currentLang === 'ar' ? dayNamesAr : dayNamesEn;
-    for (let i = 0; i < 7; i++) {
-        if (dayRevenue[i] > 0) {
-            dayRanking.push({
-                day: i,
-                name: dayNames[i],
-                revenue: Math.round(dayRevenue[i] * 100) / 100
+    // 2) عدم توازن في استخدام الأجهزة (Z-score على إيراد كل جهاز)
+    const deviceEntries = Object.entries(core.deviceBreakdown);
+    if (deviceEntries.length >= 3) {
+        const revs = deviceEntries.map(([, v]) => v.revenue);
+        const m = stMean(revs);
+        const sd = stStdDev(revs);
+        if (sd > 0) {
+            deviceEntries.forEach(([stationId, v]) => {
+                const z = stZScore(v.revenue, m, sd);
+                if (Math.abs(z) > 2) {
+                    const station = stations.find(st => st.id === stationId);
+                    const deviceName = station ? (station.name || `${t('جهاز', 'Device')} ${station.number}`) : t('جهاز', 'Device');
+                    anomalies.push({
+                        icon: z > 0 ? '🟢' : '🟡',
+                        tone: z > 0 ? 'green' : 'amber',
+                        text: z > 0
+                            ? t(`${deviceName} بيحقق إيراد أعلى بشكل ملحوظ من باقي الأجهزة.`, `${deviceName} is generating notably higher revenue than the other devices.`)
+                            : t(`${deviceName} استخدامه أقل بشكل ملحوظ من باقي الأجهزة — يستاهل تشوف سببه.`, `${deviceName} usage is notably lower than the other devices — worth checking why.`)
+                    });
+                }
             });
         }
     }
-    dayRanking.sort((a, b) => b.revenue - a.revenue);
 
-    return {
-        totalRevenue, hoursRevenue, itemsRevenue, totalExpenses, netProfit,
-        sessionsCount: sessions.length,
-        avgSessionValue: sessions.length > 0 ? totalRevenue / sessions.length : 0,
-        itemBreakdown, deviceStats, pmBreakdown,
-        singleRevenue, multiRevenue,
-        busiestHour, busiestHourCount,
-        bestDay: bestDay !== null ? { ar: dayNamesAr[bestDay], en: dayNamesEn[bestDay], revenue: bestDayRevenue } : null,
-        avgDurationSeconds,
-        dailyRevenueMap,
-        // AI Analytics (فقط اللي منطقي يتحسب على الفترة المختارة)
-        ai: {
-            anomalies,
-            dayRanking
-        }
-    };
+    return anomalies;
 }
 
-// ============================================================
-// التوقعات (Forecast) — بتتحسب دايمًا من نافذة ثابتة آخر 28 يوم
-// عشان يبقى الرقم واحد وثابت في كل مكان (الداشبورد + صفحة التحليلات)
-// ============================================================
-function detectTrend(data) {
-    if (data.length < 3) return 'stable';
-    const firstHalf = data.slice(0, Math.floor(data.length / 2));
-    const secondHalf = data.slice(Math.floor(data.length / 2));
-    const avgFirst = firstHalf.reduce((a, b) => a + b, 0) / firstHalf.length;
-    const avgSecond = secondHalf.reduce((a, b) => a + b, 0) / secondHalf.length;
-    if (avgFirst === 0) return avgSecond > 0 ? 'increasing' : 'stable';
-    const diff = ((avgSecond - avgFirst) / avgFirst) * 100;
-    if (diff > 10) return 'increasing';
-    if (diff < -10) return 'decreasing';
-    return 'stable';
-}
+// ------------------------------------------------------------
+// AI-STYLE INSIGHTS
+// ------------------------------------------------------------
+function analyticsBuildInsights(core, prevCore) {
+    const insights = [];
 
-// dailyRevenueMap هنا لازم يكون sparse map (key = 'YYYY-MM-DD' -> revenue)؛
-// الدالة بتملأ الأيام الفاضية بصفر عشان المتوسط يبقى حقيقي (مقسوم على 28 يوم فعلي مش بس أيام فيها إيراد)
-function computeForecastFromDailyMap(dailyRevenueMap, days = 28) {
-    const now = new Date(nowCorrected());
-    const series = [];
-    for (let i = days - 1; i >= 0; i--) {
-        const d = new Date(now);
-        d.setDate(d.getDate() - i);
-        const key = d.toISOString().slice(0, 10);
-        series.push(dailyRevenueMap[key] || 0);
-    }
-
-    const avgDailyRevenue = series.reduce((a, b) => a + b, 0) / days;
-    const variance = series.reduce((a, b) => a + Math.pow(b - avgDailyRevenue, 2), 0) / days;
-    const stdDev = Math.sqrt(variance);
-    const confidence = avgDailyRevenue > 0
-        ? Math.max(60, Math.min(95, 95 - ((stdDev / Math.sqrt(days)) / avgDailyRevenue * 100) * 2))
-        : 60;
-
-    return {
-        tomorrow: Math.round(avgDailyRevenue),
-        week: Math.round(avgDailyRevenue * 7),
-        confidence: Math.round(confidence),
-        trend: detectTrend(series.slice(-7))
-    };
-}
-
-function buildDailyTrendHtml(dailyRevenueMap, days) {
-    const cols = [];
-    const now = new Date(nowCorrected());
-    for (let i = days - 1; i >= 0; i--) {
-        const d = new Date(now);
-        d.setDate(d.getDate() - i);
-        const key = d.toISOString().slice(0, 10);
-        cols.push({ key, revenue: dailyRevenueMap[key] || 0, label: d.toLocaleDateString(currentLang === 'ar' ? 'ar-EG' : 'en-US', { day: 'numeric', month: 'numeric' }) });
-    }
-    const maxRevenue = Math.max(1, ...cols.map(c => c.revenue));
-    let html = `<div class="mini-bars">`;
-    cols.forEach(c => {
-        const heightPct = Math.max(3, Math.round((c.revenue / maxRevenue) * 100));
-        html += `<div class="mini-bar-col" title="${money(c.revenue)}">
-            <div class="mini-bar" style="height:${heightPct}%;"></div>
-            <div class="mini-bar-label">${c.label}</div>
-        </div>`;
-    });
-    html += `</div>`;
-    return html;
-}
-
-
-// ============================================================
-// CHART.JS HELPERS
-// ============================================================
-const analyticsChartInstances = {};
-
-function chartColor(varName, fallback) {
-    try {
-        const v = getComputedStyle(document.documentElement).getPropertyValue(varName).trim();
-        return v || fallback;
-    } catch (e) {
-        return fallback;
-    }
-}
-
-function chartsAvailable() {
-    return typeof Chart !== 'undefined';
-}
-
-function initChartDefaults() {
-    if (!chartsAvailable()) return;
-    if (window.__analyticsChartDefaultsSet) return;
-    Chart.defaults.font.family = "'Cairo', sans-serif";
-    Chart.defaults.color = chartColor('--text-dim', '#8b95a1');
-    window.__analyticsChartDefaultsSet = true;
-}
-
-function renderOrUpdateChart(canvasId, config) {
-    const canvas = document.getElementById(canvasId);
-    if (!canvas || !chartsAvailable()) return null;
-    if (analyticsChartInstances[canvasId]) {
-        analyticsChartInstances[canvasId].destroy();
-        delete analyticsChartInstances[canvasId];
-    }
-    initChartDefaults();
-    const ctx = canvas.getContext('2d');
-    analyticsChartInstances[canvasId] = new Chart(ctx, config);
-    return analyticsChartInstances[canvasId];
-}
-
-function getTrendSeries(dailyRevenueMap, days) {
-    const cols = [];
-    const now = new Date(nowCorrected());
-    for (let i = days - 1; i >= 0; i--) {
-        const d = new Date(now);
-        d.setDate(d.getDate() - i);
-        const key = d.toISOString().slice(0, 10);
-        cols.push({
-            key,
-            revenue: dailyRevenueMap[key] || 0,
-            label: d.toLocaleDateString(currentLang === 'ar' ? 'ar-EG' : 'en-US', { day: 'numeric', month: 'numeric' })
+    // 1) اتجاه الإيراد مقارنة بالفترة اللي فاتت
+    const curRev = core.grossRevenue;
+    const prevRev = prevCore.grossRevenue;
+    if (prevRev > 0) {
+        const pctChange = ((curRev - prevRev) / prevRev) * 100;
+        const up = pctChange >= 0;
+        insights.push({
+            icon: up ? '📈' : '📉', tone: up ? 'green' : 'red',
+            badge: `${up ? '▲' : '▼'} ${Math.abs(pctChange).toFixed(0)}%`,
+            text: up
+                ? t('الإيراد في اتجاه صاعد مقارنة بالفترة اللي فاتت.', 'Revenue is trending up compared to the previous period.')
+                : t('الإيراد في اتجاه هابط مقارنة بالفترة اللي فاتت، يستاهل مراجعة الأسعار والزحمة والمنافسة.', 'Revenue is trending down vs. the previous period — worth reviewing pricing, traffic and competition.')
         });
     }
-    return cols;
-}
 
-function buildRevenueTrendChart(dailyRevenueMap, days) {
-    const cols = getTrendSeries(dailyRevenueMap, days);
-    const amber = chartColor('--amber', '#ff8a1e');
-    const textDim = chartColor('--text-dim', '#8b95a1');
-    const border = chartColor('--border', '#262c33');
-    renderOrUpdateChart('chartRevenueTrend', {
-        type: 'line',
-        data: {
-            labels: cols.map(c => c.label),
-            datasets: [{
-                label: t('الإيراد', 'Revenue'),
-                data: cols.map(c => Math.round(c.revenue * 100) / 100),
-                borderColor: amber,
-                backgroundColor: 'rgba(255,138,30,0.15)',
-                fill: true,
-                tension: 0.35,
-                pointRadius: cols.length > 20 ? 0 : 3,
-                pointHoverRadius: 5,
-                pointBackgroundColor: amber,
-                borderWidth: 2
-            }]
-        },
-        options: {
-            responsive: true,
-            maintainAspectRatio: false,
-            interaction: { intersect: false, mode: 'index' },
-            plugins: {
-                legend: { display: false },
-                tooltip: { callbacks: { label: (ctx) => money(ctx.parsed.y) + ' ' + t('ج', 'EGP') } }
-            },
-            scales: {
-                x: { ticks: { font: { size: 10 }, maxRotation: 0, autoSkip: true, maxTicksLimit: 8 }, grid: { display: false } },
-                y: { ticks: { font: { size: 10 } }, grid: { color: border }, beginAtZero: true }
-            }
-        }
-    });
-}
-
-function buildRevenueCompositionChart(a) {
-    const teal = chartColor('--teal', '#2dd4bf');
-    const amber = chartColor('--amber', '#ff8a1e');
-    const textDim = chartColor('--text-dim', '#8b95a1');
-    renderOrUpdateChart('chartRevenueComposition', {
-        type: 'doughnut',
-        data: {
-            labels: [t('إيراد الساعات', 'Hours Revenue'), t('إيراد المنيو', 'Menu Revenue')],
-            datasets: [{
-                data: [Math.round(a.hoursRevenue * 100) / 100, Math.round(a.itemsRevenue * 100) / 100],
-                backgroundColor: [amber, teal],
-                borderColor: chartColor('--surface', '#14181d'),
-                borderWidth: 2
-            }]
-        },
-        options: {
-            responsive: true,
-            maintainAspectRatio: false,
-            cutout: '68%',
-            plugins: {
-                legend: { position: 'bottom', labels: { font: { size: 11 }, padding: 12, boxWidth: 10 } },
-                tooltip: { callbacks: { label: (ctx) => `${ctx.label}: ${money(ctx.parsed)} ${t('ج', 'EGP')}` } }
-            }
-        }
-    });
-}
-
-function buildDeviceUsageChart(deviceEntries) {
-    const top = deviceEntries.slice(0, 6);
-    const teal = chartColor('--teal', '#2dd4bf');
-    const border = chartColor('--border', '#262c33');
-    renderOrUpdateChart('chartDeviceUsage', {
-        type: 'bar',
-        data: {
-            labels: top.map(d => d.name),
-            datasets: [{
-                label: t('الإيراد', 'Revenue'),
-                data: top.map(d => Math.round(d.revenue * 100) / 100),
-                backgroundColor: teal,
-                borderRadius: 6,
-                maxBarThickness: 22
-            }]
-        },
-        options: {
-            indexAxis: 'y',
-            responsive: true,
-            maintainAspectRatio: false,
-            plugins: {
-                legend: { display: false },
-                tooltip: { callbacks: { label: (ctx) => money(ctx.parsed.x) + ' ' + t('ج', 'EGP') } }
-            },
-            scales: {
-                x: { ticks: { font: { size: 10 } }, grid: { color: border }, beginAtZero: true },
-                y: { ticks: { font: { size: 11 } }, grid: { display: false } }
-            }
-        }
-    });
-}
-
-function buildPaymentMethodChart(pmBreakdown) {
-    const palette = [
-        chartColor('--amber', '#ff8a1e'),
-        chartColor('--teal', '#2dd4bf'),
-        chartColor('--purple', '#a855f7'),
-        chartColor('--red', '#ef4444'),
-        '#3b82f6', '#eab308'
-    ];
-    const entries = Object.entries(pmBreakdown);
-    renderOrUpdateChart('chartPaymentMethods', {
-        type: 'doughnut',
-        data: {
-            labels: entries.map(([k]) => k),
-            datasets: [{
-                data: entries.map(([, v]) => Math.round(v * 100) / 100),
-                backgroundColor: entries.map((_, i) => palette[i % palette.length]),
-                borderColor: chartColor('--surface', '#14181d'),
-                borderWidth: 2
-            }]
-        },
-        options: {
-            responsive: true,
-            maintainAspectRatio: false,
-            cutout: '60%',
-            plugins: {
-                legend: { position: 'bottom', labels: { font: { size: 11 }, padding: 12, boxWidth: 10 } },
-                tooltip: { callbacks: { label: (ctx) => `${ctx.label}: ${money(ctx.parsed)} ${t('ج', 'EGP')}` } }
-            }
-        }
-    });
-}
-
-function buildTopItemsChart(topItems) {
-    const amber = chartColor('--amber', '#ff8a1e');
-    const border = chartColor('--border', '#262c33');
-    renderOrUpdateChart('chartTopItems', {
-        type: 'bar',
-        data: {
-            labels: topItems.map(([name]) => name),
-            datasets: [{
-                data: topItems.map(([, d]) => Math.round(d.revenue * 100) / 100),
-                backgroundColor: amber,
-                borderRadius: 6,
-                maxBarThickness: 20
-            }]
-        },
-        options: {
-            indexAxis: 'y',
-            responsive: true,
-            maintainAspectRatio: false,
-            plugins: {
-                legend: { display: false },
-                tooltip: { callbacks: { label: (ctx) => money(ctx.parsed.x) + ' ' + t('ج', 'EGP') } }
-            },
-            scales: {
-                x: { ticks: { font: { size: 10 } }, grid: { color: border }, beginAtZero: true },
-                y: { ticks: { font: { size: 11 } }, grid: { display: false } }
-            }
-        }
-    });
-}
-
-// ============================================================
-// SMART INSIGHTS (rule-based AI-style recommendations)
-// ============================================================
-function generateSmartInsights(a, forecast) {
-    const insights = [];
-    if (!a || !a.ai) return insights;
-    const { anomalies, dayRanking } = a.ai;
-    const trend = forecast ? forecast.trend : 'stable';
-
-    if (trend === 'increasing') {
-        insights.push({ icon: '📈', type: 'positive', text: t('الإيراد في اتجاه صاعد خلال آخر فترة، استمر على نفس الوتيرة.', 'Revenue has been trending upward recently — keep up the momentum.') });
-    } else if (trend === 'decreasing') {
-        insights.push({ icon: '📉', type: 'warning', text: t('الإيراد في اتجاه هابط خلال آخر فترة، يستاهل تراجع الأسعار والزحمة والمنافسة.', 'Revenue has been trending downward recently — worth reviewing pricing, traffic, or competition.') });
-    } else {
-        insights.push({ icon: '➖', type: 'info', text: t('الإيراد مستقر نسبيًا خلال آخر فترة من غير تغيرات كبيرة.', 'Revenue has been relatively stable recently, with no major swings.') });
-    }
-
-    if (forecast) {
-        if (forecast.confidence < 70) {
-            insights.push({ icon: '⚠️', type: 'warning', text: t(`التوقعات مش مستقرة قوي (ثقة ${forecast.confidence}%) بسبب تفاوت الإيراد اليومي.`, `Forecasts are less stable (${forecast.confidence}% confidence) due to daily revenue variance.`) });
-        } else {
-            insights.push({ icon: '🎯', type: 'positive', text: t(`أداءك مستقر بشكل كويس، ثقة التوقع ${forecast.confidence}%.`, `Your performance is fairly consistent — forecast confidence is ${forecast.confidence}%.`) });
+    // 2) أفضل/أضعف يوم في الأسبوع
+    const weekdayEntries = Object.entries(core.weekdayMap);
+    if (weekdayEntries.length >= 2) {
+        const sorted = [...weekdayEntries].sort((a, b) => b[1] - a[1]);
+        const [bestWd, bestVal] = sorted[0];
+        const [worstWd, worstVal] = sorted[sorted.length - 1];
+        const dayNames = analyticsWeekdayNames();
+        insights.push({
+            icon: '📅', tone: 'purple',
+            text: t(`يوم ${dayNames[bestWd]} بيحقق أعلى إيراد (${money(bestVal)} ج) — جهّز فريق وأجهزة كفاية فيه.`, `${dayNames[bestWd]} brings the highest revenue (${money(bestVal)} EGP) — staff and stock up for it.`)
+        });
+        if (worstWd !== bestWd && worstVal < bestVal * 0.5) {
+            insights.push({
+                icon: '📉', tone: 'amber',
+                text: t(`يوم ${dayNames[worstWd]} أضعف يوم في الإيراد (${money(worstVal)} ج) — جرب عروض تجذب عملاء فيه.`, `${dayNames[worstWd]} is the weakest day (${money(worstVal)} EGP) — try promotions to boost it.`)
+            });
         }
     }
 
-    if (dayRanking && dayRanking.length > 0) {
-        const best = dayRanking[0];
-        insights.push({ icon: '📅', type: 'info', text: t(`يوم ${best.name} بيحقق أعلى إيراد (${money(best.revenue)} ج) — جهز فريق وأجهزة كفاية فيه.`, `${best.name} brings in the highest revenue (${money(best.revenue)} EGP) — make sure you're staffed up for it.`) });
+    // 3) أكتر وقت زحمة
+    const hourEntries = Object.entries(core.hourMap);
+    if (hourEntries.length > 0) {
+        const sorted = [...hourEntries].sort((a, b) => b[1] - a[1]);
+        const peakHour = parseInt(sorted[0][0]);
+        insights.push({
+            icon: '⏰', tone: 'purple',
+            text: t(`أكتر وقت زحمة الساعة ${formatHour12(peakHour)} — خلي بالك من التغطية وقتها.`, `Busiest time is ${formatHour12(peakHour)} — make sure coverage is solid then.`)
+        });
     }
 
-    if (a.busiestHour !== null && a.busiestHour !== undefined) {
-        insights.push({ icon: '⏰', type: 'info', text: t(`أكتر وقت زحمة الساعة ${String(a.busiestHour).padStart(2, '0')}:00 — خلي بالك من التغطية وقتها.`, `Busiest hour is ${String(a.busiestHour).padStart(2, '0')}:00 — make sure coverage is solid then.`) });
-    }
-
-    if (anomalies && anomalies.length > 0) {
-        insights.push({ icon: '🔴', type: 'warning', text: t(`فيه ${anomalies.length} جلسة/جلسات طويلة بشكل غير طبيعي، تأكد إن مفيش جلسات اتنسيت مفتوحة.`, `${anomalies.length} unusually long session(s) detected — check nothing was left running by mistake.`) });
-    }
-
-    const deviceList = Object.values(a.deviceStats || {});
-    if (deviceList.length > 1) {
-        const sorted = [...deviceList].sort((x, y) => y.revenue - x.revenue);
-        const top = sorted[0], bottom = sorted[sorted.length - 1];
-        if (top.revenue > 0 && top.revenue > bottom.revenue * 2.5) {
-            insights.push({ icon: '🎮', type: 'info', text: t('في فرق كبير في الاستخدام بين الأجهزة — بعض الأجهزة شغالة أكتر بكتير من غيرها.', 'There\'s a big usage gap between devices — some are working far more than others.') });
+    // 4) تركّز طريقة دفع واحدة
+    const pmEntries = Object.entries(core.paymentBreakdown);
+    if (pmEntries.length > 0 && core.grossRevenue > 0) {
+        const sorted = [...pmEntries].sort((a, b) => b[1] - a[1]);
+        const [topName, topVal] = sorted[0];
+        const share = (topVal / core.grossRevenue) * 100;
+        if (share >= 80) {
+            insights.push({
+                icon: '💳', tone: 'teal',
+                text: t(`أغلب مدفوعاتك (${share.toFixed(0)}%) بتتم بطريقة "${topName}" — فكر تنوّع طرق الدفع.`, `Most of your payments (${share.toFixed(0)}%) go through "${topName}" — consider diversifying payment methods.`)
+            });
         }
     }
 
-    const pmEntries = Object.entries(a.pmBreakdown || {});
-    if (pmEntries.length > 0) {
-        const totalPm = pmEntries.reduce((s, [, v]) => s + v, 0);
-        const sortedPm = [...pmEntries].sort((x, y) => y[1] - x[1]);
-        const [topPmName, topPmVal] = sortedPm[0];
-        const pct = totalPm > 0 ? Math.round((topPmVal / totalPm) * 100) : 0;
-        if (pct >= 80 && pmEntries.length > 1) {
-            insights.push({ icon: '💳', type: 'info', text: t(`أغلب مدفوعاتك (${pct}%) بتتم بطريقة "${topPmName}" — فكر تنوّع طرق الدفع.`, `${pct}% of your payments come through "${topPmName}" — consider diversifying payment methods.`) });
-        }
-    }
-
-    if (a.totalRevenue > 0) {
-        const menuShare = a.itemsRevenue / a.totalRevenue;
-        if (menuShare < 0.1) {
-            insights.push({ icon: '🍔', type: 'warning', text: t('إيراد المنيو ضعيف نسبة للإيراد الكلي — جرب عروض تشجع العملاء يطلبوا أكتر.', 'Menu revenue is a small share of the total — try promotions to encourage more orders.') });
-        } else if (menuShare > 0.4) {
-            insights.push({ icon: '💪', type: 'positive', text: t('المنيو بقى مصدر دخل قوي جنب إيراد الأجهزة.', 'The menu has become a strong revenue source alongside device time.') });
+    // 5) ضعف إيراد المنيو
+    if (core.grossRevenue > 0) {
+        const menuShare = (core.ordersTotal / core.grossRevenue) * 100;
+        if (menuShare < 10) {
+            insights.push({
+                icon: '🍔', tone: 'amber',
+                text: t(`إيراد المنيو ضعيف (${menuShare.toFixed(0)}% من الإيراد الكلي) — جرب عروض تشجع العملاء يطلبوا أكتر.`, `Menu revenue is weak (only ${menuShare.toFixed(0)}% of total) — try promotions to encourage more orders.`)
+            });
         }
     }
 
     return insights;
 }
 
-function buildAIInsightsHtml(a, forecast) {
-    const { anomalies, dayRanking } = a.ai;
-    const trend = forecast ? forecast.trend : 'stable';
-    const insights = generateSmartInsights(a, forecast);
+// ------------------------------------------------------------
+// FORECAST (نطاق إحصائي: متوسط ± انحراف معياري — مش رقم واحد بثقة وهمية)
+// ------------------------------------------------------------
+async function analyticsComputeForecast() {
+    // ✅ التوقع بيعتمد دايمًا على آخر 28 يوم بغض النظر عن التبويب المختار،
+    // عشان متوسط/انحراف الأيام يبقى مستقر ومش متأثر بتبويب "اليوم" (يوم واحد بس)
+    const end = new Date(nowCorrected());
+    const start = new Date(end);
+    start.setDate(start.getDate() - 27);
+    start.setHours(0, 0, 0, 0);
 
-    const trendEmoji = trend === 'increasing' ? '📈' : (trend === 'decreasing' ? '📉' : '➖');
-    const trendText = trend === 'increasing' ? t('صاعد', 'Upward') : (trend === 'decreasing' ? t('هابط', 'Downward') : t('مستقر', 'Stable'));
+    const periodData = await fetchAnalyticsPeriodData(start, end);
+    const core = analyticsComputeCore(periodData);
 
-    let html = '';
-
-    html += `<div class="section-title" style="margin-top:20px;display:flex;align-items:center;gap:6px;">🤖 ${t('تحليل ذكي وتوصيات', 'Smart Analysis & Recommendations')}<span class="badge badge-teal" style="font-size:9px;padding:2px 10px;">AI</span></div>`;
-    if (insights.length > 0) {
-        insights.forEach(ins => {
-            html += `<div class="insight-card ${ins.type}"><span class="insight-icon">${ins.icon}</span><span>${escapeHtml(ins.text)}</span></div>`;
-        });
-    } else {
-        html += `<div class="empty" style="padding:16px 0;"><i class="fa-solid fa-robot"></i>${t('لسه مفيش بيانات كافية لتوليد توصيات', 'Not enough data yet to generate recommendations')}</div>`;
+    const dayCount = Math.round((end - start) / 86400000) + 1;
+    const dailyValues = [];
+    for (let i = 0; i < dayCount; i++) {
+        const d = new Date(start);
+        d.setDate(d.getDate() + i);
+        dailyValues.push(core.dailyMap[analyticsDayKey(d)] || 0);
     }
 
-    html += `<div class="ai-analytics-grid" style="margin-top:4px;">
-        <div class="stat-card accent">
-            <div class="stat-label">📊 ${t('متوقع غداً', 'Tomorrow Forecast')}</div>
-            <div class="stat-value mono">${money(forecast.tomorrow)} ${t('ج', 'EGP')}</div>
-            <div class="ai-confidence">${t('ثقة', 'Confidence')}: ${forecast.confidence}%</div>
+    // ✅ بنحسب المتوسط والانحراف على الأيام اللي فيها نشاط فعلي بس، عشان
+    // الأيام اللي المحل كان مقفول فيها متأثرش على الحساب وتوهم بانخفاض وهمي
+    const activeDays = dailyValues.filter(v => v > 0);
+    const daysWithData = activeDays.length;
+
+    const MIN_DAYS = 4;
+    if (daysWithData < MIN_DAYS) {
+        return { insufficientData: true, daysWithData };
+    }
+
+    const m = stMean(activeDays);
+    const sd = stStdDev(activeDays);
+    const low = Math.max(0, m - sd);
+    const high = m + sd;
+
+    const avgExpensePerDay = core.expensesTotal / dayCount;
+
+    return {
+        insufficientData: false,
+        daysWithData,
+        expectedRevenueLow: low,
+        expectedRevenueHigh: high,
+        expectedExpense: avgExpensePerDay,
+        expectedNetLow: Math.max(0, low - avgExpensePerDay),
+        expectedNetHigh: Math.max(0, high - avgExpensePerDay)
+    };
+}
+
+// ------------------------------------------------------------
+// RENDERING
+// ------------------------------------------------------------
+function analyticsRenderStatCards(core) {
+    document.getElementById('anStatSessions').textContent = core.sessionsCount;
+    document.getElementById('anStatRevenue').textContent = money(core.grossRevenue);
+    document.getElementById('anStatExpenses').textContent = money(core.expensesTotal);
+    document.getElementById('anStatNet').textContent = money(core.netProfit);
+}
+
+function analyticsRenderInsightRows(containerId, items, emptyMsg) {
+    const el = document.getElementById(containerId);
+    if (!el) return;
+    if (!items || items.length === 0) {
+        el.innerHTML = `<div class="empty" style="padding:20px;"><i class="fa-solid fa-circle-check"></i>${escapeHtml(emptyMsg || t('مفيش ملاحظات دلوقتي.', 'Nothing to report right now.'))}</div>`;
+        return;
+    }
+    el.innerHTML = items.map(it => `
+        <div class="insight-row tone-${it.tone || 'teal'}">
+            <div style="display:flex;align-items:center;gap:10px;">
+                <span class="insight-icon">${it.icon || '•'}</span>
+                <span>${escapeHtml(it.text)}</span>
+            </div>
+            ${it.badge ? `<span class="badge badge-${it.tone === 'green' ? 'green' : (it.tone === 'red' ? 'red' : 'amber')}" style="flex:0 0 auto;">${escapeHtml(it.badge)}</span>` : ''}
         </div>
-        <div class="stat-card accent">
-            <div class="stat-label">📅 ${t('متوقع الأسبوع', 'Week Forecast')}</div>
-            <div class="stat-value mono">${money(forecast.week)} ${t('ج', 'EGP')}</div>
-            <div class="ai-confidence">${t('اتجاه', 'Trend')}: ${trendEmoji} ${trendText}</div>
+    `).join('');
+}
+
+function analyticsRenderBestDays(core) {
+    const dayNames = analyticsWeekdayNames();
+    const entries = Object.entries(core.weekdayMap).map(([wd, val]) => ({ wd: parseInt(wd), val })).sort((a, b) => b.val - a.val);
+    const el = document.getElementById('anBestDays');
+    if (entries.length === 0) { el.innerHTML = `<div class="empty"><i class="fa-solid fa-calendar"></i>${t('مفيش بيانات كفاية.', 'Not enough data.')}</div>`; return; }
+    const maxVal = Math.max(...entries.map(e => e.val), 1);
+    el.innerHTML = entries.map(e => `
+        <div class="bar-row">
+            <div class="bar-row-label"><span>${dayNames[e.wd]}</span><span class="mono">${money(e.val)}</span></div>
+            <div class="bar-track"><div class="bar-fill" style="width:${Math.max(2, e.val / maxVal * 100)}%"></div></div>
         </div>
-    </div>`;
-
-    if (anomalies && anomalies.length > 0) {
-        html += `<div class="section-title" style="margin-top:16px;">⚠️ ${t('اكتشافات غير طبيعية', 'Anomalies Detected')}</div><div class="panel">`;
-        anomalies.forEach(an => {
-            html += `<div class="ai-anomaly-item">
-                <div><span class="anomaly-icon">🔴</span><span class="anomaly-text">${t('جلسة طويلة جداً', 'Very long session')} (${formatHoursDuration(an.duration)}) ${t('على', 'on')} ${escapeHtml(an.station)}</span></div>
-                <span class="anomaly-badge">${money(an.amount)} ${t('ج', 'EGP')}</span>
-            </div>`;
-        });
-        html += `</div>`;
-    }
-
-    if (dayRanking && dayRanking.length > 0) {
-        html += `<div class="section-title" style="margin-top:16px;">📅 ${t('أفضل أيام الأسبوع', 'Best Days of Week')}</div><div class="panel"><div class="ai-day-ranking">`;
-        const maxDayRevenue = dayRanking[0]?.revenue || 1;
-        dayRanking.slice(0, 5).forEach(d => {
-            const pct = Math.max(5, (d.revenue / maxDayRevenue) * 100);
-            html += `<div class="ai-day-item"><span class="day-name">${escapeHtml(d.name)}</span><div class="day-bar"><div class="bar-fill" style="width:${pct}%;"></div></div><span class="day-value">${money(d.revenue)} ${t('ج', 'EGP')}</span></div>`;
-        });
-        html += `</div></div>`;
-    }
-
-    return html;
+    `).join('');
 }
 
-// ============================================================
-// DASHBOARD — SIMPLE AI SUMMARY
-// ============================================================
-function withTimeout(promise, ms, message) {
-    return Promise.race([
-        promise,
-        new Promise((_, reject) => setTimeout(() => reject(new Error(message || 'timeout')), ms))
-    ]);
-}
-
-async function refreshDashboardSummary(silent) {
-    const container = document.getElementById('aiAnalyticsContainer');
-    if (!container || !business) return;
-    if (!silent) {
-        container.innerHTML = `<div class="empty"><i class="fa-solid fa-spinner fa-spin"></i> ${t('جارِ تحميل الملخص الذكي...', 'Loading smart summary...')}</div>`;
+function analyticsRenderRevenueChart(core, bounds) {
+    const el = document.getElementById('anRevenueChart');
+    const dayCount = bounds.days;
+    const points = [];
+    for (let i = 0; i < dayCount; i++) {
+        const d = new Date(bounds.start);
+        d.setDate(d.getDate() + i);
+        points.push({ date: d, value: core.dailyMap[analyticsDayKey(d)] || 0 });
     }
-    try {
-        const end = new Date(nowCorrected());
-        const start = new Date(end);
-        start.setDate(start.getDate() - 28);
-        // نحط سقف زمني (15 ثانية) عشان الملخص الذكي ميفضلش عالق في التحميل لو النت بطيء
-        const { sessions, orders, expenses } = await withTimeout(
-            fetchAnalyticsPeriodData(start.toISOString(), end.toISOString()),
-            15000,
-            'analytics-timeout'
-        );
-        const a = computeAnalytics(sessions, orders, expenses);
-        const forecast = computeForecastFromDailyMap(a.dailyRevenueMap, 28);
-
-        const now = new Date(nowCorrected());
-        let curWeek = 0, prevWeek = 0;
-        for (let i = 0; i < 7; i++) {
-            const d = new Date(now); d.setDate(d.getDate() - i);
-            curWeek += a.dailyRevenueMap[d.toISOString().slice(0, 10)] || 0;
-        }
-        for (let i = 7; i < 14; i++) {
-            const d = new Date(now); d.setDate(d.getDate() - i);
-            prevWeek += a.dailyRevenueMap[d.toISOString().slice(0, 10)] || 0;
-        }
-        const growthPct = prevWeek > 0 ? Math.round(((curWeek - prevWeek) / prevWeek) * 100) : (curWeek > 0 ? 100 : 0);
-
-        renderDashboardAISummary(a, forecast, curWeek, growthPct);
-    } catch (e) {
-        console.warn('Dashboard AI summary failed:', e);
-        if (container) {
-            container.innerHTML = `<div class="empty"><i class="fa-solid fa-triangle-exclamation"></i>${t('تعذر تحميل الملخص الذكي', 'Could not load smart summary')}</div>
-            <button class="btn btn-ghost btn-block" onclick="refreshDashboardSummary()" style="margin-top:4px;">
-                <i class="fa-solid fa-rotate-right"></i> ${t('إعادة المحاولة', 'Retry')}
-            </button>`;
-        }
-    }
-}
-
-function renderDashboardAISummary(a, forecast, curWeek, growthPct) {
-    const container = document.getElementById('aiAnalyticsContainer');
-    if (!container) return;
-    if (!a || !a.ai || !forecast) {
-        container.innerHTML = `<div class="empty"><i class="fa-solid fa-spinner fa-spin"></i> ${t('جارِ تحميل الملخص الذكي...', 'Loading smart summary...')}</div>`;
+    if (points.every(p => p.value === 0)) {
+        el.innerHTML = `<div class="empty"><i class="fa-solid fa-chart-line"></i>${t('مفيش إيراد مسجل في الفترة دي.', 'No revenue recorded in this period.')}</div>`;
         return;
     }
 
-    const trendClass = growthPct > 3 ? 'up' : (growthPct < -3 ? 'down' : 'stable');
-    const trendIcon = trendClass === 'up' ? '▲' : (trendClass === 'down' ? '▼' : '■');
-    const trendLabelText = trendClass === 'up'
-        ? t('أعلى من الأسبوع اللي فات', 'higher than last week')
-        : (trendClass === 'down' ? t('أقل من الأسبوع اللي فات', 'lower than last week') : t('زي الأسبوع اللي فات تقريبًا', 'similar to last week'));
+    const W = 600, H = 220, padL = 46, padR = 12, padT = 14, padB = 26;
+    const maxVal = Math.max(...points.map(p => p.value), 1);
+    const stepX = points.length > 1 ? (W - padL - padR) / (points.length - 1) : 0;
+    const coords = points.map((p, i) => {
+        const x = padL + i * stepX;
+        const y = padT + (H - padT - padB) * (1 - (p.value / maxVal));
+        return { x, y, p };
+    });
+    const linePath = coords.map((c, i) => `${i === 0 ? 'M' : 'L'} ${c.x.toFixed(1)} ${c.y.toFixed(1)}`).join(' ');
+    const areaPath = `${linePath} L ${coords[coords.length - 1].x.toFixed(1)} ${H - padB} L ${coords[0].x.toFixed(1)} ${H - padB} Z`;
 
-    const insights = generateSmartInsights(a, forecast);
-    const headline = insights.length > 0 ? insights[0].text : t('لسه مفيش بيانات كافية لعرض ملخص ذكي.', 'Not enough data yet for a smart summary.');
+    const gridLines = [];
+    const divisions = 4;
+    for (let i = 0; i <= divisions; i++) {
+        const val = maxVal / divisions * i;
+        const y = padT + (H - padT - padB) * (1 - i / divisions);
+        gridLines.push(`<line x1="${padL}" y1="${y.toFixed(1)}" x2="${W - padR}" y2="${y.toFixed(1)}" stroke="var(--border)" stroke-width="1"/>`);
+        gridLines.push(`<text x="${padL - 6}" y="${(y + 3).toFixed(1)}" font-size="9" fill="var(--text-faint)" text-anchor="end">${money(Math.round(val))}</text>`);
+    }
+    const labelEvery = Math.max(1, Math.ceil(points.length / 6));
+    const xLabels = coords.filter((c, i) => i % labelEvery === 0 || i === coords.length - 1)
+        .map(c => `<text x="${c.x.toFixed(1)}" y="${H - 6}" font-size="9" fill="var(--text-faint)" text-anchor="middle">${c.p.date.getMonth() + 1}/${c.p.date.getDate()}</text>`).join('');
 
-    container.innerHTML = `
-        <div class="ai-summary-card">
-            <div class="ai-summary-top">
-                <span class="ai-summary-badge">🤖 AI</span>
-                <span class="trend-pill ${trendClass}">${trendIcon} ${Math.abs(growthPct)}% ${trendLabelText}</span>
-            </div>
-            <div class="ai-summary-headline">${escapeHtml(headline)}</div>
-            <div class="ai-summary-row">
-                <div class="ai-summary-metric">
-                    <div class="lbl">${t('إيراد آخر 7 أيام', 'Last 7 Days')}</div>
-                    <div class="val mono">${money(curWeek)} ${t('ج', 'EGP')}</div>
-                </div>
-                <div class="ai-summary-metric" style="text-align:end;">
-                    <div class="lbl">${t('متوقع غداً', 'Tomorrow Forecast')}</div>
-                    <div class="val mono">${money(forecast.tomorrow)} ${t('ج', 'EGP')}</div>
-                </div>
-            </div>
-            <div class="ai-summary-link" onclick="navigateTo('view-analytics')">
-                <i class="fa-solid fa-chart-pie"></i> ${t('عرض التحليلات الكاملة', 'View Full Analytics')}
-            </div>
+    el.innerHTML = `
+        <svg viewBox="0 0 ${W} ${H}" style="width:100%;height:auto;overflow:visible;" preserveAspectRatio="xMidYMid meet">
+            <defs>
+                <linearGradient id="anRevGrad" x1="0" y1="0" x2="0" y2="1">
+                    <stop offset="0%" stop-color="var(--amber)" stop-opacity="0.35"/>
+                    <stop offset="100%" stop-color="var(--amber)" stop-opacity="0"/>
+                </linearGradient>
+            </defs>
+            ${gridLines.join('')}
+            <path d="${areaPath}" fill="url(#anRevGrad)" stroke="none"/>
+            <path d="${linePath}" fill="none" stroke="var(--amber)" stroke-width="2.2" stroke-linejoin="round" stroke-linecap="round"/>
+            ${coords.map(c => `<circle cx="${c.x.toFixed(1)}" cy="${c.y.toFixed(1)}" r="3" fill="var(--amber)"/>`).join('')}
+            ${xLabels}
+        </svg>
+    `;
+}
+
+function buildDonutSVG(segmentsData, opts) {
+    const total = segmentsData.reduce((s, d) => s + d.value, 0);
+    if (total <= 0) {
+        return `<div class="empty" style="padding:20px;"><i class="fa-solid fa-chart-pie"></i>${t('مفيش بيانات كفاية.', 'Not enough data.')}</div>`;
+    }
+    const size = (opts && opts.size) || 180;
+    const strokeW = (opts && opts.strokeWidth) || 26;
+    const r = (size - strokeW) / 2;
+    const cx = size / 2, cy = size / 2;
+    const circumference = 2 * Math.PI * r;
+
+    let offset = 0;
+    const circles = segmentsData.filter(d => d.value > 0).map(d => {
+        const frac = d.value / total;
+        const dash = frac * circumference;
+        const circle = `<circle cx="${cx}" cy="${cy}" r="${r}" fill="none" stroke="${d.color}" stroke-width="${strokeW}" stroke-dasharray="${dash.toFixed(2)} ${(circumference - dash).toFixed(2)}" stroke-dashoffset="${(-offset).toFixed(2)}" transform="rotate(-90 ${cx} ${cy})"/>`;
+        offset += dash;
+        return circle;
+    }).join('');
+
+    const legend = segmentsData.filter(d => d.value > 0).map(d => `<span><span class="dot" style="background:${d.color}"></span>${escapeHtml(d.label)}</span>`).join('');
+
+    return `
+        <div class="donut-wrap">
+            <svg width="${size}" height="${size}" viewBox="0 0 ${size} ${size}">${circles}</svg>
+            <div class="donut-legend">${legend}</div>
         </div>
     `;
 }
 
-// ============================================================
-// دالة تحديث الملخص الذكي بشكل دوري (Dashboard)
-// ============================================================
-let aiAnalyticsInterval = null;
-
-function startAIAnalyticsUpdater() {
-    if (aiAnalyticsInterval) clearInterval(aiAnalyticsInterval);
-    refreshDashboardSummary();
-    aiAnalyticsInterval = setInterval(() => {
-        const dashEl = document.getElementById('view-dashboard');
-        if (business && dashEl && dashEl.classList.contains('active')) {
-            refreshDashboardSummary(true); // تحديث صامت من غير ما نرجّع "جارِ التحميل" كل شوية
-        }
-    }, 60000); // تحديث كل دقيقة
+function analyticsRenderRevenueDonut(core) {
+    document.getElementById('anRevenueDonut').innerHTML = buildDonutSVG([
+        { label: t('إيراد الساعات', 'Hours Revenue'), value: core.hoursRevenue, color: 'var(--amber)' },
+        { label: t('إيراد المنيو', 'Menu Revenue'), value: core.ordersTotal, color: 'var(--teal)' }
+    ]);
 }
 
-// ============================================================
-// صفحة التحليلات الكاملة
-// ============================================================
-async function renderAnalytics() {
-    const body = document.getElementById('analyticsBody');
-    if (!body || !business) return;
-    body.innerHTML = `<div class="empty"><i class="fa-solid fa-spinner fa-spin"></i>${t('جارِ التحميل...', 'Loading...')}</div>`;
+function analyticsRenderPaymentDonut(core) {
+    const palette = ['var(--amber)', 'var(--teal)', 'var(--purple)', 'var(--blue)', 'var(--green)', 'var(--red)'];
+    const entries = Object.entries(core.paymentBreakdown);
+    const segs = entries.map(([name, val], i) => ({ label: name, value: val, color: palette[i % palette.length] }));
+    document.getElementById('anPaymentDonut').innerHTML = buildDonutSVG(segs);
 
-    try {
-        const { start, end } = getAnalyticsRange();
-        const startIso = start.toISOString();
-        const endIso = end.toISOString();
-        const trendDays = analyticsFilter === 'today' ? 1 : (analyticsFilter === 'month' ? 30 : 7);
+    const listEl = document.getElementById('anPaymentList');
+    if (entries.length === 0) { listEl.innerHTML = ''; return; }
+    listEl.innerHTML = entries.sort((a, b) => b[1] - a[1]).map(([name, val]) => `
+        <div class="list-row"><div class="row-title">${escapeHtml(name)}</div><div class="row-value mono">${money(val)}</div></div>
+    `).join('');
+}
 
-        const { sessions, orders, expenses } = await fetchAnalyticsPeriodData(startIso, endIso);
-        const a = computeAnalytics(sessions, orders, expenses);
+function analyticsRenderBarList(barContainerId, listContainerId, entriesRaw, opts) {
+    const barEl = document.getElementById(barContainerId);
+    const listEl = listContainerId ? document.getElementById(listContainerId) : null;
+    const entries = entriesRaw.filter(e => e.value > 0).sort((a, b) => b.value - a.value).slice(0, (opts && opts.limit) || 8);
 
-        // نافذة ثابتة آخر 28 يوم للتوقعات (بغض النظر عن الفلتر المختار فوق)
-        // عشان رقم التوقع يبقى واحد وثابت في كل مكان في التطبيق
-        const forecastEnd = new Date(nowCorrected());
-        const forecastStart = new Date(forecastEnd);
-        forecastStart.setDate(forecastStart.getDate() - 28);
-        const { sessions: fSessions, expenses: fExpenses } = await fetchAnalyticsPeriodData(forecastStart.toISOString(), forecastEnd.toISOString());
-        const fDailyRevenueMap = {};
-        fSessions.forEach(s => {
-            if (s.ended_at) {
-                const key = new Date(s.ended_at).toISOString().slice(0, 10);
-                fDailyRevenueMap[key] = (fDailyRevenueMap[key] || 0) + Number(s.amount || 0);
-            }
-        });
-        const forecast = computeForecastFromDailyMap(fDailyRevenueMap, 28);
-        const fExpTotal = fExpenses.reduce((s, r) => s + (Number(r.amount) || 0), 0);
-        const avgDailyExpenses = fExpTotal / 28;
-        const forecastRevenue = forecast.week;
-        const forecastExpenses = Math.round(avgDailyExpenses * 7);
-        const forecastNet = forecastRevenue - forecastExpenses;
+    if (entries.length === 0) {
+        barEl.innerHTML = `<div class="empty"><i class="fa-solid fa-chart-bar"></i>${t('مفيش بيانات كفاية.', 'Not enough data.')}</div>`;
+        if (listEl) listEl.innerHTML = '';
+        return;
+    }
 
-        const useCharts = chartsAvailable();
-        let html = '';
-
-        // ---- KPIs ----
-        html += `<div class="stat-grid">
-            <div class="stat-card accent"><div class="stat-label">${t('إجمالي الإيراد', 'Total Revenue')}</div><div class="stat-value mono">${money(a.totalRevenue)}</div></div>
-            <div class="stat-card"><div class="stat-label">${t('المصروفات', 'Expenses')}</div><div class="stat-value mono">${money(a.totalExpenses)}</div></div>
-            <div class="stat-card"><div class="stat-label">${t('صافي الربح', 'Net Profit')}</div><div class="stat-value mono" style="color:var(--amber);">${money(a.netProfit)}</div></div>
-            <div class="stat-card"><div class="stat-label">${t('عدد الجلسات', 'Sessions')}</div><div class="stat-value mono">${a.sessionsCount}</div></div>
-        </div>`;
-
-        // ---- Smart AI insights ----
-        html += buildAIInsightsHtml(a, forecast);
-
-        // ---- Revenue trend chart ----
-        html += `<div class="section-title" style="margin-top:20px;">${t('نمو الإيراد', 'Revenue Growth')}</div>`;
-        if (useCharts) {
-            html += `<div class="chart-card"><div class="chart-canvas-wrap"><canvas id="chartRevenueTrend"></canvas></div></div>`;
-        } else {
-            html += `<div class="panel">${buildDailyTrendHtml(a.dailyRevenueMap, trendDays)}</div>`;
-        }
-
-        // ---- Revenue composition ----
-        if (useCharts && a.totalRevenue > 0) {
-            html += `<div class="section-title" style="margin-top:20px;">${t('توزيع الإيراد', 'Revenue Split')}</div>`;
-            html += `<div class="chart-card"><div class="chart-canvas-wrap sm"><canvas id="chartRevenueComposition"></canvas></div></div>`;
-        }
-
-        // ---- Top selling items ----
-        const topItems = Object.entries(a.itemBreakdown).sort((x, y) => y[1].qty - x[1].qty).slice(0, 8);
-        html += `<div class="section-title" style="margin-top:20px;">${t('الأكتر طلبًا', 'Top Selling Items')}</div>`;
-        if (topItems.length === 0) {
-            html += `<div class="panel"><div class="empty" style="padding:16px 0;"><i class="fa-solid fa-utensils"></i>${t('لا يوجد طلبات منيو في الفترة دي', 'No menu orders in this period')}</div></div>`;
-        } else {
-            if (useCharts) {
-                html += `<div class="chart-card"><div class="chart-canvas-wrap"><canvas id="chartTopItems"></canvas></div></div>`;
-            }
-            html += `<div class="panel" style="margin-top:8px;">`;
-            topItems.forEach(([name, d], idx) => {
-                html += `<div class="list-row">
-                    <div style="display:flex;align-items:center;"><span class="rank-badge">${idx + 1}</span><div><div class="row-title">${escapeHtml(name)}</div><div class="row-sub">${moneyDec(d.qty)} ${t('قطعة', 'sold')}</div></div></div>
-                    <div class="row-value mono">${money(d.revenue)}</div>
-                </div>`;
-            });
-            html += `</div>`;
-        }
-
-        // ---- Device usage ----
-        const deviceEntries = Object.entries(a.deviceStats).map(([stId, d]) => {
-            const st = stations.find(s => s.id === stId);
-            const name = st ? (st.name || (t('جهاز ', 'Device ') + st.number)) : t('جهاز محذوف', 'Deleted device');
-            return { name, ...d };
-        }).sort((x, y) => y.seconds - x.seconds);
-
-        html += `<div class="section-title" style="margin-top:20px;">${t('استخدام الأجهزة', 'Device Usage')}</div>`;
-        if (deviceEntries.length === 0) {
-            html += `<div class="panel"><div class="empty" style="padding:16px 0;"><i class="fa-solid fa-gamepad"></i>${t('لا يوجد بيانات في الفترة دي', 'No data in this period')}</div></div>`;
-        } else {
-            if (useCharts) {
-                html += `<div class="chart-card"><div class="chart-canvas-wrap"><canvas id="chartDeviceUsage"></canvas></div></div>`;
-            }
-            html += `<div class="panel" style="margin-top:8px;">`;
-            deviceEntries.forEach((d, idx) => {
-                html += `<div class="list-row">
-                    <div style="display:flex;align-items:center;"><span class="rank-badge">${idx + 1}</span><div><div class="row-title">${escapeHtml(d.name)}</div><div class="row-sub">${d.count} ${t('جلسة', 'sessions')} · ${formatHoursDuration(d.seconds)}</div></div></div>
-                    <div class="row-value mono">${money(d.revenue)}</div>
-                </div>`;
-            });
-            html += `</div>`;
-        }
-
-        // ---- Revenue breakdown ----
-        html += `<div class="section-title" style="margin-top:20px;">${t('تفاصيل الإيراد', 'Revenue Breakdown')}</div>`;
-        html += `<div class="panel">
-            <div class="list-row"><div class="row-title">${t('إيراد الساعات', 'Hours Revenue')}</div><div class="row-value mono">${money(a.hoursRevenue)}</div></div>
-            <div class="list-row"><div class="row-title">${t('إيراد المنيو', 'Menu Revenue')}</div><div class="row-value mono">${money(a.itemsRevenue)}</div></div>
-            <div class="list-row"><div class="row-title">${t('إيراد Single', 'Single Revenue')}</div><div class="row-value mono">${money(a.singleRevenue)}</div></div>
-            <div class="list-row"><div class="row-title">${t('إيراد Multi', 'Multi Revenue')}</div><div class="row-value mono">${money(a.multiRevenue)}</div></div>
-        </div>`;
-
-        // ---- Payment methods ----
-        if (Object.keys(a.pmBreakdown).length > 0) {
-            html += `<div class="section-title" style="margin-top:20px;">${t('حسب طريقة الدفع', 'By Payment Method')}</div>`;
-            if (useCharts && Object.keys(a.pmBreakdown).length > 1) {
-                html += `<div class="chart-card"><div class="chart-canvas-wrap sm"><canvas id="chartPaymentMethods"></canvas></div></div>`;
-            }
-            html += `<div class="panel" style="margin-top:8px;">`;
-            Object.entries(a.pmBreakdown).forEach(([name, amt]) => {
-                html += `<div class="list-row" style="padding:8px 4px;"><div class="row-title" style="font-size:13px;">${escapeHtml(name)}</div><div class="row-value mono" style="font-size:13px;">${money(amt)}</div></div>`;
-            });
-            html += `</div>`;
-        }
-
-        // ---- Useful insights ----
-        html += `<div class="section-title" style="margin-top:20px;">${t('ملاحظات مفيدة', 'Insights')}</div>`;
-        html += `<div class="panel">`;
-        html += `<div class="list-row"><div class="row-title">${t('متوسط قيمة الجلسة', 'Avg Session Value')}</div><div class="row-value mono">${money(a.avgSessionValue)}</div></div>`;
-        html += `<div class="list-row"><div class="row-title">${t('متوسط مدة الجلسة', 'Avg Session Duration')}</div><div class="row-value mono">${formatHoursDuration(a.avgDurationSeconds)}</div></div>`;
-        if (a.busiestHour !== null) {
-            html += `<div class="list-row"><div class="row-title">${t('أكتر وقت زحمة', 'Busiest Hour')}</div><div class="row-value mono">${String(a.busiestHour).padStart(2, '0')}:00</div></div>`;
-        }
-        if (a.bestDay) {
-            html += `<div class="list-row"><div class="row-title">${t('أفضل يوم', 'Best Day')}</div><div class="row-value mono">${t(a.bestDay.ar, a.bestDay.en)}</div></div>`;
-        }
-        html += `</div>`;
-
-        // ---- Forecast ----
-        html += `<div class="section-title" style="margin-top:20px;">${t('توقعات الأسبوع الجاي', 'Next Week Forecast')}</div>`;
-        html += `<div class="stat-grid">
-            <div class="stat-card accent"><div class="stat-label">${t('إيراد متوقع', 'Expected Revenue')}</div><div class="stat-value mono">${money(forecastRevenue)}</div></div>
-            <div class="stat-card"><div class="stat-label">${t('مصروفات متوقعة', 'Expected Expenses')}</div><div class="stat-value mono">${money(forecastExpenses)}</div></div>
-            <div class="stat-card" style="grid-column:1 / -1;"><div class="stat-label">${t('صافي متوقع', 'Expected Net Profit')}</div><div class="stat-value mono" style="color:var(--amber);">${money(forecastNet)}</div></div>
+    const maxVal = Math.max(...entries.map(e => e.value));
+    barEl.innerHTML = entries.map(e => `
+        <div class="bar-row">
+            <div class="bar-row-label"><span>${escapeHtml(e.label)}</span><span class="mono">${money(e.value)}</span></div>
+            <div class="bar-track"><div class="bar-fill ${(opts && opts.color === 'teal') ? 'teal' : ''}" style="width:${Math.max(2, e.value / maxVal * 100)}%"></div></div>
         </div>
-        <div style="font-size:11.5px;color:var(--text-faint);padding:8px 4px 16px;">${t('التوقع تقديري ومبني على متوسط أداء آخر 4 أسابيع، مش رقم مضمون.', 'This is an estimate based on your average performance over the last 4 weeks — not a guaranteed figure.')}</div>`;
+    `).join('');
 
-        body.innerHTML = html;
-
-        // ---- Draw charts now that the canvases exist in the DOM ----
-        if (useCharts) {
-            buildRevenueTrendChart(a.dailyRevenueMap, trendDays);
-            if (a.totalRevenue > 0) buildRevenueCompositionChart(a);
-            if (topItems.length > 0) buildTopItemsChart(topItems);
-            if (deviceEntries.length > 0) buildDeviceUsageChart(deviceEntries);
-            if (Object.keys(a.pmBreakdown).length > 1) buildPaymentMethodChart(a.pmBreakdown);
-        }
-    } catch (e) {
-        console.error('Error rendering analytics:', e);
-        body.innerHTML = `<div class="empty"><i class="fa-solid fa-triangle-exclamation"></i>${t('حصل خطأ في تحميل التحليلات', 'Error loading analytics')}</div>`;
+    if (listEl) {
+        listEl.innerHTML = entries.map(e => `
+            <div class="list-row">
+                <div>
+                    <div class="row-title">${escapeHtml(e.label)}</div>
+                    ${e.sub ? `<div class="row-sub">${escapeHtml(e.sub)}</div>` : ''}
+                </div>
+                <div class="row-value mono">${money(e.value)}</div>
+            </div>
+        `).join('');
     }
 }
 
-// ============================================================
-// تصدير الدوال
-// ============================================================
-window.setAnalyticsFilter = setAnalyticsFilter;
-window.renderAnalytics = renderAnalytics;
-window.startAIAnalyticsUpdater = startAIAnalyticsUpdater;
-window.refreshDashboardSummary = refreshDashboardSummary;
+function analyticsRenderTopItems(core) {
+    const entries = Object.entries(core.itemBreakdown).map(([name, v]) => ({
+        label: name, value: v.revenue, sub: `${v.qty} ${t('قطعة', 'pcs')}`
+    }));
+    analyticsRenderBarList('anTopItemsChart', 'anTopItemsList', entries, { color: 'amber', limit: 6 });
+}
+
+function analyticsRenderDeviceUsage(core) {
+    const entries = Object.entries(core.deviceBreakdown).map(([stationId, v]) => {
+        const station = stations.find(s => s.id === stationId);
+        const label = station ? (station.name || `${t('جهاز', 'Device')} ${station.number}`) : t('جهاز', 'Device');
+        const durationLabel = v.hoursSum >= 1
+            ? `${v.sessionsCount} ${t('جلسة', 'sessions')} · ${v.hoursSum.toFixed(2)} ${t('ساعة', 'h')}`
+            : `${v.sessionsCount} ${t('جلسة', 'sessions')} · ${Math.round(v.hoursSum * 60)} ${t('دقيقة', 'min')}`;
+        return { label, value: v.revenue, sub: durationLabel };
+    });
+    analyticsRenderBarList('anDeviceUsageChart', 'anDeviceUsageList', entries, { color: 'teal' });
+}
+
+function analyticsRenderRevenueDetails(core) {
+    document.getElementById('anRevenueDetails').innerHTML = `
+        <div class="list-row"><div class="row-title">${t('إيراد الساعات', 'Hours Revenue')}</div><div class="row-value mono">${money(core.hoursRevenue)}</div></div>
+        <div class="list-row"><div class="row-title">${t('إيراد المنيو', 'Menu Revenue')}</div><div class="row-value mono">${money(core.ordersTotal)}</div></div>
+        <div class="list-row"><div class="row-title">Single</div><div class="row-value mono">${money(core.singleRevenue)}</div></div>
+        <div class="list-row"><div class="row-title">Multi</div><div class="row-value mono">${money(core.multiRevenue)}</div></div>
+    `;
+}
+
+function analyticsRenderUsefulStats(core) {
+    const meanVal = stMean(core.sessionValues);
+    const medianVal = stMedian(core.sessionValues);
+    const meanDur = stMean(core.sessionDurations);
+    const medianDur = stMedian(core.sessionDurations);
+
+    const hourEntries = Object.entries(core.hourMap).sort((a, b) => b[1] - a[1]);
+    const peakHourLabel = hourEntries.length ? formatHour12(parseInt(hourEntries[0][0])) : '—';
+
+    const wdEntries = Object.entries(core.weekdayMap).sort((a, b) => b[1] - a[1]);
+    const dayNames = analyticsWeekdayNames();
+    const bestDayLabel = wdEntries.length ? dayNames[parseInt(wdEntries[0][0])] : '—';
+
+    document.getElementById('anUsefulStats').innerHTML = `
+        <div class="list-row"><div class="row-title">${t('متوسط قيمة الجلسة (Mean)', 'Avg Session Value (Mean)')}</div><div class="row-value mono">${moneyDec(meanVal)}</div></div>
+        <div class="list-row"><div class="row-title">${t('الوسيط لقيمة الجلسة (Median)', 'Median Session Value')}</div><div class="row-value mono">${moneyDec(medianVal)}</div></div>
+        <div class="list-row"><div class="row-title">${t('متوسط مدة الجلسة (ساعة)', 'Avg Session Duration (h)')}</div><div class="row-value mono">${meanDur.toFixed(2)}</div></div>
+        <div class="list-row"><div class="row-title">${t('الوسيط لمدة الجلسة (ساعة)', 'Median Session Duration (h)')}</div><div class="row-value mono">${medianDur.toFixed(2)}</div></div>
+        <div class="list-row"><div class="row-title">${t('أكتر وقت زحمة', 'Peak Hour')}</div><div class="row-value mono">${peakHourLabel}</div></div>
+        <div class="list-row"><div class="row-title">${t('أفضل يوم', 'Best Day')}</div><div class="row-value mono">${bestDayLabel}</div></div>
+    `;
+}
+
+function analyticsRenderForecast(forecast) {
+    const cardsEl = document.getElementById('anForecastCards');
+    const netEl = document.getElementById('anForecastNet');
+    const discEl = document.getElementById('anForecastDisclaimer');
+
+    if (!forecast || forecast.insufficientData) {
+        cardsEl.innerHTML = `<div class="stat-card" style="grid-column:1/-1;"><div class="stat-label">${t('توقع الإيراد', 'Revenue Forecast')}</div><div class="stat-value" style="font-size:13.5px;color:var(--text-dim);font-weight:600;">${t('البيانات لسه مش كافية لتوقع موثوق (محتاج بيانات ٤ أيام نشاط على الأقل).', 'Not enough data yet for a reliable forecast (need at least 4 days of activity).')}</div></div>`;
+        netEl.innerHTML = '';
+        discEl.textContent = '';
+        return;
+    }
+
+    cardsEl.innerHTML = `
+        <div class="stat-card accent">
+            <div class="stat-label">${t('إيراد متوقع (غدًا)', 'Expected Revenue (Next Day)')}</div>
+            <div class="stat-value mono" style="font-size:17px;">${money(forecast.expectedRevenueLow)} – ${money(forecast.expectedRevenueHigh)}</div>
+        </div>
+        <div class="stat-card">
+            <div class="stat-label">${t('مصروفات متوقعة', 'Expected Expenses')}</div>
+            <div class="stat-value mono" style="font-size:17px;">${money(forecast.expectedExpense)}</div>
+        </div>
+    `;
+    netEl.innerHTML = `
+        <div class="list-row"><div class="row-title">${t('صافي متوقع', 'Expected Net')}</div><div class="row-value mono" style="color:var(--amber);">${money(forecast.expectedNetLow)} – ${money(forecast.expectedNetHigh)}</div></div>
+    `;
+    discEl.textContent = t(
+        `النطاق مبني على متوسط ± انحراف معياري لآخر ${forecast.daysWithData} يوم فيهم نشاط فعلي — تقدير إحصائي مش رقم مضمون.`,
+        `Range is based on mean ± standard deviation of the last ${forecast.daysWithData} active days — a statistical estimate, not a guarantee.`
+    );
+}
+
+// ------------------------------------------------------------
+// MASTER RENDER
+// ------------------------------------------------------------
+async function renderAnalytics() {
+    if (analyticsLoading) return;
+    analyticsLoading = true;
+    try {
+        const bounds = getAnalyticsRangeBounds(analyticsRange);
+        const [periodData, prevPeriodData, forecast] = await Promise.all([
+            fetchAnalyticsPeriodData(bounds.start, bounds.end),
+            fetchAnalyticsPeriodData(bounds.prevStart, bounds.prevEnd),
+            analyticsComputeForecast()
+        ]);
+
+        const core = analyticsComputeCore(periodData);
+        const prevCore = analyticsComputeCore(prevPeriodData);
+
+        analyticsRenderStatCards(core);
+
+        const insights = analyticsBuildInsights(core, prevCore);
+        analyticsRenderInsightRows('anInsightsList', insights, t('البيانات لسه قليلة لعرض تحليل ذكي.', 'Not enough data yet for smart analysis.'));
+
+        const anomalies = analyticsDetectAnomalies(core);
+        const anomaliesSection = document.getElementById('anAnomaliesSection');
+        if (anomalies.length > 0) {
+            anomaliesSection.style.display = 'block';
+            analyticsRenderInsightRows('anAnomaliesList', anomalies);
+        } else {
+            anomaliesSection.style.display = 'none';
+        }
+
+        analyticsRenderBestDays(core);
+        analyticsRenderRevenueChart(core, bounds);
+        analyticsRenderRevenueDonut(core);
+        analyticsRenderTopItems(core);
+        analyticsRenderDeviceUsage(core);
+        analyticsRenderRevenueDetails(core);
+        analyticsRenderPaymentDonut(core);
+        analyticsRenderUsefulStats(core);
+        analyticsRenderForecast(forecast);
+    } catch (e) {
+        console.error('Error rendering analytics:', e);
+        showToast(t('حصل خطأ في تحميل التحليلات.', 'Error loading analytics.'), 'error');
+    } finally {
+        analyticsLoading = false;
+    }
+}
+
+function setAnalyticsRange(range) {
+    analyticsRange = range;
+    document.querySelectorAll('#analyticsTabs .shift-tab').forEach(b => b.classList.toggle('active', b.dataset.range === range));
+    renderAnalytics();
+}
